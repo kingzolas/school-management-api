@@ -2,7 +2,7 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 const bcrypt = require('bcryptjs');
-const addressSchema = require('./address.model'); // <<< Importa seu schema de endereço
+const addressSchema = require('./address.model');
 
 const userSchema = new Schema({
     // --- Seção 1 e 2: Info Pessoal e Contato ---
@@ -53,12 +53,12 @@ const userSchema = new Schema({
         minlength: [6, 'A senha deve ter no mínimo 6 caracteres.'],
         select: false // Não retorna a senha em buscas
     },
-    roles: [{ // (Seção 5 - Perfil de Permissão) <<< MODIFICADO DE 'role'
+    roles: [{ // (Seção 5 - Perfil de Permissão)
         type: String,
         required: true,
         enum: ['Professor', 'Coordenador', 'Admin', 'Staff'], // Alinhado com sua proposta
     }],
-    status: { // (Seção 3 - Status) <<< MODIFICADO DE 'isActive'
+    status: { // (Seção 3 - Status)
         type: String,
         enum: ['Ativo', 'Inativo'],
         default: 'Ativo',
@@ -66,7 +66,6 @@ const userSchema = new Schema({
     },
 
     // --- Ligação com os Contratos/Perfis de Trabalho ---
-    // Este array vai ligar o User aos seus perfis de trabalho (Passo 4)
     staffProfiles: [{ 
         type: Schema.Types.ObjectId, 
         ref: 'StaffProfile' 

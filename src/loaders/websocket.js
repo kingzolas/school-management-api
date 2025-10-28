@@ -101,6 +101,20 @@ function initWebSocket(httpServer) {
         broadcast({ type: 'DELETED_SUBJECT', payload: payload });
     });
 
+    // --- [NOVO] Horários ---
+    appEmitter.on('horario:created', (horario) => {
+        console.log('Evento Recebido: horario:created');
+        broadcast({ type: 'NEW_HORARIO', payload: horario });
+    });
+    appEmitter.on('horario:updated', (horario) => {
+        console.log('Evento Recebido: horario:updated');
+        broadcast({ type: 'UPDATED_HORARIO', payload: horario });
+    });
+    appEmitter.on('horario:deleted', (horario) => { // payload é o doc deletado
+        console.log('Evento Recebido: horario:deleted');
+        broadcast({ type: 'DELETED_HORARIO', payload: horario });
+    });
+
     // etc...
 
     console.log('Servidor WebSocket inicializado e ouvindo eventos.');
