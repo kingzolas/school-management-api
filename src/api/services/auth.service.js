@@ -1,21 +1,25 @@
+// src/api/services/auth.service.js
 const User = require('../models/user.model');
 const jwt = require('jsonwebtoken');
-
-// Adicione uma chave secreta no seu arquivo .env
-// JWT_SECRET=sua_chave_super_secreta_aqui
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET; // Pega a chave do .env
 
 class AuthService {
     async login(identifier, password) {
-        // Permite login com username OU email
+        // [CORREÇÃO] Adiciona .select('+password') para forçar a inclusão da senha
         const user = await User.findOne({
             $or: [{ email: identifier }, { username: identifier }]
-        });
+        }).select('+password'); // <<< A CORREÇÃO ESTÁ AQUI
 
         if (!user) {
             throw new Error('Credenciais inválidas.'); // Usuário não encontrado
         }
 
+        // [NOVO] Adiciona verificação de status (do seu novo model)
+        if (user.status === 'Inativo') {
+             throw new Error('Esta conta de usuário está inativa.');
+        }
+
+        // Agora user.password estará definido (o hash)
         const isMatch = await user.comparePassword(password);
 
         if (!isMatch) {
@@ -26,13 +30,22 @@ class AuthService {
         const payload = {
             id: user._id,
             fullName: user.fullName,
-            role: user.role
+            roles: user.roles // [MODIFICADO] Usa 'roles' (plural) do seu novo model
         };
 
-        const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' }); // Token expira em 1 dia
+        if (!JWT_SECRET) {
+             console.error("ERRO CRÍTICO: JWT_SECRET não está definida nas variáveis de ambiente.");
+             throw new Error('Erro interno do servidor ao gerar token.');
+        }
+
+        const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
+
+        // [NOVO] Popula os perfis de trabalho antes de retornar
+        // Isso garante que o Flutter receba os dados do professor/admin no login
+        await user.populate('staffProfiles');
 
         const userObject = user.toObject();
-        delete userObject.password;
+        delete userObject.password; // Remove a senha ANTES de enviar ao cliente
 
         return { user: userObject, token };
     }
