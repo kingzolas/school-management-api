@@ -9,13 +9,11 @@ const userModelFields = [
     'phoneNumber', 'phoneFixed', 'address', 'profilePictureUrl', 
     'username', 'password', 'roles', 'status'
 ];
-// Define quais campos pertencem ao StaffProfile model (baseado no staffProfile.model.js)
 const staffProfileModelFields = [
     'admissionDate', 'employmentType', 'mainRole', 'remunerationModel', 
     'salaryAmount', 'hourlyRate', 'weeklyWorkload', 
     'academicFormation', 'enabledLevels', 'enabledSubjects'
 ];
-
 
 class UserService {
     

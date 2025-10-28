@@ -11,6 +11,15 @@ router.post(
     subjectController.create
 );
 
+// --- [NOVA ROTA] ---
+// Criar múltiplas disciplinas (Lote)
+router.post(
+    '/bulk',
+    [authMiddleware.verifyToken /*, roleMiddleware.isAdminOrCoordinator */],
+    subjectController.createBulk
+);
+// --- FIM DA NOVA ROTA ---
+
 // Listar todas as disciplinas (Protegido - Todos autenticados podem ver)
 router.get(
     '/',

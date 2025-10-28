@@ -23,6 +23,41 @@ class SubjectController {
         }
     }
 
+    /**
+     * [CORRIGIDO] Cria múltiplas disciplinas (em lote).
+     */
+    async createBulk(req, res, next) {
+        const { subjects } = req.body; 
+
+        if (!subjects || !Array.isArray(subjects) || subjects.length === 0) {
+            return res.status(400).json({ message: 'O corpo da requisição deve conter um array "subjects" não-vazio.' });
+        }
+
+        try {
+            // Agora o service retorna um array vazio [] se nada foi criado,
+            // ou um array com os docs criados. Ele não lança mais o erro de duplicata.
+            const createdSubjects = await SubjectService.createMultipleSubjects(subjects);
+
+            // Emite evento WebSocket apenas para os que foram realmente criados
+            createdSubjects.forEach(subject => {
+                appEmitter.emit('subject:created', subject);
+                console.log(`📡 EVENTO EMITIDO (Lote): subject:created para ${subject.name}`);
+            });
+
+            // Resposta de sucesso (201 Created), mesmo que 0 tenham sido criados
+            res.status(201).json({
+                message: `${createdSubjects.length} de ${subjects.length} disciplinas foram criadas com sucesso (duplicatas ignoradas).`,
+                createdSubjects
+            });
+
+        } catch (error) {
+            // Pega apenas erros reais (ex: validação de 'level' falhou)
+            console.error('❌ ERRO [SubjectController.createBulk]:', error.message);
+            res.status(400).json({ message: error.message }); // Envia o erro real
+            // next(error); // Alternativa
+        }
+    }
+
     async getAll(req, res, next) {
         try {
             // Permite filtrar por query, ex: /api/subjects?level=Ensino Médio
