@@ -4,6 +4,15 @@ const horarioController = require('../controllers/horario.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
 // const roleMiddleware = require('../middlewares/role.middleware'); // Descomente se tiver
 
+
+// --- [NOVA ROTA] ---
+// Criar múltiplos horários (Lote)
+router.post(
+    '/bulk',
+    [authMiddleware.verifyToken /*, roleMiddleware.isAdminOrCoordinator */],
+    horarioController.createBulk
+);
+// --- FIM DA NOVA ROTA ---
 // Criar novo horário (Protegido - Ex: Admin/Coordenador)
 router.post(
     '/',

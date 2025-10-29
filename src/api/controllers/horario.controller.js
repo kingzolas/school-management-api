@@ -3,6 +3,38 @@ const appEmitter = require('../../loaders/eventEmitter'); // Seu emissor global
 
 class HorarioController {
 
+    /**
+     * [NOVO] Cria múltiplos horários (em lote).
+     */
+    async createBulk(req, res, next) {
+        // O body deve ser um array de objetos de horário: [ {...}, {...} ]
+        const horariosData = req.body; 
+
+        if (!Array.isArray(horariosData) || horariosData.length === 0) {
+            return res.status(400).json({ message: 'O corpo da requisição deve conter um array de horários.' });
+        }
+
+        try {
+            const createdHorarios = await HorarioService.createMultipleHorarios(horariosData);
+
+            // Emite um evento WebSocket para CADA horário criado
+            createdHorarios.forEach(horario => {
+                appEmitter.emit('horario:created', horario);
+                console.log(`📡 EVENTO EMITIDO (Lote): horario:created para ${horario.classId.name}`);
+            });
+
+            res.status(201).json({
+                message: `${createdHorarios.length} de ${horariosData.length} aulas foram criadas com sucesso (duplicatas ignoradas).`,
+                createdHorarios
+            });
+        } catch (error) {
+            console.error('❌ ERRO [HorarioController.createBulk]:', error.message);
+            // Retorna o erro de validação (ex: Professor não habilitado)
+            res.status(400).json({ message: error.message });
+            // next(error); // Alternativa
+        }
+    }
+
     async create(req, res, next) {
         try {
             // O body deve conter classId, subjectId, teacherId, dayOfWeek, etc.

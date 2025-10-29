@@ -9,7 +9,7 @@ const classRoutes = require('./api/routes/class.routes');
 const enrollmentRoutes = require('./api/routes/enrollment.routes');
 const subjectRoutes = require('./api/routes/subject.routes');
 const horarioRoutes = require('./api/routes/horario.routes');
-
+const eventoRoutes = require('./api/routes/evento.routes');
 
 // Vamos adicionar as rotas de usuário aqui em breve
 
@@ -36,5 +36,6 @@ app.use('/api/classes', classRoutes);
 app.use('/api/enrollments', enrollmentRoutes);
 app.use('/api/subjects', subjectRoutes);
 app.use('/api/horarios', horarioRoutes);
+app.use('/api/eventos', eventoRoutes);
 
 module.exports = app;

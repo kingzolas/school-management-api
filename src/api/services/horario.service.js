@@ -24,6 +24,60 @@ const defaultPopulation = [
 class HorarioService {
 
     /**
+     * [NOVO] Cria múltiplos horários (em lote).
+     */
+    async createMultipleHorarios(horariosData) {
+        if (!Array.isArray(horariosData) || horariosData.length === 0) {
+            throw new Error('Dados de entrada inválidos. Um array de horários é esperado.');
+        }
+
+        // 1. Validar todos os horários ANTES de tentar inserir
+        // Usamos um Map para validar cada professor/disciplina apenas UMA vez (performance)
+        const validationCache = new Map(); 
+        
+        for (const aula of horariosData) {
+            const { teacherId, subjectId } = aula;
+            const cacheKey = `${teacherId}-${subjectId}`;
+            
+            if (!validationCache.has(cacheKey)) {
+                // Valida (lançará um erro se falhar, parando todo o processo)
+                await this._validateTeacherAbility(teacherId, subjectId);
+                validationCache.set(cacheKey, true); // Marca como validado
+            }
+        }
+
+        // 2. Inserir no Banco
+        try {
+            // { ordered: false } -> Tenta inserir todos, mesmo que um falhe (ex: duplicata)
+            const createdHorarios = await Horario.insertMany(horariosData, { ordered: false });
+            
+            // 3. Popular os documentos recém-criados
+            const createdIds = createdHorarios.map(h => h._id);
+            const populatedHorarios = await Horario.find({ _id: { $in: createdIds } })
+                                                   .populate(defaultPopulation);
+                                                   
+            return populatedHorarios;
+
+        } catch (error) {
+            // Lida com erros de duplicata (ex: rodou o bulk duas vezes)
+            if (error.name === 'MongoBulkWriteError' && error.code === 11000) {
+                console.warn('Aviso de BulkWrite: Alguns horários duplicados foram ignorados.');
+                
+                // Se ALGUNS foram inseridos mesmo com o erro
+                if (error.result && error.result.insertedIds && error.result.insertedIds.length > 0) {
+                    const insertedIds = error.result.insertedIds.map(doc => doc._id);
+                    const populated = await Horario.find({ _id: { $in: insertedIds } }).populate(defaultPopulation);
+                    return populated;
+                }
+                // Se NENHUM foi inserido (todos duplicados)
+                return []; 
+            }
+            // Lança outros erros
+            throw error;
+        }
+    }
+
+    /**
      * Valida se um professor está habilitado para lecionar uma disciplina.
      * @param {string} teacherId - O ID do User (professor)
      * @param {string} subjectId - O ID da Subject (disciplina)
