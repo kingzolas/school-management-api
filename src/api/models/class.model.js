@@ -10,53 +10,45 @@ const classSchema = new Schema({
     schoolYear: { // Ex: 2025, 2026
         type: Number,
         required: [true, 'O ano letivo é obrigatório.'],
-        index: true // <<< Adicionado índice para performance
+        index: true
+    },
+
+    // --- [NOVO CAMPO ESTRUTURAL] ---
+    level: { // Nível de Ensino
+        type: String,
+        required: [true, 'O nível de ensino (Infantil, Fundamental I, etc.) é obrigatório.'],
+        enum: ['Educação Infantil', 'Ensino Fundamental I', 'Ensino Fundamental II', 'Ensino Médio'],
+    },
+    // --- FIM DO NOVO CAMPO ---
+
+    grade: { // Série/Nível (Agora é só o nome da série)
+        type: String,
+        required: [true, 'A série/nível é obrigatória.'] // Ex: "1º Ano", "Maternal II"
     },
     shift: { // Turno
         type: String,
         required: [true, 'O turno é obrigatório.'],
         enum: ['Matutino', 'Vespertino', 'Noturno', 'Integral'],
-        default: 'Matutino' // <<< Default adicionado
+        default: 'Matutino'
     },
-    grade: { // Série/Nível
-        type: String,
-        required: [true, 'A série/nível é obrigatória.'] // Ex: "Ensino Fundamental - 4º Ano"
-    },
-    room: { // Sala (Opcional)
-        type: String,
-        trim: true
-    },
-    monthlyFee: { // <<< NOVO: Mensalidade base
+    room: { type: String, trim: true },
+    monthlyFee: {
         type: Number,
         required: [true, 'O valor da mensalidade base é obrigatório.'],
         min: [0, 'A mensalidade não pode ser negativa.']
     },
-    capacity: { // <<< NOVO: Capacidade máxima (Opcional)
-        type: Number,
-        min: [1, 'A capacidade deve ser pelo menos 1.']
-    },
-    startTime: { // <<< NOVO: Horário de início (Opcional, formato "HH:MM")
-        type: String,
-        trim: true
-    },
-    endTime: { // <<< NOVO: Horário de término (Opcional, formato "HH:MM")
-        type: String,
-        trim: true
-    },
-    status: { // <<< NOVO: Status da turma (Opcional)
+    capacity: { type: Number, min: [1, 'A capacidade deve ser pelo menos 1.'] },
+    startTime: { type: String, trim: true },
+    endTime: { type: String, trim: true },
+    status: {
         type: String,
         enum: ['Planejada', 'Ativa', 'Encerrada', 'Cancelada'],
         default: 'Ativa',
-        index: true // <<< Índice útil para filtrar turmas ativas
+        index: true
     },
-    // students: [{...}], // <<< REMOVIDO
-    // teachers: [{...}], // <<< REMOVIDO (Gerenciar no User/Teacher ou Assignment)
-
 }, { timestamps: true });
 
-// <<< NOVO: Índice único composto para evitar duplicatas >>>
-classSchema.index({ name: 1, schoolYear: 1 }, { unique: true, collation: { locale: 'pt', strength: 2 } }); // Collation para case-insensitivity em português
+classSchema.index({ name: 1, schoolYear: 1 }, { unique: true, collation: { locale: 'pt', strength: 2 } });
 
-// <<< CORREÇÃO: Exportar o model compilado >>>
 const Class = mongoose.model('Class', classSchema);
 module.exports = Class;
