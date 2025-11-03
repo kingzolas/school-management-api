@@ -29,6 +29,69 @@ const authorizedPickupSchema = new Schema({
     phoneNumber: { type: String, required: true },
 }, { _id: false });
 
+const gradeSchema = new Schema({
+    subjectName: { // Nome da disciplina (Ex: "Língua Portuguesa", "Matemática")
+        type: String,
+        required: true,
+        trim: true
+    },
+    gradeValue: { // A nota (Ex: "7,5", "8,0", "**", "Apto")
+        type: String, // Usamos String para ser flexível
+        required: true,
+        trim: true
+    }
+}, { _id: false }); // _id: false para não criar IDs para cada nota
+
+
+/**
+ * Sub-schema para o registro acadêmico completo de UM ano.
+ * Um aluno terá um ARRAY destes (um para o 1º Ano, um para o 2º, etc.)
+ */
+const academicRecordSchema = new Schema({
+    gradeLevel: { // Série / Ano (Ex: "1º Ano", "2º Ano", "Maternal")
+        type: String,
+        required: true,
+        trim: true
+    },
+    schoolYear: { // Ano civil (Ex: 2022, 2023)
+        type: Number,
+        required: true
+    },
+    schoolName: { // Nome da escola (Pode ser a "Sossego" ou outra)
+        type: String,
+        required: true,
+        trim: true,
+        default: 'Escola Sossego da Mamãe' // Default
+    },
+    city: {
+        type: String,
+        required: true,
+        trim: true,
+        default: 'Parauapebas'
+    },
+    state: { // UF
+        type: String,
+        required: true,
+        trim: true,
+        default: 'PA'
+    },
+    grades: { // A lista de notas daquele ano
+        type: [gradeSchema],
+        default: []
+    },
+    annualWorkload: { // Carga Horária Anual (Ex: 800)
+        type: String, // String para flexibilidade (Ex: "800 HRS")
+        trim: true
+    },
+    finalResult: { // Ex: "Aprovado", "Reprovado", "Transferido"
+        type: String,
+        required: true,
+        trim: true
+    }
+    // Não precisamos de _id aqui, pois o Mongoose cria automaticamente
+    // e usaremos esse ID para editar/deletar o registro.
+});
+
 
 const studentSchema = new Schema({
     fullName: {
@@ -121,6 +184,11 @@ const studentSchema = new Schema({
         type: Schema.Types.ObjectId,
         ref: 'Class', 
         default: null
+    },
+    // --- ADICIONE ESTE NOVO CAMPO NO FINAL DO SEU SCHEMA ---
+    academicHistory: {
+        type: [academicRecordSchema],
+        default: []
     }
 }, {
     timestamps: true 
@@ -133,6 +201,8 @@ studentSchema.pre('save', function(next) {
     if (this.email === '') { this.email = null; }
     next();
 });
+
+
 
 const Student = mongoose.model('Student', studentSchema);
 

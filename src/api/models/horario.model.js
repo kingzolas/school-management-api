@@ -2,6 +2,16 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const horarioSchema = new Schema({
+
+    // [CAMPO NOVO!]
+   // [CAMPO NOVO!]
+    termId: { 
+        // Indica a qual bimestre/período (Term) esta grade pertence.
+        type: Schema.Types.ObjectId,
+        ref: 'Term', // Link com term.model.js
+        required: true,
+        index: true
+    },
     // --- Vínculos Principais ---
     classId: { // A qual turma este horário pertence
         type: Schema.Types.ObjectId,

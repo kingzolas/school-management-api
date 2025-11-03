@@ -39,4 +39,25 @@ router.delete(
     studentController.delete
 );
 
+// Adiciona um novo registro (Ex: 1º Ano, 2022)
+router.post(
+    '/:studentId/history',
+    [authMiddleware.verifyToken],
+    studentController.addAcademicRecord
+);
+
+// Atualiza um registro existente (pelo ID do registro)
+router.put(
+    '/:studentId/history/:recordId',
+    [authMiddleware.verifyToken],
+    studentController.updateAcademicRecord
+);
+
+// Deleta um registro existente
+router.delete(
+    '/:studentId/history/:recordId',
+    [authMiddleware.verifyToken],
+    studentController.deleteAcademicRecord
+);
+
 module.exports = router;

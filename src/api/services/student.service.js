@@ -202,6 +202,63 @@ class StudentService {
     // ==========================================================
     // FIM DA CORREÇÃO getUpcomingBirthdays
     // ==========================================================
+
+    async addHistoryRecord(studentId, recordData) {
+        const student = await Student.findById(studentId);
+        if (!student) {
+            return null;
+        }
+
+        // Adiciona o novo registro (com todos os seus campos) ao array
+        student.academicHistory.push(recordData);
+        
+        await student.save();
+        return student; // Retorna o aluno inteiro atualizado
+    }
+
+    /**
+     * Atualiza um registro específico dentro do academicHistory.
+     */
+    async updateHistoryRecord(studentId, recordId, updatedData) {
+        const student = await Student.findById(studentId);
+        if (!student) {
+            return null;
+        }
+
+        // Encontra o sub-documento (registro) pelo seu _id
+        const record = student.academicHistory.id(recordId);
+        if (!record) {
+            return null;
+        }
+
+        // Atualiza os campos do registro
+        // O Object.assign copia os valores de updatedData para record
+        Object.assign(record, updatedData);
+        
+        await student.save();
+        return student;
+    }
+
+    /**
+     * Remove um registro específico do academicHistory.
+     */
+   async deleteHistoryRecord(studentId, recordId) {
+        const student = await Student.findById(studentId);
+        if (!student) {
+            return null;
+        }
+
+        // --- INÍCIO DA CORREÇÃO ---
+        
+        // O Mongoose Array tem um método 'pull' que remove
+        // qualquer subdocumento que corresponda ao ID fornecido.
+        student.academicHistory.pull(recordId);
+        
+        // --- FIM DA CORREÇÃO ---
+        
+        await student.save();
+        return student;
+    }
 }
 
 module.exports = new StudentService();

@@ -121,6 +121,69 @@ class StudentController {
             res.status(500).json({ message: 'Erro ao buscar aniversariantes', error: error.message });
         }
     }
+async addAcademicRecord(req, res, next) {
+        try {
+            const { studentId } = req.params;
+            const recordData = req.body; // O JSON do AcademicRecordSchema
+
+            // Validação básica
+            if (!recordData.gradeLevel || !recordData.schoolYear || !recordData.finalResult) {
+                return res.status(400).json({ message: 'Campos obrigatórios (gradeLevel, schoolYear, finalResult) não fornecidos.' });
+            }
+
+            const updatedStudent = await StudentService.addHistoryRecord(studentId, recordData);
+            if (!updatedStudent) {
+                return res.status(404).json({ message: 'Aluno não encontrado' });
+            }
+            
+            res.status(201).json(updatedStudent.academicHistory); // Retorna o histórico atualizado
+
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    /**
+     * Atualiza um registro acadêmico específico do histórico do aluno.
+     * Rota: PUT /api/students/:studentId/history/:recordId
+     */
+    async updateAcademicRecord(req, res, next) {
+        try {
+            const { studentId, recordId } = req.params;
+            const updatedData = req.body;
+
+            const updatedStudent = await StudentService.updateHistoryRecord(studentId, recordId, updatedData);
+            if (!updatedStudent) {
+                return res.status(404).json({ message: 'Aluno ou registro não encontrado' });
+            }
+            
+            res.status(200).json(updatedStudent.academicHistory); // Retorna o histórico atualizado
+
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    /**
+     * Deleta um registro acadêmico específico do histórico do aluno.
+     * Rota: DELETE /api/students/:studentId/history/:recordId
+     */
+    async deleteAcademicRecord(req, res, next) {
+        try {
+            const { studentId, recordId } = req.params;
+
+            const updatedStudent = await StudentService.deleteHistoryRecord(studentId, recordId);
+            if (!updatedStudent) {
+                return res.status(404).json({ message: 'Aluno ou registro não encontrado' });
+            }
+            
+            res.status(200).json(updatedStudent.academicHistory); // Retorna o histórico atualizado
+
+        } catch (error) {
+            next(error);
+        }
+    }
+
 }
 
 module.exports = new StudentController();
