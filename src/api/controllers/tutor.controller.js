@@ -11,6 +11,60 @@ class TutorController {
         }
     }
 
+    async updateTutorRelationship(req, res) {
+        try {
+            const { studentId, tutorId } = req.params;
+            const { relationship } = req.body; // Pega o 'relationship' do body
+
+            if (!relationship) {
+                 return res.status(400).json({ message: 'O campo "relationship" é obrigatório.' });
+            }
+            
+            console.log(`[API] PUT /students/${studentId}/tutors/${tutorId}`);
+            console.log(`[API] Novo relacionamento: ${relationship}`);
+
+            const updatedLink = await StudentService.updateTutorRelationship(
+                studentId,
+                tutorId,
+                relationship
+            );
+            
+            // Retorna o objeto TutorInStudent (o "vínculo") atualizado
+            res.status(200).json(updatedLink); 
+
+        } catch (error) {
+            console.error(`[API] Erro ao atualizar relacionamento: ${error.message}`);
+            // Verifica se o erro foi "não encontrado"
+            if (error.message.includes('não encontrado')) {
+                 return res.status(404).json({ message: error.message });
+            }
+            res.status(500).json({ message: 'Erro interno ao atualizar relacionamento.', error: error.message });
+        }
+    }
+
+async update(req, res) {
+        try {
+            const id = req.params.id;
+            const tutorData = req.body; // Dados vêm do Flutter (fullName, email, etc.)
+
+            console.log(`[API] Recebida requisição PUT para tutor ID: ${id}`);
+            console.log(`[API] Dados para atualização:`, tutorData);
+
+            const updatedTutor = await TutorService.updateTutor(id, tutorData);
+
+            if (!updatedTutor) {
+                return res.status(404).json({ message: 'Tutor não encontrado para atualização.' });
+            }
+
+            // Sucesso! Envia o tutor atualizado de volta para o Flutter
+            res.status(200).json(updatedTutor);
+
+        } catch (error) {
+            console.error(`[API] Erro ao processar PUT para tutor: ${error.message}`);
+            res.status(500).json({ message: 'Erro ao atualizar tutor', error: error.message });
+        }
+    }
+
     async getById(req, res) {
         try {
             const id = req.params.id;

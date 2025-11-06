@@ -199,6 +199,52 @@ class StudentService {
             throw new Error('Erro ao processar busca de aniversariantes');
         }
     }
+
+    async updateTutorRelationship(studentId, tutorId, newRelationship) {
+        try {
+            console.log(`[SERVICE] Atualizando relacionamento: Aluno ${studentId}, Tutor ${tutorId}`);
+            
+            // Encontra o aluno pelo ID
+            const student = await Student.findById(studentId);
+            if (!student) {
+                throw new Error('Aluno não encontrado.');
+            }
+
+            // Encontra o vínculo do tutor dentro do array 'tutors' do aluno
+            // Usamos .find() para obter a referência direta ao subdocumento
+            const tutorLink = student.tutors.find(
+                (t) => t.tutorInfo.toString() === tutorId
+            );
+
+            if (!tutorLink) {
+                throw new Error('Vínculo com tutor não encontrado no aluno.');
+            }
+
+            // Atualiza o campo relationship
+            tutorLink.relationship = newRelationship;
+
+            // Salva o documento PAI (o aluno) para persistir a mudança no subdocumento
+            await student.save();
+
+            // Popula o 'tutorInfo' do vínculo específico que acabamos de salvar
+            // para retornar os dados completos para o Flutter
+            await student.populate({
+                path: 'tutors.tutorInfo',
+                model: 'Tutor' // Certifique-se que 'Tutor' é o nome do seu model
+            });
+            
+            // Encontra o vínculo recém-populado para retornar
+            const updatedPopulatedLink = student.tutors.find(
+                 (t) => t.tutorInfo._id.toString() === tutorId
+            );
+
+            return updatedPopulatedLink; // Retorna o TutorInStudent atualizado e populado
+
+        } catch (error) {
+            console.error(`Erro no service ao ATUALIZAR relacionamento:`, error.message);
+            throw new Error(`Erro ao atualizar relacionamento: ${error.message}`);
+        }
+    }
     // ==========================================================
     // FIM DA CORREÇÃO getUpcomingBirthdays
     // ==========================================================

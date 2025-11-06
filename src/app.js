@@ -15,6 +15,8 @@ const schoolYearRoutes = require('./api/routes/schoolyear.routes');
 const periodoRoutes = require('./api/routes/periodo.routes');
 const cargaHorariaRoutes = require('./api/routes/cargaHoraria.routes'); // [NOVO]
 const courseLoadRoutes = require('./api/routes/courseLoad.routes');
+const invoiceRoutes = require('./api/routes/invoice.routes.js');
+const webhookRoutes = require('./api/routes/webhook.routes.js');
 
 const app = express();
 app.use(cors());
@@ -45,5 +47,8 @@ app.use('/api/school-years', schoolYearRoutes); // Rota ex: /api/school-years
 app.use('/api/terms', periodoRoutes);           // Rota ex: /api/terms
 app.use('/api/carga-horaria', cargaHorariaRoutes); // [NOVO]
 app.use('/api/course-loads', courseLoadRoutes); // Registra as novas rotas
+
+app.use('/api/invoices', invoiceRoutes);
+app.use('/api/webhook', webhookRoutes); // Rota pública para o gateway
 
 module.exports = app;

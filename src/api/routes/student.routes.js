@@ -52,6 +52,10 @@ router.put(
     [authMiddleware.verifyToken],
     studentController.updateAcademicRecord
 );
+router.put(
+    '/:studentId/tutors/:tutorId', // Note que o '/students' já vem do app.js
+    studentController.updateTutorRelationship
+);
 
 // Deleta um registro existente
 router.delete(

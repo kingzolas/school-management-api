@@ -1,6 +1,7 @@
 const { WebSocketServer } = require('ws');
 const appEmitter = require('./eventEmitter');
 
+
 let wss; // Vamos manter a instância do servidor WebSocket aqui
 
 function initWebSocket(httpServer) {
@@ -129,6 +130,27 @@ function initWebSocket(httpServer) {
         broadcast({ type: 'DELETED_EVENTO', payload: evento });
     });
     // --- FIM [NOVO] ---
+
+    appEmitter.on('invoice:created', (invoice) => {
+        console.log('Evento Recebido: invoice:created');
+        // O payload é a fatura recém-criada
+        broadcast({ type: 'NEW_INVOICE', payload: invoice });
+    });
+
+    appEmitter.on('invoice:paid', (invoice) => {
+        console.log('Evento Recebido: invoice:paid');
+        // O payload é a fatura atualizada (status: 'paid')
+        broadcast({ type: 'PAID_INVOICE', payload: invoice });
+    });
+
+    appEmitter.on('invoice:updated', (invoice) => {
+        console.log('Evento Recebido: invoice:updated');
+        // O payload é a fatura atualizada (ex: 'canceled' ou 'pending')
+        broadcast({ type: 'UPDATED_INVOICE', payload: invoice });
+    });
+    // --- FIM [NOVO] ---
+
+
 
     // etc...
 
