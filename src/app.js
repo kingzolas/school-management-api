@@ -17,6 +17,7 @@ const cargaHorariaRoutes = require('./api/routes/cargaHoraria.routes'); // [NOVO
 const courseLoadRoutes = require('./api/routes/courseLoad.routes');
 const invoiceRoutes = require('./api/routes/invoice.routes.js');
 const webhookRoutes = require('./api/routes/webhook.routes.js');
+const assistantRoutes = require('./api/routes/assistant.routes.js');
 
 const app = express();
 app.use(cors());
@@ -50,5 +51,6 @@ app.use('/api/course-loads', courseLoadRoutes); // Registra as novas rotas
 
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/webhook', webhookRoutes); // Rota pública para o gateway
+app.use('/api/assistant', assistantRoutes); // Prefixo da API do assistente
 
 module.exports = app;

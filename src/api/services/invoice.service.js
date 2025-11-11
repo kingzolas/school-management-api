@@ -117,7 +117,7 @@ class InvoiceService {
         description,
         value: value, // Salva o valor em CENTAVOS (como veio do req.body)
         dueDate: dataVencimento,
-        status: 'pending',
+        status: 'pending', // <<< Status inicial do seu Model
         paymentMethod: 'pix',
         gateway: 'mercadopago',
         mp_payment_id: paymentId,
@@ -163,11 +163,11 @@ class InvoiceService {
     // 3. Converte o status do MP para o nosso status interno
     let nossoStatus = invoice.status;
     if (mpStatus === 'approved' || mpStatus === 'authorized') {
-      nossoStatus = 'paid';
+      nossoStatus = 'paid'; // <<< Status do seu Model
     } else if (mpStatus === 'pending') {
-      nossoStatus = 'pending';
+      nossoStatus = 'pending'; // <<< Status do seu Model
     } else if (mpStatus === 'cancelled' || mpStatus === 'rejected') {
-      nossoStatus = 'canceled';
+      nossoStatus = 'canceled'; // <<< Status do seu Model
     }
 
     // 4. Atualiza a fatura somente se o status mudou
@@ -253,6 +253,49 @@ class InvoiceService {
       .sort({ dueDate: -1 })
       .populate('tutor', 'fullName');
   }
+
+  // ==========================================================
+  // INÍCIO DO MÉTODO PARA O ASSISTENTE GEMINI
+  // ==========================================================
+  
+  /**
+   * Encontra faturas vencidas e não pagas.
+   * Chamado pelo AssistantService.
+   */
+  async findOverdue() {
+    console.log(`[InvoiceService] Buscando faturas vencidas...`);
+  
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Pega o início do dia de hoje
+  
+    // Query baseada nos status do seu invoice.model.js:
+    // 1. Data de vencimento é ANTERIOR a hoje ($lt = less than)
+    // 2. O status NÃO ESTÁ ($nin = not in) na lista de pagos ou cancelados
+    //    (Isso pega 'pending' e 'overdue' que estão no passado)
+    const query = {
+      dueDate: { $lt: today },
+      status: { $nin: ['paid', 'canceled'] } 
+    };
+  
+    try {
+      // .select() escolhe os campos e .lean() retorna JSON puro
+      const invoices = await Invoice.find(query)
+        .select('description value dueDate student') // Campos do seu model
+        .populate('student', 'fullName') // Popula o nome do aluno
+        .lean(); 
+  
+      console.log(`[InvoiceService] ${invoices.length} faturas vencidas encontradas.`);
+      return invoices;
+  
+    } catch (error) {
+      console.error('[InvoiceService] Erro ao buscar faturas vencidas:', error);
+      throw new Error('Falha ao consultar banco de dados de faturas.');
+    }
+  }
+  
+  // ==========================================================
+  // FIM DO MÉTODO PARA O ASSISTENTE GEMINI
+  // ==========================================================
 }
 
 module.exports = new InvoiceService();

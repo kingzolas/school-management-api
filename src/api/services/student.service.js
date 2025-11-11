@@ -60,7 +60,7 @@ class StudentService {
                 
                 // 9. Adiciona no array o formato que o StudentSchema espera
                 tutorsForStudentSchema.push({
-                    tutorId: tutorDoc._id,
+                    tutorId: tutorDoc._id, // <<< CORREÇÃO: era 'tutorInfo'
                     relationship: relationship 
                 });
             }
@@ -83,7 +83,7 @@ class StudentService {
 
         // [CORREÇÃO APLICADA AQUI NA VERSÃO ANTERIOR] Popula antes de retornar
         const populatedStudent = await Student.findById(newStudent._id)
-                                              .populate(tutorPopulation);
+                                             .populate(tutorPopulation);
         
         return populatedStudent; // <-- Retorna o aluno com os dados completos
 
@@ -150,7 +150,7 @@ class StudentService {
                 {
                     $addFields: {
                         "__todayDayOfYear": { $dayOfYear: new Date() },
-                        "__birthdayDayOfYear": { $dayOfYear: "$birthDate" }
+                        "__birthdayDayOfYear": { $dayOfYear: "$birthDate" } // <<< CORREÇÃO: Usando 'birthDate'
                     }
                 },
                 {
@@ -213,7 +213,7 @@ class StudentService {
             // Encontra o vínculo do tutor dentro do array 'tutors' do aluno
             // Usamos .find() para obter a referência direta ao subdocumento
             const tutorLink = student.tutors.find(
-                (t) => t.tutorInfo.toString() === tutorId
+                (t) => t.tutorId.toString() === tutorId // <<< CORREÇÃO: era 'tutorInfo'
             );
 
             if (!tutorLink) {
@@ -229,12 +229,18 @@ class StudentService {
             // Popula o 'tutorInfo' do vínculo específico que acabamos de salvar
             // para retornar os dados completos para o Flutter
             await student.populate({
-                path: 'tutors.tutorInfo',
+                path: 'tutors.tutorId', // <<< CORREÇÃO: era 'tutorInfo'
                 model: 'Tutor' // Certifique-se que 'Tutor' é o nome do seu model
             });
             
+            // Renomeia o campo populado para 'tutorInfo' para consistência com o front-end
+            const populatedTutors = student.tutors.map(link => ({
+                relationship: link.relationship,
+                tutorInfo: link.tutorId // Renomeia o campo populado
+            }));
+            
             // Encontra o vínculo recém-populado para retornar
-            const updatedPopulatedLink = student.tutors.find(
+            const updatedPopulatedLink = populatedTutors.find(
                  (t) => t.tutorInfo._id.toString() === tutorId
             );
 
@@ -305,6 +311,68 @@ class StudentService {
         await student.save();
         return student;
     }
+    
+    // ==========================================================
+    // INÍCIO DO MÉTODO PARA O ASSISTENTE GEMINI
+    // ==========================================================
+    
+    /**
+     * Conta alunos por faixa etária e mês de aniversário.
+     * Chamado pelo AssistantService.
+     */
+    async getCountByAgeAndBirthday(minAge, maxAge, birthdayMonth) {
+      console.log(`[StudentService] Buscando contagem: ${minAge}-${maxAge} anos, Mês ${birthdayMonth}`);
+    
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Zera o horário para comparações justas
+    
+      // --- Lógica de Data ---
+      // 1. Data mais RECENTE de nascimento (para ter a idade MÍNIMA)
+      const latestBirthDate = new Date(
+        today.getFullYear() - minAge,
+        today.getMonth(),
+        today.getDate()
+      );
+    
+      // 2. Data mais ANTIGA de nascimento (para ter a idade MÁXIMA)
+      const earliestBirthDate = new Date(
+        today.getFullYear() - (maxAge + 1),
+        today.getMonth(),
+        today.getDate() + 1 
+      );
+    
+      // --- Query do MongoDB ---
+      const query = {
+        // [CORREÇÃO] Usando 'birthDate' do seu student.model.js
+        birthDate: {
+          $gte: earliestBirthDate,
+          $lte: latestBirthDate,
+        },
+        // [NOVO] Filtra apenas alunos ativos (baseado no seu model)
+        isActive: true, 
+        
+        // Filtro 2: Mês de aniversário
+        $expr: {
+          $eq: [
+            { $month: '$birthDate' }, // [CORREÇÃO] Usando 'birthDate'
+            birthdayMonth,           
+          ],
+        },
+      };
+    
+      try {
+        const count = await Student.countDocuments(query);
+        console.log(`[StudentService] Contagem encontrada: ${count}`);
+        return count;
+      } catch (error) {
+        console.error('[StudentService] Erro ao contar alunos:', error);
+        throw new Error('Falha ao consultar banco de dados de alunos.');
+      }
+    }
+
+    // ==========================================================
+    // FIM DO MÉTODO PARA O ASSISTENTE GEMINI
+    // ==========================================================
 }
 
 module.exports = new StudentService();
