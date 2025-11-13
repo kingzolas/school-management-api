@@ -5,19 +5,28 @@ const Tutor = require('../models/tutor.model.js');
 const Class = require('../models/class.model.js');
 const Enrollment = require('../models/enrollment.model.js');
 const User = require('../models/user.model.js');
-const Horario = require('../models/horario.model.js'); // schedule model
+const Horario = require('../models/horario.model.js');
 const Subject = require('../models/subject.model.js');
-const Periodo = require('../models/periodo.model.js'); // substitui Term
+const Periodo = require('../models/periodo.model.js');
 const CargaHoraria = require('../models/cargaHoraria.model.js'); 
 const StaffProfile = require('../models/staffProfile.model.js'); 
-// O modelo SchoolYear deve ser obtido do Mongoose, não precisa de require direto aqui
-// const SchoolYear = require('../models/schoolYear.model.js'); 
-const mongoose = require('mongoose'); // Necessário para acessar modelos compilados
+const mongoose = require('mongoose'); 
+const Invoice = require('../models/invoice.model.js');
 
-
-// Acesso aos modelos compilados (Para evitar OverwriteModelError se não for importado)
+// Acesso aos modelos compilados
 const SchoolYear = mongoose.models.SchoolYear || mongoose.model('SchoolYear'); 
 
+// ==========================================================
+// CONFIGURAÇÃO DE RESILIÊNCIA (MODELOS E RETRY)
+// ==========================================================
+// Ordem de prioridade: Padrão -> Mais Leve -> Mais Potente
+const MODEL_PRIORITY = [
+    'gemini-2.5-flash',      // 1º: Padrão (Equilibrado)
+    'gemini-2.5-flash-lite', // 2º: Fallback Rápido (Se o Flash estiver cheio)
+    'gemini-2.5-pro'         // 3º: Fallback Robusto (Último recurso)
+];
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // ==========================================================
 // 1. "MANUAL DE INSTRUÇÕES"
@@ -38,66 +47,88 @@ Seu objetivo é responder perguntas sobre alunos, turmas, professores, disciplin
 9. Se envolver detalhes de UM professor (salário, contrato, cargo, telefone, e-mail, habilitações), use 'getTeacherInfo'.
 10. Seja breve, direto e informativo, mas não omita informações que possam levar a uma resposta mais rica.
 11. A data atual é ${new Date().toLocaleDateString('pt-BR')}.
+12. Se a ferramenta 'getStudentFinancialInfo' retornar 'actionType': 'RENDER_INVOICE_CARD', sua resposta textual deve ser curta (ex: "Aqui está a fatura solicitada:") e OBRIGATORIAMENTE você deve incluir no final da resposta uma tag oculta com o JSON da fatura no formato: 
+:::INVOICE_JSON:::{...dados_da_fatura_aqui}:::INVOICE_JSON:::
+Isso é fundamental para o aplicativo exibir o QR Code.
+13. [CRÍTICO] Ao incluir o JSON da fatura na tag oculta, você deve gerar um **JSON VÁLIDO RFC 8259**. 
+   - Use **ASPAS DUPLAS** (") para todas as chaves e valores de string. Ex: {"key": "value"}
+   - NÃO USE aspas simples.
+   - O formato final deve ser: :::INVOICE_JSON:::{"_id": "...", "value": 100}:::INVOICE_JSON:::
 `;
 
 // ==========================================================
-// 2. FERRAMENTAS (declarações para o model gerar chamadas)
+// 2. FERRAMENTAS
 // ==========================================================
 const tools = [
- {
-  functionDeclarations: [
-   {
-    name: 'getStudentInfo',
-    description: "Obtém informações detalhadas de um aluno (data de aniversário, idade, tutores, matrícula/ turma, endereço, saúde).",
-    parameters: {
-     type: 'object',
-     properties: { name: { type: 'string' } },
-     required: ['name'],
-    },
-   },
-   {
-    name: 'getStudentAcademicPerformance',
-    description: "Busca informações sobre notas e desempenho acadêmico de um aluno em um ano letivo específico. Usada para descobrir a menor nota, resultados finais de matérias, etc.",
-    parameters: {
-     type: 'object',
-     properties: {
-      name: { type: 'string' },
-      schoolYear: { type: 'number', description: "Opcional. O ano letivo para analisar (Ex: 2024). Se omitido, use o ano atual." },
-     },
-     required: ['name'],
-    },
-   },
-   {
-    name: 'findStudents',
-    description: "Busca alunos com base em filtros gerais como nome ou status.",
-    parameters: {
-     type: 'object',
-     properties: {
-      name: { type: 'string' },
-      className: { type: 'string' },
-      isActive: { type: 'boolean' },
-     },
-    },
-   },
-   {
-    name: 'analyzeSchoolData',
-    description: "Faz análises quantitativas simples, usando o poder de agregação do banco de dados (Ex: contagem por bairro, gênero, raça).",
-    parameters: {
-     type: 'object',
-     properties: {
-      neighborhood: { type: 'string' },
-      className: { type: 'string' },
-      status: { type: 'string' },
-      shift: { type: 'string' },
-      hasAllergy: { type: 'boolean' },
-      hasDisability: { type: 'boolean' },
-      gender: { type: 'string' },
-      analysisType: { type: 'string', enum: ['aniversario', 'raça', 'gênero'] }, 
-      startMonth: { type: 'number', description: "Mês inicial (1-12) para análise de aniversário." },
-      endMonth: { type: 'number', description: "Mês final (1-12) para análise de aniversário." },
-     },
-    },
-   },
+ {
+  functionDeclarations: [
+    {
+      name: 'getStudentFinancialInfo',
+      description: "Busca informações financeiras, faturas em atraso, faturas pagas ou dados para pagamento (QR Code) de um aluno. Permite filtrar por mês/ano.",
+      parameters: {
+        type: 'object',
+        properties: {
+          studentName: { type: 'string' },
+          month: { type: 'number', description: "Mês numérico (1-12). Opcional." },
+          year: { type: 'number', description: "Ano (ex: 2024). Opcional." },
+          status: { type: 'string', enum: ['pending', 'paid', 'overdue', 'canceled', 'all'], description: "Filtro de status." },
+          intent: { type: 'string', enum: ['consult', 'payment_code'], description: "Se a intenção é apenas saber o status ('consult') ou obter o código PIX ('payment_code')." }
+        },
+        required: ['studentName']
+      },
+    },
+   {
+    name: 'getStudentInfo',
+    description: "Obtém informações detalhadas de um aluno (data de aniversário, idade, tutores, matrícula/ turma, endereço, saúde).",
+    parameters: {
+     type: 'object',
+     properties: { name: { type: 'string' } },
+     required: ['name'],
+    },
+   },
+   {
+    name: 'getStudentAcademicPerformance',
+    description: "Busca informações sobre notas e desempenho acadêmico de um aluno em um ano letivo específico. Usada para descobrir a menor nota, resultados finais de matérias, etc.",
+    parameters: {
+     type: 'object',
+     properties: {
+      name: { type: 'string' },
+      schoolYear: { type: 'number', description: "Opcional. O ano letivo para analisar (Ex: 2024). Se omitido, use o ano atual." },
+     },
+     required: ['name'],
+    },
+   },
+   {
+    name: 'findStudents',
+    description: "Busca alunos com base em filtros gerais como nome ou status.",
+    parameters: {
+     type: 'object',
+     properties: {
+      name: { type: 'string' },
+      className: { type: 'string' },
+      isActive: { type: 'boolean' },
+     },
+    },
+   },
+   {
+    name: 'analyzeSchoolData',
+    description: "Faz análises quantitativas simples, usando o poder de agregação do banco de dados (Ex: contagem por bairro, gênero, raça).",
+    parameters: {
+     type: 'object',
+     properties: {
+      neighborhood: { type: 'string' },
+      className: { type: 'string' },
+      status: { type: 'string' },
+      shift: { type: 'string' },
+      hasAllergy: { type: 'boolean' },
+      hasDisability: { type: 'boolean' },
+      gender: { type: 'string' },
+      analysisType: { type: 'string', enum: ['aniversario', 'raça', 'gênero'] }, 
+      startMonth: { type: 'number', description: "Mês inicial (1-12) para análise de aniversário." },
+      endMonth: { type: 'number', description: "Mês final (1-12) para análise de aniversário." },
+     },
+    },
+   },
     {
         name: 'analyzeStudentData',
         description: "Coleta dados brutos de alunos para permitir à IA realizar cálculos estatísticos complexos, como cálculo de percentual por idade, ou média de notas.",
@@ -135,19 +166,19 @@ const tools = [
             },
         },
     },
-   {
-    name: 'getTeacherInfo',
-    description: "Obtém informações detalhadas de um professor ou funcionário (cargo, contrato, salário, telefone, e-mail, habilitações).",
-    parameters: {
-     type: 'object',
-     properties: {
-      name: { type: 'string' },
-     },
-     required: ['name'],
-    },
-   },
-  ],
- },
+   {
+    name: 'getTeacherInfo',
+    description: "Obtém informações detalhadas de um professor ou funcionário (cargo, contrato, salário, telefone, e-mail, habilitações).",
+    parameters: {
+     type: 'object',
+     properties: {
+      name: { type: 'string' },
+     },
+     required: ['name'],
+    },
+   },
+  ],
+ },
 ];
 
 const dayMap = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
@@ -156,9 +187,7 @@ const dayMapToNumber = {
 };
 const monthNames = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
-/**
- * Função utilitária para calcular a idade a partir da data de nascimento.
- */
+// Funções Utilitárias
 function calculateAge(birthDate) {
     if (!birthDate) return null;
     const birth = new Date(birthDate);
@@ -169,19 +198,13 @@ function calculateAge(birthDate) {
     return idade;
 }
 
-/**
- * Função utilitária para converter notas flexíveis em um valor numérico para comparação.
- */
 function parseGradeToNumber(gradeString) {
-    if (!gradeString || gradeString.toLowerCase() === 'apto') return null;
-    const numericPart = gradeString.replace(',', '.').replace(/[^\d.]/g, '');
-    const number = parseFloat(numericPart);
-    return isNaN(number) ? null : number;
+    if (!gradeString || gradeString.toLowerCase() === 'apto') return null;
+    const numericPart = gradeString.replace(',', '.').replace(/[^\d.]/g, '');
+    const number = parseFloat(numericPart);
+    return isNaN(number) ? null : number;
 }
 
-/**
- * Função utilitária para calcular a diferença em minutos entre HH:MM.
- */
 function timeToMinutes(timeStr) {
     const [h, m] = timeStr.split(':').map(Number);
     return h * 60 + m;
@@ -190,7 +213,6 @@ function timeToMinutes(timeStr) {
 function calculateDurationInMinutes(startTime, endTime) {
     const startMins = timeToMinutes(startTime);
     const endMins = timeToMinutes(endTime);
-    
     return endMins - startMins; 
 }
 
@@ -199,181 +221,267 @@ function calculateDurationInMinutes(startTime, endTime) {
 // 3. IMPLEMENTAÇÕES DAS FERRAMENTAS
 // ==========================================================
 const toolImplementations = {
- findStudents: async (args) => {
-  console.log('[ASSISTANT] IA escolheu: findStudents com args:', JSON.stringify(args));
-  const filter = {};
-  if (args.name) filter.fullName = { $regex: new RegExp(args.name, 'i') };
-  if (args.isActive !== undefined) filter.isActive = args.isActive;
+  getStudentFinancialInfo: async ({ studentName, month, year, status, intent }) => {
+    console.log(`[ASSISTANT] IA escolheu: getStudentFinancialInfo para ${studentName} (Intent: ${intent})`);
 
-  try {
-   const students = await Student.find(filter)
-    .limit(30)
-    .select('fullName isActive classId address')
-    .lean();
+    try {
+      const student = await Student.findOne({ fullName: new RegExp(studentName, 'i') }).select('_id fullName').lean();
+      if (!student) return { error: `Aluno '${studentName}' não encontrado.` };
 
-   const totalCount = await Student.countDocuments(filter);
-   return { totalCount, resultsSample: students };
-  } catch (err) {
-   console.error('[ASSISTANT] Erro em findStudents:', err);
-   return { error: err.message };
-  }
- },
+      const query = { student: student._id };
 
- getStudentInfo: async ({ name }) => {
-  console.log(`[ASSISTANT] IA escolheu: getStudentInfo para '${name}'`);
-  try {
-   const student = await Student.findOne({ fullName: { $regex: new RegExp(name, 'i') } })
-    .populate({ path: 'tutors.tutorId', model: 'Tutor', select: 'fullName phoneNumber email' })
-    .lean();
+      if (month || year) {
+        const targetYear = year || new Date().getFullYear();
+        let startDate, endDate;
 
-   if (!student) return { error: `Aluno '${name}' não encontrado.` };
+        if (month) {
+           startDate = new Date(targetYear, month - 1, 1);
+           endDate = new Date(targetYear, month, 0, 23, 59, 59);
+        } else {
+           startDate = new Date(targetYear, 0, 1);
+           endDate = new Date(targetYear, 11, 31, 23, 59, 59);
+        }
+        query.dueDate = { $gte: startDate, $lte: endDate };
+      }
 
-   const enrollment = await Enrollment.findOne({ student: student._id, status: 'Ativa' })
-    .populate({ path: 'class', model: 'Class', select: 'name grade level shift schoolYear status' })
-    .lean();
+      if (status && status !== 'all') {
+        if (status === 'overdue') {
+           query.status = 'pending';
+           query.dueDate = { $lt: new Date() };
+        } else {
+           query.status = status;
+        }
+      }
+
+      const invoices = await Invoice.find(query)
+        .populate('tutor', 'fullName')
+        .populate('student', 'fullName')
+        .sort({ dueDate: 1 })
+        .lean();
+
+      if (!invoices || invoices.length === 0) {
+        return { message: `Nenhuma fatura encontrada para ${student.fullName} com os critérios informados.` };
+      }
+
+      // Intenção PAGAMENTO
+        if (intent === 'payment_code') {
+           const targetInvoice = invoices.find(inv => inv.status === 'pending');
+           if (!targetInvoice) {
+             return { message: `O aluno ${student.fullName} não possui faturas pendentes para o período solicitado.` };
+           }
+
+           const lightInvoice = { ...targetInvoice };
+           lightInvoice.mp_pix_qr_base64 = ""; 
+
+           const safeJsonString = JSON.stringify(lightInvoice);
+
+           return {
+             message: `Retorne EXATAMENTE esta resposta para o usuário: "Aqui está a fatura de ${student.fullName}:" seguido da tag oculta abaixo.`,
+             hidden_payload: `:::INVOICE_JSON:::${safeJsonString}:::INVOICE_JSON:::`,
+             instruction: "NÃO altere o conteúdo dentro das tags :::INVOICE_JSON:::."
+           };
+        }
+      
+      // Intenção CONSULTA
+      const summary = {
+        total: invoices.length,
+        totalValue: invoices.reduce((acc, cur) => acc + cur.value, 0),
+        statusBreakdown: {
+          paid: invoices.filter(i => i.status === 'paid').length,
+          pending: invoices.filter(i => i.status === 'pending' && new Date(i.dueDate) >= new Date()).length,
+          overdue: invoices.filter(i => i.status === 'pending' && new Date(i.dueDate) < new Date()).length,
+          canceled: invoices.filter(i => i.status === 'canceled').length,
+        },
+        invoices: invoices.map(i => ({
+           vencimento: new Date(i.dueDate).toLocaleDateString(),
+           valor: (i.value / 100).toFixed(2),
+           status: i.status
+        }))
+      };
+
+      return {
+         message: `Resumo financeiro de ${student.fullName}: ${summary.statusBreakdown.overdue} faturas em atraso, ${summary.statusBreakdown.paid} pagas.`,
+         data: summary
+      };
+
+    } catch (err) {
+      console.error('[ASSISTANT] Erro financeiro:', err);
+      return { error: err.message };
+    }
+  },
+
+ findStudents: async (args) => {
+  console.log('[ASSISTANT] IA escolheu: findStudents com args:', JSON.stringify(args));
+  const filter = {};
+  if (args.name) filter.fullName = { $regex: new RegExp(args.name, 'i') };
+  if (args.isActive !== undefined) filter.isActive = args.isActive;
+
+  try {
+   const students = await Student.find(filter)
+    .limit(30)
+    .select('fullName isActive classId address')
+    .lean();
+
+   const totalCount = await Student.countDocuments(filter);
+   return { totalCount, resultsSample: students };
+  } catch (err) {
+   console.error('[ASSISTANT] Erro em findStudents:', err);
+   return { error: err.message };
+  }
+ },
+
+ getStudentInfo: async ({ name }) => {
+  console.log(`[ASSISTANT] IA escolheu: getStudentInfo para '${name}'`);
+  try {
+   const student = await Student.findOne({ fullName: { $regex: new RegExp(name, 'i') } })
+    .populate({ path: 'tutors.tutorId', model: 'Tutor', select: 'fullName phoneNumber email' })
+    .lean();
+
+   if (!student) return { error: `Aluno '${name}' não encontrado.` };
+
+   const enrollment = await Enrollment.findOne({ student: student._id, status: 'Ativa' })
+    .populate({ path: 'class', model: 'Class', select: 'name grade level shift schoolYear status' })
+    .lean();
 
     const idade = calculateAge(student.birthDate);
 
-   const tutores = (student.tutors || [])
-    .filter(t => t.tutorId)
-    .map(t => ({
-     nome: t.tutorId.fullName,
-     parentesco: t.relationship,
-     telefone: t.tutorId.phoneNumber || null,
-     email: t.tutorId.email || null,
-    }));
+   const tutores = (student.tutors || [])
+    .filter(t => t.tutorId)
+    .map(t => ({
+     nome: t.tutorId.fullName,
+     parentesco: t.relationship,
+     telefone: t.tutorId.phoneNumber || null,
+     email: t.tutorId.email || null,
+    }));
 
-   const info = {
-    nome: student.fullName,
-    idade,
-        dataNascimento: student.birthDate 
-            ? new Date(student.birthDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) 
-            : null,
-    turma: enrollment
-     ? {
-       nome: enrollment.class?.name || null,
-       serie: enrollment.class?.grade || null,
-       nivel: enrollment.class?.level || null,
-       turno: enrollment.class?.shift || null,
-       anoLetivo: enrollment.academicYear || null,
-       statusMatricula: enrollment.status || null,
-      }
-     : null,
-    tutores,
-    endereco: student.address || null,
-    saude: student.healthInfo
-     ? {
-       alergia: !!student.healthInfo.hasAllergy,
-       deficiencia: !!student.healthInfo.hasDisability,
-      }
-     : null,
-    isActive: !!student.isActive,
-   };
+   const info = {
+    nome: student.fullName,
+    idade,
+        dataNascimento: student.birthDate 
+            ? new Date(student.birthDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) 
+            : null,
+    turma: enrollment
+     ? {
+       nome: enrollment.class?.name || null,
+       serie: enrollment.class?.grade || null,
+       nivel: enrollment.class?.level || null,
+       turno: enrollment.class?.shift || null,
+       anoLetivo: enrollment.academicYear || null,
+       statusMatricula: enrollment.status || null,
+      }
+     : null,
+    tutores,
+    endereco: student.address || null,
+    saude: student.healthInfo
+     ? {
+       alergia: !!student.healthInfo.hasAllergy,
+       deficiencia: !!student.healthInfo.hasDisability,
+      }
+     : null,
+    isActive: !!student.isActive,
+   };
 
-   return info;
-  } catch (err) {
-   console.error('[ASSISTANT] Erro em getStudentInfo:', err);
-   return { error: `Erro ao obter informações de ${name}: ${err.message}` };
-  }
- },
+   return info;
+  } catch (err) {
+   console.error('[ASSISTANT] Erro em getStudentInfo:', err);
+   return { error: `Erro ao obter informações de ${name}: ${err.message}` };
+  }
+ },
 
- getStudentAcademicPerformance: async ({ name, schoolYear = new Date().getFullYear() }) => {
-  console.log(`[ASSISTANT] IA escolheu: getStudentAcademicPerformance para '${name}' no ano ${schoolYear}`);
-  try {
-   const student = await Student.findOne({ fullName: { $regex: new RegExp(name, 'i') } })
-    .select('fullName academicHistory')
-    .lean();
+ getStudentAcademicPerformance: async ({ name, schoolYear = new Date().getFullYear() }) => {
+  console.log(`[ASSISTANT] IA escolheu: getStudentAcademicPerformance para '${name}' no ano ${schoolYear}`);
+  try {
+   const student = await Student.findOne({ fullName: { $regex: new RegExp(name, 'i') } })
+    .select('fullName academicHistory')
+    .lean();
 
-   if (!student) return { error: `Aluno(a) '${name}' não encontrado(a).` };
+   if (!student) return { error: `Aluno(a) '${name}' não encontrado(a).` };
 
-   const record = student.academicHistory.find(r => r.schoolYear === schoolYear);
+   const record = student.academicHistory.find(r => r.schoolYear === schoolYear);
 
-   if (!record) {
-    return { 
-     message: `Não há registro acadêmico para ${student.fullName} no ano letivo de ${schoolYear}.`,
-     studentName: student.fullName 
-    };
-   }
+   if (!record) {
+    return { 
+      message: `Não há registro acadêmico para ${student.fullName} no ano letivo de ${schoolYear}.`,
+      studentName: student.fullName 
+    };
+   }
 
-   let lowestGrade = null;
-   let lowestSubject = null;
-   let lowestNumericValue = Infinity;
+   let lowestGrade = null;
+   let lowestSubject = null;
+   let lowestNumericValue = Infinity;
 
-   record.grades.forEach(grade => {
-    const numericValue = parseGradeToNumber(grade.gradeValue);
-        
-    if (numericValue !== null && numericValue < lowestNumericValue) {
-     lowestNumericValue = numericValue;
-     lowestGrade = grade.gradeValue;
-     lowestSubject = grade.subjectName;
-    } else if (lowestGrade === null && numericValue === null) {
-            lowestGrade = grade.gradeValue;
-            lowestSubject = grade.subjectName;
-        }
-   });
+   record.grades.forEach(grade => {
+    const numericValue = parseGradeToNumber(grade.gradeValue);
+        
+    if (numericValue !== null && numericValue < lowestNumericValue) {
+     lowestNumericValue = numericValue;
+     lowestGrade = grade.gradeValue;
+     lowestSubject = grade.subjectName;
+    } else if (lowestGrade === null && numericValue === null) {
+            lowestGrade = grade.gradeValue;
+            lowestSubject = grade.subjectName;
+        }
+   });
 
-   return {
-    studentName: student.fullName,
-    schoolYear: record.schoolYear,
-    gradeLevel: record.gradeLevel,
-    finalResult: record.finalResult,
-    totalSubjects: record.grades.length,
-    lowestPerformance: lowestGrade 
-     ? {
-       subject: lowestSubject,
-       grade: lowestGrade,
-       numericGrade: lowestNumericValue === Infinity ? null : lowestNumericValue
-      }
-     : { subject: 'Não informado', grade: 'Não informado', numericGrade: null },
-    fullGrades: record.grades.map(g => ({ subject: g.subjectName, grade: g.gradeValue }))
-   };
+   return {
+    studentName: student.fullName,
+    schoolYear: record.schoolYear,
+    gradeLevel: record.gradeLevel,
+    finalResult: record.finalResult,
+    totalSubjects: record.grades.length,
+    lowestPerformance: lowestGrade 
+     ? {
+       subject: lowestSubject,
+       grade: lowestGrade,
+       numericGrade: lowestNumericValue === Infinity ? null : lowestNumericValue
+      }
+     : { subject: 'Não informado', grade: 'Não informado', numericGrade: null },
+    fullGrades: record.grades.map(g => ({ subject: g.subjectName, grade: g.gradeValue }))
+   };
 
-  } catch (err) {
-   console.error('[ASSISTANT] Erro em getStudentAcademicPerformance:', err);
-   return { error: `Erro ao buscar desempenho acadêmico: ${err.message}` };
-  }
- },
+  } catch (err) {
+   console.error('[ASSISTANT] Erro em getStudentAcademicPerformance:', err);
+   return { error: `Erro ao buscar desempenho acadêmico: ${err.message}` };
+  }
+ },
 
- analyzeSchoolData: async (args) => {
-  console.log('[ASSISTANT] IA escolheu: analyzeSchoolData com args:', JSON.stringify(args));
-  const { neighborhood, className, status, shift, hasAllergy, hasDisability, gender, analysisType, startMonth, endMonth } = args || {};
+ analyzeSchoolData: async (args) => {
+  console.log('[ASSISTANT] IA escolheu: analyzeSchoolData com args:', JSON.stringify(args));
+  const { neighborhood, className, status, shift, hasAllergy, hasDisability, gender, analysisType, startMonth, endMonth } = args || {};
 
-    // ... (Filtros e lógica de agrupamento simples) ...
-    const studentFilter = {};
-    const enrollmentFilter = {};
+    const studentFilter = {};
+    const enrollmentFilter = {};
 
-    const genderMap = {
-    masculino: 'Masculino',
-    homem: 'Masculino',
-    meninos: 'Masculino',
-    feminino: 'Feminino',
-    mulher: 'Feminino',
-    meninas: 'Feminino',
-    outro: 'Outro',
-    outros: 'Outro',
-    };
-    const normalizedGender = gender ? (genderMap[gender.toLowerCase()] || gender) : null;
+    const genderMap = {
+    masculino: 'Masculino',
+    homem: 'Masculino',
+    meninos: 'Masculino',
+    feminino: 'Feminino',
+    mulher: 'Feminino',
+    meninas: 'Feminino',
+    outro: 'Outro',
+    outros: 'Outro',
+    };
+    const normalizedGender = gender ? (genderMap[gender.toLowerCase()] || gender) : null;
 
-    if (neighborhood) studentFilter['address.neighborhood'] = new RegExp(neighborhood, 'i');
-    if (normalizedGender) studentFilter.gender = normalizedGender;
-    if (hasAllergy !== undefined) studentFilter['healthInfo.hasAllergy'] = hasAllergy;
-    if (hasDisability !== undefined) studentFilter['healthInfo.hasDisability'] = hasDisability;
-    if (status) enrollmentFilter.status = status;
-    if (shift) {
-        const classes = await Class.find({ shift: new RegExp(shift, 'i') }).select('_id').lean();
-        const classIds = classes.map(c => c._id);
-        enrollmentFilter.class = { $in: classIds };
-    }
-    if (className) {
-        const turma = await Class.findOne({ name: new RegExp(className, 'i') }).lean();
-        if (!turma) return { message: `Turma '${className}' não encontrada.` };
-        enrollmentFilter.class = turma._id;
-    }
+    if (neighborhood) studentFilter['address.neighborhood'] = new RegExp(neighborhood, 'i');
+    if (normalizedGender) studentFilter.gender = normalizedGender;
+    if (hasAllergy !== undefined) studentFilter['healthInfo.hasAllergy'] = hasAllergy;
+    if (hasDisability !== undefined) studentFilter['healthInfo.hasDisability'] = hasDisability;
+    if (status) enrollmentFilter.status = status;
+    if (shift) {
+        const classes = await Class.find({ shift: new RegExp(shift, 'i') }).select('_id').lean();
+        const classIds = classes.map(c => c._id);
+        enrollmentFilter.class = { $in: classIds };
+    }
+    if (className) {
+        const turma = await Class.findOne({ name: new RegExp(className, 'i') }).lean();
+        if (!turma) return { message: `Turma '${className}' não encontrada.` };
+        enrollmentFilter.class = turma._id;
+    }
 
 
-    // 2. LÓGICA DE ANÁLISE CUSTOMIZADA
-    
-    // [LÓGICA PARA GÊNERO]
+    // LÓGICA DE ANÁLISE CUSTOMIZADA
     if (analysisType === 'gênero') {
         let matchFilter = { ...studentFilter };
         if (Object.keys(enrollmentFilter).length > 0) {
@@ -403,117 +511,112 @@ const toolImplementations = {
         };
     }
     
-    if (analysisType === 'aniversario') {
-        if (!startMonth || !endMonth || startMonth < 1 || endMonth > 12) {
-            return { error: "Para análise de aniversário, 'startMonth' e 'endMonth' válidos (1-12) são obrigatórios." };
-        }
-        let studentsToAnalyze = await Student.find(studentFilter).select('_id birthDate').lean();
-        if (Object.keys(enrollmentFilter).length > 0) {
-            const enrollments = await Enrollment.find(enrollmentFilter).select('student').lean();
-            const enrolledStudentIds = enrollments.map(e => e.student.toString());
-            studentsToAnalyze = studentsToAnalyze.filter(s => enrolledStudentIds.includes(s._id.toString()));
-        }
+    if (analysisType === 'aniversario') {
+        if (!startMonth || !endMonth || startMonth < 1 || endMonth > 12) {
+            return { error: "Para análise de aniversário, 'startMonth' e 'endMonth' válidos (1-12) são obrigatórios." };
+        }
+        let studentsToAnalyze = await Student.find(studentFilter).select('_id birthDate').lean();
+        if (Object.keys(enrollmentFilter).length > 0) {
+            const enrollments = await Enrollment.find(enrollmentFilter).select('student').lean();
+            const enrolledStudentIds = enrollments.map(e => e.student.toString());
+            studentsToAnalyze = studentsToAnalyze.filter(s => enrolledStudentIds.includes(s._id.toString()));
+        }
 
-        let count = 0;
-        const targetMonths = [];
-        let current = startMonth;
-        while (true) {
-            targetMonths.push(current);
-            if (current === endMonth) break;
-            current = (current % 12) + 1;
-        }
-        
-        studentsToAnalyze.forEach(student => {
-            if (student.birthDate) {
-                const month = new Date(student.birthDate).getUTCMonth() + 1; 
-                if (targetMonths.includes(month)) {
-                    count++;
-                }
-            }
-        });
+        let count = 0;
+        const targetMonths = [];
+        let current = startMonth;
+        while (true) {
+            targetMonths.push(current);
+            if (current === endMonth) break;
+            current = (current % 12) + 1;
+        }
+        
+        studentsToAnalyze.forEach(student => {
+            if (student.birthDate) {
+                const month = new Date(student.birthDate).getUTCMonth() + 1; 
+                if (targetMonths.includes(month)) {
+                    count++;
+                }
+            }
+        });
 
-        const startMonthName = monthNames[startMonth - 1];
-        const endMonthName = monthNames[endMonth - 1];
+        const startMonthName = monthNames[startMonth - 1];
+        const endMonthName = monthNames[endMonth - 1];
 
-        return { 
-            message: `Foram encontrados ${count} aluno(s) que fazem aniversário entre ${startMonthName} e ${endMonthName}.`, 
-            total: count,
-            analise: 'Aniversário',
-            periodo: `${startMonthName} a ${endMonthName}`
-        };
-    }
-    
-    if (analysisType === 'raça') {
-        const raceGroup = await Student.aggregate([
-            { $match: studentFilter },
-            { $group: { _id: '$race', total: { $sum: 1 } } }
-        ]);
+        return { 
+            message: `Foram encontrados ${count} aluno(s) que fazem aniversário entre ${startMonthName} e ${endMonthName}.`, 
+            total: count,
+            analise: 'Aniversário',
+            periodo: `${startMonthName} a ${endMonthName}`
+        };
+    }
+    
+    if (analysisType === 'raça') {
+        const raceGroup = await Student.aggregate([
+            { $match: studentFilter },
+            { $group: { _id: '$race', total: { $sum: 1 } } }
+        ]);
 
-        let totalStudents = 0;
-        const counts = {};
-        
-        raceGroup.forEach(item => {
-            counts[item._id || 'Não Informada'] = item.total;
-            totalStudents += item.total;
-        });
+        let totalStudents = 0;
+        const counts = {};
+        
+        raceGroup.forEach(item => {
+            counts[item._id || 'Não Informada'] = item.total;
+            totalStudents += item.total;
+        });
 
-        if (Object.keys(enrollmentFilter).length > 0) {
-            const enrolledStudents = await Enrollment.find(enrollmentFilter).select('student').lean();
-            const enrolledStudentIds = enrolledStudents.map(e => e.student);
-            
-            const studentsWithRace = await Student.find({
-                _id: { $in: enrolledStudentIds },
-                ...studentFilter
-            }).select('race').lean();
-            
-            const filteredRaceCounts = {};
-            let filteredTotal = 0;
-            
-            studentsWithRace.forEach(student => {
-                const raceKey = student.race || 'Não Informada';
-                filteredRaceCounts[raceKey] = (filteredRaceCounts[raceKey] || 0) + 1;
-                filteredTotal++;
-            });
-            
-            return {
-                message: `Análise racial para ${filteredTotal} aluno(s) filtrado(s):`,
-                total: filteredTotal,
-                analise: 'Raça',
-                counts: filteredRaceCounts
-            };
+        if (Object.keys(enrollmentFilter).length > 0) {
+            const enrolledStudents = await Enrollment.find(enrollmentFilter).select('student').lean();
+            const enrolledStudentIds = enrolledStudents.map(e => e.student);
+            
+            const studentsWithRace = await Student.find({
+                _id: { $in: enrolledStudentIds },
+                ...studentFilter
+            }).select('race').lean();
+            
+            const filteredRaceCounts = {};
+            let filteredTotal = 0;
+            
+            studentsWithRace.forEach(student => {
+                const raceKey = student.race || 'Não Informada';
+                filteredRaceCounts[raceKey] = (filteredRaceCounts[raceKey] || 0) + 1;
+                filteredTotal++;
+            });
+            
+            return {
+                message: `Análise racial para ${filteredTotal} aluno(s) filtrado(s):`,
+                total: filteredTotal,
+                analise: 'Raça',
+                counts: filteredRaceCounts
+            };
 
-        }
+        }
 
-        return {
-            message: `Análise racial de todos os alunos (${totalStudents} no total):`,
-            total: totalStudents,
-            analise: 'Raça',
-            counts: counts
-        };
-    }
+        return {
+            message: `Análise racial de todos os alunos (${totalStudents} no total):`,
+            total: totalStudents,
+            analise: 'Raça',
+            counts: counts
+        };
+    }
 
+    // LÓGICA DE CONTAGEM SIMPLES (Fallback)
+    if (Object.keys(enrollmentFilter).length === 0) {
+        const count = await Student.countDocuments(studentFilter);
+        return { message: `Foram encontrados ${count} aluno(s) com os filtros aplicados.`, total: count };
+    } else {
+        const alunos = await Student.find(studentFilter).select('_id').lean();
+        const alunoIds = alunos.map(a => a._id);
 
-    // 3. LÓGICA DE CONTAGEM SIMPLES (Fallback)
-    
-    if (Object.keys(enrollmentFilter).length === 0) {
-        const count = await Student.countDocuments(studentFilter);
-        return { message: `Foram encontrados ${count} aluno(s) com os filtros aplicados.`, total: count };
-    } else {
-        const alunos = await Student.find(studentFilter).select('_id').lean();
-        const alunoIds = alunos.map(a => a._id);
+        const count = await Enrollment.countDocuments({
+            student: { $in: alunoIds },
+            ...enrollmentFilter,
+        });
+        return { message: `Foram encontrados ${count} aluno(s) de acordo com os filtros aplicados.`, total: count };
+    }
+ },
 
-        const count = await Enrollment.countDocuments({
-            student: { $in: alunoIds },
-            ...enrollmentFilter,
-        });
-        return { message: `Foram encontrados ${count} aluno(s) de acordo com os filtros aplicados.`, total: count };
-    }
- },
-
-// ------------------------------------------------------
-// analyzeStudentData - IMPLEMENTAÇÃO PARA IDADE/ESTATÍSTICA
-// ------------------------------------------------------
-analyzeStudentData: async (args) => {
+ analyzeStudentData: async (args) => {
     console.log('[ASSISTANT] IA escolheu: analyzeStudentData com args:', JSON.stringify(args));
     const { targetAnalysis, className } = args;
 
@@ -574,9 +677,6 @@ analyzeStudentData: async (args) => {
     }
 },
 
-// ------------------------------------------------------
-// getCurriculumInfo - IMPLEMENTAÇÃO DO BALANÇO (PLANEJADO VS AGENDADO) - [AJUSTADO AQUI]
-// ------------------------------------------------------
 getCurriculumInfo: async ({ className, subjectName, periodoName }) => {
     console.log(`[ASSISTANT] IA escolheu: getCurriculumInfo para Turma: ${className}, Disciplina: ${subjectName}, Período: ${periodoName}`);
     
@@ -614,20 +714,17 @@ getCurriculumInfo: async ({ className, subjectName, periodoName }) => {
             subjectId: filter.subjectId,
         };
         
-        // Se periodoObj foi encontrado, adiciona ao filtro
         if (periodoObj) {
             loadFilter.periodoId = periodoObj._id;
-            filter.termId = periodoObj._id; // Alinha o filtro para o Horario
+            filter.termId = periodoObj._id; 
         }
         
-        // Se o usuário pediu a carga horária total (sem período específico, ou com período), buscamos:
         const loads = await CargaHoraria.find(loadFilter)
             .populate('subjectId', 'name')
             .populate('classId', 'name')
             .populate('periodoId', 'titulo')
             .lean();
 
-        // Se a busca era específica (disciplina e/ou turma) e não encontrou nada, reporta o erro
         if (subjectName && className && loads.length === 0) {
              const periodMsg = periodoObj ? ` no período ${periodoObj.titulo}` : ` em **nenhum período**.`;
              return { message: `Não foram encontradas horas planejadas (Carga Horária) para a disciplina ${subjectName} na turma ${className}${periodMsg}` };
@@ -655,7 +752,6 @@ getCurriculumInfo: async ({ className, subjectName, periodoName }) => {
         let scheduledHours = 0;
         let balance = null;
         
-        // O Balanço só é possível se for ESPECÍFICO (Turma, Disciplina e Período devem ser conhecidos)
         if (filter.classId && filter.subjectId && filter.termId) {
             const scheduleFilter = {
                 classId: filter.classId,
@@ -684,13 +780,11 @@ getCurriculumInfo: async ({ className, subjectName, periodoName }) => {
                 diferenca: parseFloat(balance), 
                 status: balance > 0 ? "Excesso Agendado" : balance < 0 ? "Abaixo do Planejado" : "Balanceado"
             } : undefined,
-            // Retorna o valor específico se a pergunta era estritamente sobre a carga horária
             specificLoad: (subjectName && className) ? {
                  horasPlanejadas: totalTargetHours,
                  horasAgendadas: scheduledHours ? parseFloat(scheduledHours.toFixed(2)) : 0,
                  periodo: periodoObj ? periodoObj.titulo : 'Soma Total'
             } : undefined,
-            // Lista completa se a busca for geral
             fullLoads: !subjectName && !className ? loads.map(l => ({ 
                 disciplina: l.subjectId.name, 
                 turma: l.classId?.name, 
@@ -707,9 +801,6 @@ getCurriculumInfo: async ({ className, subjectName, periodoName }) => {
     }
 },
 
-// ------------------------------------------------------
-// getSchedule - IMPLEMENTAÇÃO UNIVERSAL DE HORÁRIOS
-// ------------------------------------------------------
 getSchedule: async ({ className, subjectName, teacherName, dayOfWeek }) => {
     console.log(`[ASSISTANT] IA escolheu: getSchedule para Turma: ${className}, Disciplina: ${subjectName}, Professor: ${teacherName}, Dia: ${dayOfWeek}`);
     
@@ -796,130 +887,167 @@ getSchedule: async ({ className, subjectName, teacherName, dayOfWeek }) => {
     }
 },
 
-
- // A função getTeacherSchedule original foi absorvida pelo getSchedule
- getTeacherSchedule: async ({ name }) => {
-    console.log(`[ASSISTANT] IA (Legado) redirecionou getTeacherSchedule para getSchedule com Professor: ${name}`);
-    return toolImplementations.getSchedule({ teacherName: name });
+ getTeacherSchedule: async ({ name }) => {
+   console.log(`[ASSISTANT] IA (Legado) redirecionou getTeacherSchedule para getSchedule com Professor: ${name}`);
+   return toolImplementations.getSchedule({ teacherName: name });
 },
 
 
- getTeacherInfo: async ({ name }) => {
-  console.log(`[ASSISTANT] IA escolheu: getTeacherInfo para '${name}'`);
-  try {
-   const user = await User.findOne({
-    fullName: new RegExp(name, 'i'),
-    status: 'Ativo'
-   }).populate({
-        path: 'staffProfiles',
-        model: 'StaffProfile',
-        populate: { 
-          path: 'enabledSubjects',
-          model: 'Subject',
-          select: 'name'
-        }
-      }).lean();
+ getTeacherInfo: async ({ name }) => {
+ console.log(`[ASSISTANT] IA escolheu: getTeacherInfo para '${name}'`);
+ try {
+   const user = await User.findOne({
+    fullName: new RegExp(name, 'i'),
+    status: 'Ativo'
+   }).populate({
+       path: 'staffProfiles',
+       model: 'StaffProfile',
+       populate: { 
+          path: 'enabledSubjects',
+          model: 'Subject',
+          select: 'name'
+        }
+      }).lean();
 
-   if (!user) {
-    return { error: `Usuário '${name}' não encontrado ou inativo.` };
-   }
+   if (!user) {
+    return { error: `Usuário '${name}' não encontrado ou inativo.` };
+   }
 
-      if (!user.staffProfiles || user.staffProfiles.length === 0) {
-        return { 
-          message: `${user.fullName} é um usuário, mas não possui um perfil de funcionário (StaffProfile) cadastrado. Informações de contato: E-mail: ${user.email}, Telefone: ${user.phoneNumber || 'Não Informado'}` 
-        };
-      }
-      
-      const profiles = user.staffProfiles.map(profile => ({
-        cargo: profile.mainRole,
-        vinculo: profile.employmentType,
-        modeloRemuneracao: profile.remunerationModel,
-        salario: profile.salaryAmount || null,
-        valorHora: profile.hourlyRate || null,
-        cargaHorariaSemanal: profile.weeklyWorkload || null,
-        dataAdmissao: profile.admissionDate ? new Date(profile.admissionDate).toLocaleDateString('pt-BR') : null,
-        formacao: profile.academicFormation || null,
-        niveisHabilitados: profile.enabledLevels || [],
-        disciplinasHabilitadas: (profile.enabledSubjects || []).map(sub => sub.name),
-      }));
+      if (!user.staffProfiles || user.staffProfiles.length === 0) {
+        return { 
+          message: `${user.fullName} é um usuário, mas não possui um perfil de funcionário (StaffProfile) cadastrado. Informações de contato: E-mail: ${user.email}, Telefone: ${user.phoneNumber || 'Não Informado'}` 
+        };
+      }
+      
+      const profiles = user.staffProfiles.map(profile => ({
+        cargo: profile.mainRole,
+        vinculo: profile.employmentType,
+        modeloRemuneracao: profile.remunerationModel,
+        salario: profile.salaryAmount || null,
+        valorHora: profile.hourlyRate || null,
+        cargaHorariaSemanal: profile.weeklyWorkload || null,
+        dataAdmissao: profile.admissionDate ? new Date(profile.admissionDate).toLocaleDateString('pt-BR') : null,
+        formacao: profile.academicFormation || null,
+        niveisHabilitados: profile.enabledLevels || [],
+        disciplinasHabilitadas: (profile.enabledSubjects || []).map(sub => sub.name),
+      }));
 
-   const info = {
-        nomeCompleto: user.fullName,
-        email: user.email,
-        telefone: user.phoneNumber, 
-        status: user.status,
-        perfis: profiles,
-      };
+   const info = {
+        nomeCompleto: user.fullName,
+        email: user.email,
+        telefone: user.phoneNumber, 
+        status: user.status,
+        perfis: profiles,
+      };
 
-   return info;
-  } catch (err) {
-   console.error('[ASSISTANT] Erro em getTeacherInfo:', err);
-   return { error: `Erro ao buscar informações do funcionário: ${err.message}` };
-  }
- },
+   return info;
+  } catch (err) {
+   console.error('[ASSISTANT] Erro em getTeacherInfo:', err);
+   return { error: `Erro ao buscar informações do funcionário: ${err.message}` };
+  }
+ },
 };
 
 // ==========================================================
-// 4. ORQUESTRADOR PRINCIPAL
+// 4. ORQUESTRADOR PRINCIPAL COM FALLBACK
 // ==========================================================
 class AssistantService {
- async generateResponse(prompt, history, userId) {
-  console.log(`[ASSISTANT] Pergunta: ${prompt}`);
+  async generateResponse(prompt, history, userId) {
+    let lastError = null;
 
-  const model = genAI.getGenerativeModel({
-   model: 'gemini-2.5-flash',
-   tools,
-   toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
-  });
+    // Loop de tentativas (Flash -> Flash Lite -> Pro)
+    for (const modelName of MODEL_PRIORITY) {
+      try {
+        console.log(`[ASSISTANT] Tentando gerar resposta com modelo: ${modelName}`);
 
-  const chat = model.startChat({
-   history: [
-    { role: 'user', parts: [{ text: systemInstructionText }] },
-    { role: 'model', parts: [{ text: 'Entendido. Estou pronto para ajudar no AcademyHub.' }] },
-    ...(history || []),
-   ],
-  });
+        // Inicializa o modelo específico desta iteração
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          tools,
+          toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+        });
 
-  try {
-   const result = await chat.sendMessage(prompt);
-   const candidate = result.response.candidates?.[0];
-   if (!candidate?.content?.parts) return 'Não entendi sua pergunta.';
+        const chat = model.startChat({
+          history: [
+            { role: 'user', parts: [{ text: systemInstructionText }] },
+            { role: 'model', parts: [{ text: 'Entendido. Estou pronto para ajudar no AcademyHub.' }] },
+            ...(history || []),
+          ],
+        });
 
-   const parts = candidate.content.parts;
-   const functionCalls = parts.filter(p => !!p.functionCall).map(p => p.functionCall);
+        const result = await chat.sendMessage(prompt);
+        const candidate = result.response.candidates?.[0];
+        
+        if (!candidate?.content?.parts) {
+           // Se a resposta for vazia mas não deu erro, pode ser um problema do modelo.
+           // Vamos tratar como erro para tentar o próximo modelo.
+           throw new Error('Resposta vazia do modelo (Empty Candidate)');
+        }
 
-   if (functionCalls.length > 0) {
-    const responses = [];
-    for (const call of functionCalls) {
-     const impl = toolImplementations[call.name];
-     const res = impl ? await impl(call.args) : { error: `Função '${call.name}' não implementada.` };
-     responses.push({
-      functionResponse: {
-       name: call.name,
-       response: typeof res === 'object' ? res : { message: res },
-      },
-     });
-    }
+        const parts = candidate.content.parts;
+        const functionCalls = parts.filter(p => !!p.functionCall).map(p => p.functionCall);
 
-    const second = await chat.sendMessage(responses);
-        const finalCandidate = second.response.candidates?.[0];
-        const finalText = finalCandidate?.content?.parts?.map(p => p.text).join('\n') || null;
+        // SE HOUVER CHAMADA DE FUNÇÃO
+        if (functionCalls.length > 0) {
+          const responses = [];
+          for (const call of functionCalls) {
+            const impl = toolImplementations[call.name];
+            let res = impl ? await impl(call.args) : { error: `Função '${call.name}' não implementada.` };
+            
+            if (res.hidden_payload) {
+               res = { message: res.message + "\n" + res.hidden_payload };
+            }
 
-    if (!finalText) {
-     const firstFR = responses[0]?.functionResponse?.response;
-     return typeof firstFR === 'object' ? JSON.stringify(firstFR, null, 2) : String(firstFR);
-    }
+            responses.push({
+              functionResponse: {
+                name: call.name,
+                response: typeof res === 'object' ? res : { message: res },
+              },
+            });
+          }
 
-    console.log('[ASSISTANT] Resposta final (model):', finalText);
-    return finalText;
-   }
+          const second = await chat.sendMessage(responses);
+          const finalCandidate = second.response.candidates?.[0];
+          const finalText = finalCandidate?.content?.parts?.map(p => p.text).join('\n') || null;
 
-   return parts.map(p => p.text).join('\n') || 'Não consegui compreender a pergunta.';
-  } catch (err) {
-   console.error('[ASSISTANT] ERRO no orquestrador:', err);
-   return 'Erro ao processar a solicitação da IA.';
-  }
- }
+          if (!finalText) {
+            const firstFR = responses[0]?.functionResponse?.response;
+            return typeof firstFR === 'object' ? JSON.stringify(firstFR, null, 2) : String(firstFR);
+          }
+
+          console.log(`[ASSISTANT] Sucesso com modelo ${modelName}`);
+          return finalText;
+        }
+
+        // SE FOR RESPOSTA DE TEXTO DIRETA
+        console.log(`[ASSISTANT] Sucesso com modelo ${modelName}`);
+        return parts.map(p => p.text).join('\n') || 'Não consegui compreender a pergunta.';
+
+      } catch (err) {
+        // Captura erros específicos de sobrecarga (503) ou servidor (500, 504)
+        const isOverloaded = err.message.includes('503') || 
+                             err.message.includes('overloaded') || 
+                             err.message.includes('500') || 
+                             err.message.includes('internal error');
+
+        if (isOverloaded) {
+          console.warn(`⚠️ [FALLBACK] Modelo ${modelName} falhou (Server Error/Overloaded). Tentando próximo...`);
+          lastError = err;
+          // Espera 1 segundo antes de tentar o próximo modelo para não floodar
+          await sleep(1000);
+          continue; // Vai para a próxima iteração do loop (próximo modelo)
+        } else {
+          // Se for erro de código, sintaxe ou lógica, lança o erro e para tudo.
+          console.error('[ASSISTANT] Erro irrecuperável (não é sobrecarga):', err);
+          throw err; 
+        }
+      }
+    }
+
+    // Se sair do loop, todos os modelos falharam
+    console.error('[ASSISTANT] ERRO CRÍTICO: Todos os modelos falharam.', lastError);
+    return 'Desculpe, nossos servidores de IA estão momentaneamente sobrecarregados. Tente novamente em alguns instantes.';
+  }
 }
 
 module.exports = new AssistantService();

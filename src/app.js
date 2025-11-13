@@ -13,11 +13,17 @@ const eventoRoutes = require('./api/routes/evento.routes');
 // --- Importar nossas novas rotas (com os nomes corretos) ---
 const schoolYearRoutes = require('./api/routes/schoolyear.routes');
 const periodoRoutes = require('./api/routes/periodo.routes');
-const cargaHorariaRoutes = require('./api/routes/cargaHoraria.routes'); // [NOVO]
+const cargaHorariaRoutes = require('./api/routes/cargaHoraria.routes');
 const courseLoadRoutes = require('./api/routes/courseLoad.routes');
 const invoiceRoutes = require('./api/routes/invoice.routes.js');
 const webhookRoutes = require('./api/routes/webhook.routes.js');
 const assistantRoutes = require('./api/routes/assistant.routes.js');
+
+// ===================================================================
+// [NOVA IMPORTAÇÃO]
+// Aqui está a rota que faltava:
+const negotiationRoutes = require('./api/routes/negotiation.routes.js'); 
+// ===================================================================
 
 const app = express();
 app.use(cors());
@@ -26,10 +32,10 @@ app.use(express.urlencoded({ extended: true }));
 
 // --- Rota de Teste ---
 app.get('/', (req, res) => {
-    res.status(200).json({
-        message: '🚀 API do Sistema de Gerenciamento Escolar no ar!',
-        status: 'OK'
-    });
+  res.status(200).json({
+    message: '🚀 API do Sistema de Gerenciamento Escolar no ar!',
+    status: 'OK'
+  });
 });
 
 // --- Rotas da API ---
@@ -39,18 +45,23 @@ app.use('/api/auth', authRoutes);
 app.use('/api/tutors', tutorRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/enrollments', enrollmentRoutes);
-app.use('/api/subjects', subjectRoutes); // [CORRIGIDO] Estava como 'app.se'
+app.use('/api/subjects', subjectRoutes);
 app.use('/api/horarios', horarioRoutes);
 app.use('/api/eventos', eventoRoutes);
 
-// [NOVAS ROTAS] Registrando as novas rotas em inglês
-app.use('/api/school-years', schoolYearRoutes); // Rota ex: /api/school-years
-app.use('/api/terms', periodoRoutes);           // Rota ex: /api/terms
-app.use('/api/carga-horaria', cargaHorariaRoutes); // [NOVO]
-app.use('/api/course-loads', courseLoadRoutes); // Registra as novas rotas
+app.use('/api/school-years', schoolYearRoutes);
+app.use('/api/terms', periodoRoutes); 
+app.use('/api/carga-horaria', cargaHorariaRoutes);
+app.use('/api/course-loads', courseLoadRoutes); 
 
 app.use('/api/invoices', invoiceRoutes);
-app.use('/api/webhook', webhookRoutes); // Rota pública para o gateway
-app.use('/api/assistant', assistantRoutes); // Prefixo da API do assistente
+app.use('/api/webhook', webhookRoutes); 
+app.use('/api/assistant', assistantRoutes); 
+
+// ===================================================================
+// [NOVO REGISTRO]
+// Registra o prefixo /api/negotiations para usar o arquivo de rotas
+app.use('/api/negotiations', negotiationRoutes);
+// ===================================================================
 
 module.exports = app;

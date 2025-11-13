@@ -1,19 +1,18 @@
 const InvoiceService = require('../services/invoice.service');
-const appEmitter = require('../../loaders/eventEmitter'); // Assumindo o caminho do seu emitter
+const appEmitter = require('../../loaders/eventEmitter'); 
 
 class InvoiceController {
+  
   /**
-   * Cria uma nova fatura (agora no Mercado Pago)
+   * Cria uma nova fatura
    */
   async create(req, res, next) {
     try {
-      // O InvoiceService.createInvoice agora tem toda a lógica do MP
       const newInvoice = await InvoiceService.createInvoice(req.body);
 
-      // Emite o evento para o WebSocket
+      // Emite evento via WebSocket
       appEmitter.emit('invoice:created', newInvoice);
-      console.log(`📡 EVENTO EMITIDO: invoice:created`);
-
+      
       res.status(201).json(newInvoice);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.create:', error.message);
@@ -26,7 +25,8 @@ class InvoiceController {
    */
   async getAll(req, res, next) {
     try {
-      const invoices = await InvoiceService.getAllInvoices();
+      // Passa query params se houver (ex: ?status=pending)
+      const invoices = await InvoiceService.getAllInvoices(req.query);
       res.status(200).json(invoices);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.getAll:', error.message);
@@ -49,7 +49,7 @@ class InvoiceController {
   }
 
   /**
-   * Busca uma fatura específica por ID do *nosso* banco
+   * Busca uma fatura específica por ID
    */
   async getById(req, res, next) {
     try {
@@ -65,38 +65,35 @@ class InvoiceController {
   }
 
   /**
-   * Cancela uma fatura (localmente e no MP)
+   * Cancela uma fatura
    */
   async cancel(req, res, next) {
     try {
       const { id } = req.params;
+      
+      // Chama o serviço para cancelar
       const canceledInvoice = await InvoiceService.cancelInvoice(id);
 
       // Emite o evento de atualização para o WebSocket
+      // O app Flutter ouvirá isso e atualizará a tela em tempo real também
       appEmitter.emit('invoice:updated', canceledInvoice);
-      console.log(`📡 EVENTO EMITIDO: invoice:updated (cancelada)`);
+      console.log(`📡 EVENTO EMITIDO: invoice:updated (cancelada ID: ${id})`);
 
       res.status(200).json(canceledInvoice);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.cancel:', error.message);
-      next(error);
+      // Retorna erro 400 para erros de negócio (ex: tentar cancelar fatura paga)
+      res.status(400).json({ message: error.message });
     }
   }
 
-  // --- NOVA FUNÇÃO PARA MERCADO PAGO ---
   /**
-   * Consulta o status de um pagamento diretamente no Mercado Pago.
-   * Rota: GET /api/invoices/mp/:paymentId
+   * Consulta o status direto no Mercado Pago
    */
   async checkMpStatus(req, res, next) {
     try {
       const { paymentId } = req.params;
-      console.log(`[Controller] Consultando status no MP para o paymentId: ${paymentId}`);
-      
-      // O InvoiceService.getMpPaymentStatus foi criado para isso
       const mpPaymentDetails = await InvoiceService.getMpPaymentStatus(paymentId);
-      
-      // Retorna o JSON completo do Mercado Pago
       res.status(200).json(mpPaymentDetails);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.checkMpStatus:', error.message);

@@ -1,22 +1,21 @@
 const InvoiceService = require('../services/invoice.service');
-const appEmitter = require('../../loaders/eventEmitter'); // Seu emissor global
+const NegotiationService = require('../services/negotiation.service'); // Importa o novo serviço
+const appEmitter = require('../../loaders/eventEmitter');
 
 class WebhookController {
   /**
    * Lida com as notificações de pagamento do Mercado Pago
+   * Agora atua como um Roteador: verifica se é Fatura ou Negociação.
    */
   async handleMpWebhook(req, res, next) {
     console.log('--- 🔔 WEBHOOK MERCADO PAGO RECEBIDO ---');
-    console.log('Body:', req.body || 'Vazio');
-    console.log('Query:', req.query || 'Vazio');
 
     try {
       // 1. Responde 200 OK IMEDIATAMENTE.
-      // O MP só precisa saber que recebemos. Se demorarmos para processar,
-      // ele pode dar timeout e tentar de novo, gerando duplicidade.
+      // Isso é crucial para o Mercado Pago não dar timeout.
       res.status(200).json({ status: 'recebido' });
 
-      // 2. Processa o pagamento "em segundo plano" (depois de já ter respondido 200)
+      // 2. Inicia o processamento "em segundo plano"
       const paymentId = req.query['data.id'] || req.body.data?.id;
       
       if (!paymentId) {
@@ -26,26 +25,70 @@ class WebhookController {
 
       console.log(`🔔 Webhook MP recebido. Processando pagamento ID: ${paymentId}`);
 
-      // [CORREÇÃO] AQUI ESTÁ A MUDANÇA:
-      // De: InvoiceService.handleMpWebhook(paymentId)
-      // Para: InvoiceService.handlePaymentWebhook(paymentId)
-      const { invoice, mpStatus } = await InvoiceService.handlePaymentWebhook(paymentId);
+      // --- INÍCIO DA LÓGICA DE ROTEAMENTO ---
+      
+      let processed = false;
 
-      // 3. Emite o evento para o WebSocket (notificar o App do Admin/Pai)
-      // (Verifica se o status é 'approved' ou 'pending' para enviar o evento correto)
-      if (mpStatus === 'approved') {
-        appEmitter.emit('invoice:paid', invoice);
-        console.log(`📡 EVENTO EMITIDO (MP): invoice:paid para fatura [${invoice._id}]`);
-      } else {
-        // Se for 'pending', 'in_process', etc.
-        appEmitter.emit('invoice:updated', invoice);
-        console.log(`📡 EVENTO EMITIDO (MP): invoice:updated para fatura [${invoice._id}]`);
+      // Tentativa 1: É uma Fatura (Invoice) Padrão?
+      try {
+        // [IMPORTANTE] Seu InvoiceService.handlePaymentWebhook deve ser ajustado
+        // para retornar { processed: false } ou null se o pagamento não for dele.
+        const result = await InvoiceService.handlePaymentWebhook(paymentId);
+        
+        if (result && result.processed) {
+          processed = true;
+          const { invoice, mpStatus } = result;
+
+          if (mpStatus === 'approved') {
+            appEmitter.emit('invoice:paid', invoice);
+            console.log(`📡 EVENTO EMITIDO (MP): invoice:paid para fatura [${invoice._id}]`);
+          } else {
+            appEmitter.emit('invoice:updated', invoice);
+            console.log(`📡 EVENTO EMITIDO (MP): invoice:updated para fatura [${invoice._id}]`);
+          }
+        }
+      } catch (invoiceError) {
+        console.warn(`Webhook não é Fatura: ${invoiceError.message}`);
+        // Não re-lança o erro, pois pode ser uma negociação.
       }
 
+      if (processed) {
+        console.log(`✅ Webhook ${paymentId} processado como Fatura.`);
+        return; // Sai da função
+      }
+
+      // Tentativa 2: É uma Negociação (Negotiation)?
+      try {
+        // Criamos um método similar no NegotiationService
+        const result = await NegotiationService.handlePaymentWebhook(paymentId);
+
+        if (result && result.processed) {
+          processed = true;
+          const { negotiation, mpStatus } = result;
+          
+          if (mpStatus === 'approved') {
+            appEmitter.emit('negotiation:paid', negotiation);
+            console.log(`📡 EVENTO EMITIDO (MP): negotiation:paid para negociação [${negotiation._id}]`);
+          } else {
+            appEmitter.emit('negotiation:updated', negotiation);
+            console.log(`📡 EVENTO EMITIDO (MP): negotiation:updated para negociação [${negotiation._id}]`);
+          }
+        }
+      } catch (negotiationError) {
+        console.error(`❌ ERRO GRAVE no Webhook (NegotiationService): ${negotiationError.message}`);
+      }
+      
+      if (processed) {
+         console.log(`✅ Webhook ${paymentId} processado como Negociação.`);
+      } else {
+        console.error(`❌ Webhook Órfão: Pagamento ${paymentId} não foi processado por nenhum serviço.`);
+      }
+      // --- FIM DA LÓGICA DE ROTEAMENTO ---
+
     } catch (error) {
-      // Este log é "pós-resposta", pois o res.status(200) já foi enviado
-      console.error(`❌ ERRO GRAVE no WebhookController (MP) (pós-resposta): ${error.message}`);
-      next(error); // Loga o erro
+      // Este erro só acontece se o res.status(200) falhar (raro)
+      console.error(`❌ ERRO CRÍTICO no WebhookController (MP) (pré-resposta): ${error.message}`);
+      next(error); 
     }
   }
 }
