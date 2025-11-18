@@ -7,27 +7,27 @@ const addressSchema = new Schema({
     street: { 
         type: String, 
         required: [true, 'A rua é obrigatória.'],
-        trim: true // <<< Adicionado trim
+        trim: true 
     },
     neighborhood: { 
         type: String, 
         required: [true, 'O bairro é obrigatório.'],
-        trim: true // <<< Adicionado trim
+        trim: true 
     },
     number: {
         type: String, 
         default: '',
-        trim: true // <<< Adicionado trim
+        trim: true 
     }, 
     block: { // Quadra
         type: String, 
         default: '',
-        trim: true // <<< Adicionado trim
+        trim: true 
     }, 
     lot: { // Lote
         type: String, 
         default: '',
-        trim: true // <<< Adicionado trim
+        trim: true 
     },
     cep: { // <<< CAMPO NOVO ADICIONADO
         type: String, 
@@ -37,13 +37,13 @@ const addressSchema = new Schema({
     city: { 
         type: String, 
         required: [true, 'A cidade é obrigatória.'],
-        trim: true // <<< Adicionado trim
+        trim: true 
     },
     state: { 
         type: String, 
         required: [true, 'O estado é obrigatório.'],
-        trim: true // <<< Adicionado trim
+        trim: true 
     },
-}, { _id: false }); 
+}, { _id: false }); // Não armazena ID no subdocumento
 
 module.exports = addressSchema;

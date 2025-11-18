@@ -1,50 +1,49 @@
+// src/api/routes/subject.routes.js
 const express = require('express');
 const router = express.Router();
 const subjectController = require('../controllers/subject.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
-// const roleMiddleware = require('../middlewares/role.middleware'); // Descomente se tiver
+// const roleMiddleware = require('../middlewares/role.middleware'); 
 
-// Criar nova disciplina (Protegido - Ex: Admin/Coordenador)
+// Criar nova disciplina
 router.post(
     '/',
-    [authMiddleware.verifyToken /*, roleMiddleware.isAdminOrCoordinator */],
+    [authMiddleware.verifyToken],
     subjectController.create
 );
 
-// --- [NOVA ROTA] ---
 // Criar múltiplas disciplinas (Lote)
 router.post(
     '/bulk',
-    [authMiddleware.verifyToken /*, roleMiddleware.isAdminOrCoordinator */],
+    [authMiddleware.verifyToken],
     subjectController.createBulk
 );
-// --- FIM DA NOVA ROTA ---
 
-// Listar todas as disciplinas (Protegido - Todos autenticados podem ver)
+// Listar todas as disciplinas (da escola do usuário)
 router.get(
     '/',
     [authMiddleware.verifyToken],
     subjectController.getAll
 );
 
-// Obter detalhes de uma disciplina (Protegido)
+// Obter detalhes de uma disciplina
 router.get(
     '/:id',
     [authMiddleware.verifyToken],
     subjectController.getById
 );
 
-// Atualizar uma disciplina (Protegido - Ex: Admin/Coordenador)
+// Atualizar uma disciplina
 router.patch(
     '/:id',
-    [authMiddleware.verifyToken /*, roleMiddleware.isAdminOrCoordinator */],
+    [authMiddleware.verifyToken],
     subjectController.update
 );
 
-// Deletar uma disciplina (Protegido - Ex: Admin/Coordenador)
+// Deletar uma disciplina
 router.delete(
     '/:id',
-    [authMiddleware.verifyToken /*, roleMiddleware.isAdminOrCoordinator */],
+    [authMiddleware.verifyToken],
     subjectController.delete
 );
 

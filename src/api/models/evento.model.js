@@ -1,48 +1,57 @@
+// src/api/models/evento.model.js
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const eventoSchema = new Schema({
-    title: { // Ex: "Prova de Matemática", "Simulado Geral", "Feriado: Dia do Professor"
+    title: { 
         type: String,
         required: true,
         trim: true
     },
-    eventType: { // Para filtrar e colorir no frontend
+    eventType: { 
         type: String,
         required: true,
         enum: ['Prova', 'Simulado', 'Trabalho', 'Feriado', 'Evento Escolar', 'Outro'],
         default: 'Outro'
     },
-    description: { // Detalhes (opcional)
+    description: { 
         type: String,
         trim: true
     },
     
+    // --- LIGAÇÃO MULTI-TENANCY ---
+    school_id: {
+        type: Schema.Types.ObjectId,
+        ref: 'School',
+        required: [true, 'A referência da escola (school_id) é obrigatória.'],
+        index: true
+    },
+    
     // --- Definição da Data/Hora ---
-    date: { // O dia EXATO do evento
+    date: { 
         type: Date,
         required: true,
         index: true
     },
-    startTime: { type: String, trim: true }, // "HH:MM" (Opcional)
-    endTime: { type: String, trim: true }, // "HH:MM" (Opcional)
+    startTime: { type: String, trim: true }, 
+    endTime: { type: String, trim: true }, 
 
     // --- Vínculos (Opcionais) ---
-    classId: { // Para qual turma é este evento? (Nulo se for da escola toda)
+    classId: { 
         type: Schema.Types.ObjectId,
         ref: 'Class',
         index: true
     },
-    subjectId: { // Qual disciplina? (Nulo se não for de uma disciplina específica)
+    subjectId: { 
         type: Schema.Types.ObjectId,
         ref: 'Subject'
     },
-    teacherId: { // Quem aplicará/criou? (Opcional)
+    teacherId: { 
         type: Schema.Types.ObjectId,
         ref: 'User'
     },
     
-    isSchoolWide: { // 'true' se for um evento para a escola inteira (Feriado, Festa Junina)
+    isSchoolWide: { 
         type: Boolean,
         default: false,
         index: true

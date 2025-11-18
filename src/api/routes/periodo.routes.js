@@ -1,16 +1,16 @@
 const router = require('express').Router();
 const controller = require('../controllers/periodo.controller');
-
-// [CORRIGIDO] Importe a função 'verifyToken' de dentro do objeto exportado
 const { verifyToken } = require('../middlewares/auth.middleware');
 
-// Prefix: /api/terms
+// Prefix: /api/terms (ou /api/periodos, confirme no seu app.js)
 
-// [CORRIGIDO] Use a função 'verifyToken' diretamente
-router.post('/', verifyToken, controller.create);
-router.get('/', verifyToken, controller.getAll);
-router.get('/:id', verifyToken, controller.getById);
-router.put('/:id', verifyToken, controller.update);
-router.delete('/:id', verifyToken, controller.remove);
+// Middleware global para todas as rotas deste arquivo
+router.use(verifyToken);
+
+router.post('/', controller.create);
+router.get('/', controller.getAll);
+router.get('/:id', controller.getById);
+router.put('/:id', controller.update);
+router.delete('/:id', controller.remove);
 
 module.exports = router;

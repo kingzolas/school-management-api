@@ -1,156 +1,173 @@
+// src/api/services/student.service.js
+const mongoose = require('mongoose'); // Necessário para o ObjectId na agregação
 const Student = require('../models/student.model');
-const Tutor = require('../models/tutor.model'); // <-- Importe o Tutor
+const Tutor = require('../models/tutor.model'); 
 
-/**
- * Define a população padrão para buscar os dados completos do tutor.
- */
 const tutorPopulation = {
-    path: 'tutors.tutorId', // O caminho dentro do schema de Student
-    model: 'Tutor',        // O nome do Model de Tutor
-    select: '-students -__v' // Opcional: Exclui campos desnecessários do Tutor (se configurado no Tutor model)
+    path: 'tutors.tutorId', 
+    model: 'Tutor', 
+    select: '-students -__v' 
 };
 
 
 class StudentService {
 
     /**
-     * Cria um novo aluno.
-     * Esta função faz a "mágica" de encontrar ou criar os tutores.
+     * [MODIFICADO] Cria um novo aluno, agora vinculado ao schoolId.
+     * Também filtra a busca/criação de tutores pelo schoolId.
      */
-    async createStudent(studentData) {
-        // 1. Separa os dados do aluno dos dados dos tutores que vieram do Flutter
+    async createStudent(studentData, schoolId) {
         const { tutors: tutorsFromFlutter, ...studentInfo } = studentData; 
         
-        // 2. Este é o array que o StudentSchema espera
         const tutorsForStudentSchema = []; 
 
         if (tutorsFromFlutter && tutorsFromFlutter.length > 0) {
             
-            // 3. Loop em cada tutor enviado (pode ser Mãe, Pai, etc.)
             for (const tutorData of tutorsFromFlutter) {
                 
-                // 4. Separa o 'relationship' do resto dos dados do tutor
                 const { relationship, ...tutorDetails } = tutorData;
 
-                // 5. O 'relationship' (parentesco) é vital para o link.
                 if (!relationship) {
                     console.warn("Pulando tutor sem 'relationship' (parentesco).");
                     continue; 
                 }
 
-                let tutorDoc; // Variável para armazenar o documento do tutor
+                let tutorDoc; 
 
-                // 6. Verificamos se o CPF foi fornecido
+                // [NOVO] Adiciona o schoolId aos dados do tutor para criação
+                const tutorDataWithSchool = { ...tutorDetails, school_id: schoolId };
+
                 if (tutorDetails.cpf) {
-                    // 6.1. TEM CPF: "encontrar ou criar"
-                    tutorDoc = await Tutor.findOne({ cpf: tutorDetails.cpf });
+                    // [MODIFICADO] Busca o tutor POR CPF E POR ESCOLA
+                    tutorDoc = await Tutor.findOne({ cpf: tutorDetails.cpf, school_id: schoolId });
+                    
                     if (tutorDoc) {
-                        Object.assign(tutorDoc, tutorDetails);
+                        Object.assign(tutorDoc, tutorDataWithSchool);
                         await tutorDoc.save();
                     } else {
-                        tutorDoc = new Tutor(tutorDetails);
+                        // Cria o novo tutor já com o school_id
+                        tutorDoc = new Tutor(tutorDataWithSchool);
                         await tutorDoc.save();
                     }
                 } else {
-                    // 6.2. NÃO TEM CPF: Sempre criamos um novo
                     console.warn(`Tutor ${tutorDetails.fullName || 'sem nome'} sendo criado SEM CPF.`);
-                    tutorDoc = new Tutor(tutorDetails);
+                    // Cria o novo tutor já com o school_id
+                    tutorDoc = new Tutor(tutorDataWithSchool);
                     await tutorDoc.save();
                 }
                 
-                // 9. Adiciona no array o formato que o StudentSchema espera
                 tutorsForStudentSchema.push({
-                    tutorId: tutorDoc._id, // <<< CORREÇÃO: era 'tutorInfo'
+                    tutorId: tutorDoc._id,
                     relationship: relationship 
                 });
             }
         } 
         
-        // 11. Cria o novo aluno
+        // [MODIFICADO] Cria o novo aluno com o school_id
         const newStudent = new Student({
             ...studentInfo,
-            tutors: tutorsForStudentSchema 
+            tutors: tutorsForStudentSchema,
+            school_id: schoolId // <<< O "CARIMBO" DA ESCOLA
         });
 
-        // 12. Salva o aluno
         await newStudent.save();
 
-        // 13. Atualiza os tutores para adicionar a referência ao aluno
+        // Atualiza os tutores (inalterado, já está correto)
         await Tutor.updateMany(
             { _id: { $in: tutorsForStudentSchema.map(t => t.tutorId) } },
             { $addToSet: { students: newStudent._id } } 
         );
 
-        // [CORREÇÃO APLICADA AQUI NA VERSÃO ANTERIOR] Popula antes de retornar
+        // Busca o aluno recém-criado (findById é seguro pois acabamos de criar)
         const populatedStudent = await Student.findById(newStudent._id)
-                                             .populate(tutorPopulation);
+                                              .populate(tutorPopulation);
         
-        return populatedStudent; // <-- Retorna o aluno com os dados completos
-
-        // [CORREÇÃO] Removido o 'return newStudent;' duplicado daqui.
+        return populatedStudent;
     }
 
     /**
-     * Busca todos os alunos e popula os dados dos tutores.
+     * [MODIFICADO] Busca todos os alunos FILTRADOS POR ESCOLA.
      */
-    async getAllStudents() {
-        // .populate(tutorPopulation) troca os IDs de tutor pelos documentos completos
-        const students = await Student.find().populate(tutorPopulation);
+    async getAllStudents(schoolId) {
+        // [MODIFICADO] Adiciona o filtro { school_id: schoolId }
+        const students = await Student.find({ school_id: schoolId })
+                                      .populate(tutorPopulation);
         return students;
     }
 
     /**
-     * Busca um aluno por ID e popula os dados dos tutores.
+     * [MODIFICADO] Busca um aluno por ID, garantindo que ele pertença à escola.
      */
-    async getStudentById(id) {
-        const student = await Student.findById(id).populate(tutorPopulation);
+    async getStudentById(id, schoolId) {
+        // [MODIFICADO] Troca findById por findOne com filtro de _id E school_id
+        const student = await Student.findOne({ _id: id, school_id: schoolId })
+                                     .populate(tutorPopulation);
+        if (!student) {
+             throw new Error('Aluno não encontrado ou não pertence a esta escola.');
+        }
         return student;
     }
 
     /**
-     * Atualiza um aluno por ID.
+     * [MODIFICADO] Atualiza um aluno por ID, garantindo que ele pertença à escola.
      */
-    async updateStudent(id, studentData) {
-        // NOTA: Esta lógica não lida com a atualização/criação de tutores como o createStudent faz.
-        // Ela só atualiza os campos diretos do aluno.
-        const updatedStudent = await Student.findByIdAndUpdate(id, studentData, { 
-            new: true, // Retorna o documento atualizado
-            runValidators: true // Roda os validadores do schema
-        }).populate(tutorPopulation); // [SUGESTÃO] Popula o resultado atualizado também
+    async updateStudent(id, studentData, schoolId) {
+        // [MODIFICADO] Usa findOneAndUpdate para garantir a checagem do school_id
+        const updatedStudent = await Student.findOneAndUpdate(
+            { _id: id, school_id: schoolId }, // Condição de busca
+            studentData,                      // Dados da atualização
+            { 
+                new: true, // Retorna o documento atualizado
+                runValidators: true // Roda os validadores do schema
+            }
+        ).populate(tutorPopulation); 
+        
+        if (!updatedStudent) {
+            throw new Error('Aluno não encontrado ou não pertence a esta escola.');
+        }
         return updatedStudent;
     }
 
     /**
-     * Deleta um aluno por ID e remove a referência dele dos tutores.
+     * [MODIFICADO] Deleta um aluno por ID, garantindo que ele pertença à escola.
      */
-    async deleteStudent(id) {
-        const student = await Student.findById(id);
+    async deleteStudent(id, schoolId) {
+        // [MODIFICADO] Busca com findOne para checar a escola
+        const student = await Student.findOne({ _id: id, school_id: schoolId });
         if (!student) {
-            return null;
+             throw new Error('Aluno não encontrado ou não pertence a esta escola.');
         }
+        
         const tutorIds = student.tutors.map(t => t.tutorId);
-        await Student.findByIdAndDelete(id);
+        
+        // Deleta o aluno
+        await Student.findByIdAndDelete(id); // Seguro, pois já verificamos o schoolId
+        
+        // Atualiza os tutores (inalterado)
         await Tutor.updateMany(
             { _id: { $in: tutorIds } },
             { $pull: { students: student._id } } 
         );
-        return student; // Retorna o aluno que foi deletado (antes da deleção)
+        return student; // Retorna o aluno que foi deletado
     }
 
-    // ==========================================================
-    // INÍCIO DA CORREÇÃO getUpcomingBirthdays
-    // ==========================================================
     /**
-     * Busca TODOS os alunos, ordenados pelo próximo aniversário e POPULADOS.
+     * [MODIFICADO] Busca aniversariantes FILTRADOS POR ESCOLA.
      */
-    async getUpcomingBirthdays() {
+    async getUpcomingBirthdays(schoolId) {
+        const { ObjectId } = mongoose.Types; // Importa o construtor ObjectId
+
         try {
-            // --- ETAPA 1: Agregação para obter a ORDEM CORRETA dos IDs ---
+            // [MODIFICADO] Adiciona um $match no início do pipeline
             const sortedStudentInfos = await Student.aggregate([
+                {
+                    // FILTRO DE ESCOLA: Garante que só buscamos da escola certa
+                    $match: { school_id: new ObjectId(schoolId) }
+                },
                 {
                     $addFields: {
                         "__todayDayOfYear": { $dayOfYear: new Date() },
-                        "__birthdayDayOfYear": { $dayOfYear: "$birthDate" } // <<< CORREÇÃO: Usando 'birthDate'
+                        "__birthdayDayOfYear": { $dayOfYear: "$birthDate" } 
                     }
                 },
                 {
@@ -170,26 +187,23 @@ class StudentService {
                     }
                 },
                 { $sort: { "sortKey": 1 } },
-                // Retorna APENAS o _id na ordem correta
                 { $project: { _id: 1 } } 
             ]);
 
-            // Extrai apenas os IDs na ordem correta
             const sortedIds = sortedStudentInfos.map(info => info._id);
 
             if (sortedIds.length === 0) {
-                return []; // Nenhum aluno encontrado, retorna array vazio
+                return []; 
             }
 
-            // --- ETAPA 2: Busca e Popula os alunos usando os IDs ordenados ---
+            // [MODIFICADO] Adiciona filtro de school_id também no find (redundância segura)
             const populatedStudents = await Student.find({ 
-                _id: { $in: sortedIds } 
-            }).populate(tutorPopulation); // Popula os tutores aqui
+                _id: { $in: sortedIds },
+                school_id: schoolId // Garante a segurança
+            }).populate(tutorPopulation); 
 
-            // --- ETAPA 3: Reordena os resultados populados ---
-            // Cria um mapa para busca rápida: { 'idString': studentDocument }
+            // Reordenação (inalterada)
             const studentMap = new Map(populatedStudents.map(student => [student._id.toString(), student]));
-            // Usa os IDs ordenados para reconstruir o array na ordem correta
             const correctlySortedStudents = sortedIds.map(id => studentMap.get(id.toString())).filter(student => student != null); 
 
             return correctlySortedStudents;
@@ -200,179 +214,149 @@ class StudentService {
         }
     }
 
-    async updateTutorRelationship(studentId, tutorId, newRelationship) {
+    /**
+     * [MODIFICADO] Atualiza relacionamento, garantindo que o aluno pertença à escola.
+     */
+    async updateTutorRelationship(studentId, tutorId, newRelationship, schoolId) {
         try {
             console.log(`[SERVICE] Atualizando relacionamento: Aluno ${studentId}, Tutor ${tutorId}`);
             
-            // Encontra o aluno pelo ID
-            const student = await Student.findById(studentId);
+            // [MODIFICADO] Busca o aluno com o escopo da escola
+            const student = await Student.findOne({ _id: studentId, school_id: schoolId });
             if (!student) {
-                throw new Error('Aluno não encontrado.');
+                throw new Error('Aluno não encontrado ou não pertence a esta escola.');
             }
 
-            // Encontra o vínculo do tutor dentro do array 'tutors' do aluno
-            // Usamos .find() para obter a referência direta ao subdocumento
             const tutorLink = student.tutors.find(
-                (t) => t.tutorId.toString() === tutorId // <<< CORREÇÃO: era 'tutorInfo'
+                (t) => t.tutorId.toString() === tutorId
             );
 
             if (!tutorLink) {
                 throw new Error('Vínculo com tutor não encontrado no aluno.');
             }
 
-            // Atualiza o campo relationship
             tutorLink.relationship = newRelationship;
-
-            // Salva o documento PAI (o aluno) para persistir a mudança no subdocumento
             await student.save();
 
-            // Popula o 'tutorInfo' do vínculo específico que acabamos de salvar
-            // para retornar os dados completos para o Flutter
+            // Lógica de população (inalterada)
             await student.populate({
-                path: 'tutors.tutorId', // <<< CORREÇÃO: era 'tutorInfo'
-                model: 'Tutor' // Certifique-se que 'Tutor' é o nome do seu model
+                path: 'tutors.tutorId',
+                model: 'Tutor' 
             });
             
-            // Renomeia o campo populado para 'tutorInfo' para consistência com o front-end
             const populatedTutors = student.tutors.map(link => ({
                 relationship: link.relationship,
-                tutorInfo: link.tutorId // Renomeia o campo populado
+                tutorInfo: link.tutorId 
             }));
             
-            // Encontra o vínculo recém-populado para retornar
             const updatedPopulatedLink = populatedTutors.find(
                  (t) => t.tutorInfo._id.toString() === tutorId
             );
 
-            return updatedPopulatedLink; // Retorna o TutorInStudent atualizado e populado
+            return updatedPopulatedLink; 
 
         } catch (error) {
             console.error(`Erro no service ao ATUALIZAR relacionamento:`, error.message);
             throw new Error(`Erro ao atualizar relacionamento: ${error.message}`);
         }
     }
-    // ==========================================================
-    // FIM DA CORREÇÃO getUpcomingBirthdays
-    // ==========================================================
 
-    async addHistoryRecord(studentId, recordData) {
-        const student = await Student.findById(studentId);
+    /**
+     * [MODIFICADO] Adiciona registro de histórico, garantindo que o aluno pertença à escola.
+     */
+    async addHistoryRecord(studentId, recordData, schoolId) {
+        // [MODIFICADO] Busca o aluno com o escopo da escola
+        const student = await Student.findOne({ _id: studentId, school_id: schoolId });
         if (!student) {
-            return null;
+            throw new Error('Aluno não encontrado ou não pertence a esta escola.');
         }
 
-        // Adiciona o novo registro (com todos os seus campos) ao array
         student.academicHistory.push(recordData);
-        
         await student.save();
-        return student; // Retorna o aluno inteiro atualizado
+        return student; 
     }
 
     /**
-     * Atualiza um registro específico dentro do academicHistory.
+     * [MODIFICADO] Atualiza registro de histórico, garantindo que o aluno pertença à escola.
      */
-    async updateHistoryRecord(studentId, recordId, updatedData) {
-        const student = await Student.findById(studentId);
+    async updateHistoryRecord(studentId, recordId, updatedData, schoolId) {
+        // [MODIFICADO] Busca o aluno com o escopo da escola
+        const student = await Student.findOne({ _id: studentId, school_id: schoolId });
         if (!student) {
-            return null;
+            throw new Error('Aluno não encontrado ou não pertence a esta escola.');
         }
 
-        // Encontra o sub-documento (registro) pelo seu _id
         const record = student.academicHistory.id(recordId);
         if (!record) {
-            return null;
+            throw new Error('Registro acadêmico não encontrado.');
         }
 
-        // Atualiza os campos do registro
-        // O Object.assign copia os valores de updatedData para record
         Object.assign(record, updatedData);
-        
         await student.save();
         return student;
     }
 
     /**
-     * Remove um registro específico do academicHistory.
+     * [MODIFICADO] Deleta registro de histórico, garantindo que o aluno pertença à escola.
      */
-   async deleteHistoryRecord(studentId, recordId) {
-        const student = await Student.findById(studentId);
+    async deleteHistoryRecord(studentId, recordId, schoolId) {
+        // [MODIFICADO] Busca o aluno com o escopo da escola
+        const student = await Student.findOne({ _id: studentId, school_id: schoolId });
         if (!student) {
-            return null;
+            throw new Error('Aluno não encontrado ou não pertence a esta escola.');
         }
 
-        // --- INÍCIO DA CORREÇÃO ---
-        
-        // O Mongoose Array tem um método 'pull' que remove
-        // qualquer subdocumento que corresponda ao ID fornecido.
+        // Lógica de remoção (inalterada)
         student.academicHistory.pull(recordId);
-        
-        // --- FIM DA CORREÇÃO ---
-        
         await student.save();
         return student;
     }
     
-    // ==========================================================
-    // INÍCIO DO MÉTODO PARA O ASSISTENTE GEMINI
-    // ==========================================================
-    
     /**
-     * Conta alunos por faixa etária e mês de aniversário.
-     * Chamado pelo AssistantService.
+     * [MODIFICADO] Conta alunos, garantindo que a contagem seja da escola.
      */
-    async getCountByAgeAndBirthday(minAge, maxAge, birthdayMonth) {
-      console.log(`[StudentService] Buscando contagem: ${minAge}-${maxAge} anos, Mês ${birthdayMonth}`);
+    async getCountByAgeAndBirthday(minAge, maxAge, birthdayMonth, schoolId) {
+        console.log(`[StudentService] Buscando contagem: ${minAge}-${maxAge} anos, Mês ${birthdayMonth}`);
     
-      const today = new Date();
-      today.setHours(0, 0, 0, 0); // Zera o horário para comparações justas
+        const today = new Date();
+        today.setHours(0, 0, 0, 0); 
     
-      // --- Lógica de Data ---
-      // 1. Data mais RECENTE de nascimento (para ter a idade MÍNIMA)
-      const latestBirthDate = new Date(
-        today.getFullYear() - minAge,
-        today.getMonth(),
-        today.getDate()
-      );
+        const latestBirthDate = new Date(
+            today.getFullYear() - minAge,
+            today.getMonth(),
+            today.getDate()
+        );
+        const earliestBirthDate = new Date(
+            today.getFullYear() - (maxAge + 1),
+            today.getMonth(),
+            today.getDate() + 1 
+        );
     
-      // 2. Data mais ANTIGA de nascimento (para ter a idade MÁXIMA)
-      const earliestBirthDate = new Date(
-        today.getFullYear() - (maxAge + 1),
-        today.getMonth(),
-        today.getDate() + 1 
-      );
+        // [MODIFICADO] Adiciona school_id à query
+        const query = {
+            school_id: schoolId, // <<< FILTRO DE ESCOLA
+            birthDate: {
+                $gte: earliestBirthDate,
+                $lte: latestBirthDate,
+            },
+            isActive: true, 
+            $expr: {
+                $eq: [
+                    { $month: '$birthDate' }, 
+                    birthdayMonth, 
+                ],
+            },
+        };
     
-      // --- Query do MongoDB ---
-      const query = {
-        // [CORREÇÃO] Usando 'birthDate' do seu student.model.js
-        birthDate: {
-          $gte: earliestBirthDate,
-          $lte: latestBirthDate,
-        },
-        // [NOVO] Filtra apenas alunos ativos (baseado no seu model)
-        isActive: true, 
-        
-        // Filtro 2: Mês de aniversário
-        $expr: {
-          $eq: [
-            { $month: '$birthDate' }, // [CORREÇÃO] Usando 'birthDate'
-            birthdayMonth,           
-          ],
-        },
-      };
-    
-      try {
-        const count = await Student.countDocuments(query);
-        console.log(`[StudentService] Contagem encontrada: ${count}`);
-        return count;
-      } catch (error) {
-        console.error('[StudentService] Erro ao contar alunos:', error);
-        throw new Error('Falha ao consultar banco de dados de alunos.');
-      }
+        try {
+            const count = await Student.countDocuments(query);
+            console.log(`[StudentService] Contagem encontrada: ${count}`);
+            return count;
+        } catch (error) {
+            console.error('[StudentService] Erro ao contar alunos:', error);
+            throw new Error('Falha ao consultar banco de dados de alunos.');
+        }
     }
-
-    // ==========================================================
-    // FIM DO MÉTODO PARA O ASSISTENTE GEMINI
-    // ==========================================================
 }
 
 module.exports = new StudentService();

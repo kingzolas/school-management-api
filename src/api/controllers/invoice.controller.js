@@ -1,16 +1,19 @@
+// src/api/controllers/invoice.controller.js
 const InvoiceService = require('../services/invoice.service');
 const appEmitter = require('../../loaders/eventEmitter'); 
 
 class InvoiceController {
   
   /**
-   * Cria uma nova fatura
-   */
+    * Cria uma nova fatura (Gestor)
+    */
   async create(req, res, next) {
     try {
-      const newInvoice = await InvoiceService.createInvoice(req.body);
+      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
+      
+      // [MODIFICADO] Passa o schoolId para o Service
+      const newInvoice = await InvoiceService.createInvoice(req.body, schoolId);
 
-      // Emite evento via WebSocket
       appEmitter.emit('invoice:created', newInvoice);
       
       res.status(201).json(newInvoice);
@@ -21,12 +24,13 @@ class InvoiceController {
   }
 
   /**
-   * Busca todas as faturas
-   */
+    * Busca todas as faturas (da escola do Gestor)
+    */
   async getAll(req, res, next) {
     try {
-      // Passa query params se houver (ex: ?status=pending)
-      const invoices = await InvoiceService.getAllInvoices(req.query);
+      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
+      // [MODIFICADO] Passa o schoolId para o Service
+      const invoices = await InvoiceService.getAllInvoices(req.query, schoolId); 
       res.status(200).json(invoices);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.getAll:', error.message);
@@ -35,12 +39,14 @@ class InvoiceController {
   }
 
   /**
-   * Busca faturas de um aluno específico
-   */
+    * Busca faturas de um aluno específico (da escola do Gestor)
+    */
   async getByStudent(req, res, next) {
     try {
+      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
       const studentId = req.params.studentId;
-      const invoices = await InvoiceService.getInvoicesByStudent(studentId);
+      // [MODIFICADO] Passa o schoolId para o Service
+      const invoices = await InvoiceService.getInvoicesByStudent(studentId, schoolId); 
       res.status(200).json(invoices);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.getByStudent:', error.message);
@@ -49,11 +55,14 @@ class InvoiceController {
   }
 
   /**
-   * Busca uma fatura específica por ID
-   */
+    * Busca uma fatura específica por ID (da escola do Gestor)
+    */
   async getById(req, res, next) {
     try {
-      const invoice = await InvoiceService.getInvoiceById(req.params.id);
+      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
+      // [MODIFICADO] Passa o schoolId para o Service
+      const invoice = await InvoiceService.getInvoiceById(req.params.id, schoolId); 
+      
       if (!invoice) {
         return res.status(404).json({ message: 'Fatura não encontrada' });
       }
@@ -65,31 +74,28 @@ class InvoiceController {
   }
 
   /**
-   * Cancela uma fatura
-   */
+    * Cancela uma fatura (da escola do Gestor)
+    */
   async cancel(req, res, next) {
     try {
+      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
       const { id } = req.params;
       
-      // Chama o serviço para cancelar
-      const canceledInvoice = await InvoiceService.cancelInvoice(id);
+      // [MODIFICADO] Passa o schoolId para o Service
+      const canceledInvoice = await InvoiceService.cancelInvoice(id, schoolId);
 
-      // Emite o evento de atualização para o WebSocket
-      // O app Flutter ouvirá isso e atualizará a tela em tempo real também
       appEmitter.emit('invoice:updated', canceledInvoice);
-      console.log(`📡 EVENTO EMITIDO: invoice:updated (cancelada ID: ${id})`);
 
       res.status(200).json(canceledInvoice);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.cancel:', error.message);
-      // Retorna erro 400 para erros de negócio (ex: tentar cancelar fatura paga)
       res.status(400).json({ message: error.message });
     }
   }
 
   /**
-   * Consulta o status direto no Mercado Pago
-   */
+    * Consulta o status direto no Mercado Pago (Não precisa de schoolId)
+    */
   async checkMpStatus(req, res, next) {
     try {
       const { paymentId } = req.params;

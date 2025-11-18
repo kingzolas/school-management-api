@@ -11,26 +11,26 @@ const userSchema = new Schema({
         required: [true, 'O nome completo é obrigatório.'],
         trim: true
     },
-    profilePictureUrl: { type: String, default: null }, // (Seção 1 - Foto)
-    cpf: { // (Seção 1)
+    profilePictureUrl: { type: String, default: null },
+    cpf: { 
         type: String,
         required: [true, 'O CPF é obrigatório.'],
         unique: true,
-        sparse: true, // Garante CPF único, mas permite múltiplos nulos se não preenchido
+        sparse: true, 
         trim: true
     },
-    birthDate: { type: Date }, // (Seção 1 - Data de Nascimento)
-    gender: { // (Seção 1 - Gênero)
+    birthDate: { type: Date }, 
+    gender: { 
         type: String, 
         enum: ['Masculino', 'Feminino', 'Outro', 'Prefiro não dizer'] 
     }, 
     
-    phoneNumber: { type: String, required: [true, 'O telefone celular é obrigatório.'], trim: true }, // (Seção 2)
-    phoneFixed: { type: String, trim: true, default: '' }, // (Seção 2 - Opcional)
-    address: { type: addressSchema }, // (Seção 2 - Endereço Completo)
+    phoneNumber: { type: String, required: [true, 'O telefone celular é obrigatório.'], trim: true },
+    phoneFixed: { type: String, trim: true, default: '' },
+    address: { type: addressSchema }, 
 
     // --- Seção 5: Acesso ao Sistema ---
-    email: { // (Seção 2 e 5 - Email Principal)
+    email: { 
         type: String,
         required: [true, 'O e-mail é obrigatório.'],
         unique: true,
@@ -38,7 +38,7 @@ const userSchema = new Schema({
         trim: true,
         match: [/\S+@\S+\.\S+/, 'Por favor, insira um e-mail válido.']
     },
-    username: { // (Campo existente)
+    username: { 
         type: String,
         required: [true, 'O nome de usuário é obrigatório.'],
         unique: true,
@@ -51,18 +51,26 @@ const userSchema = new Schema({
         type: String,
         required: [true, 'A senha é obrigatória.'],
         minlength: [6, 'A senha deve ter no mínimo 6 caracteres.'],
-        select: false // Não retorna a senha em buscas
+        select: false 
     },
-    roles: [{ // (Seção 5 - Perfil de Permissão)
+    roles: [{ 
         type: String,
         required: true,
-        enum: ['Professor', 'Coordenador', 'Admin', 'Staff'], // Alinhado com sua proposta
+        enum: ['Professor', 'Coordenador', 'Admin', 'Staff'], 
     }],
-    status: { // (Seção 3 - Status)
+    status: { 
         type: String,
         enum: ['Ativo', 'Inativo'],
         default: 'Ativo',
         required: true
+    },
+
+    // --- [NOVO] LIGAÇÃO MULTI-TENANCY ---
+    school_id: {
+        type: Schema.Types.ObjectId,
+        ref: 'School', // Referencia o novo modelo 'School'
+        required: [true, 'A referência da escola (school_id) é obrigatória.'],
+        index: true // Melhora a performance de buscas por escola
     },
 
     // --- Ligação com os Contratos/Perfis de Trabalho ---

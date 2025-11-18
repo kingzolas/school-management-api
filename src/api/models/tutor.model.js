@@ -1,6 +1,6 @@
+// src/api/models/tutor.model.js
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
-// Importa o NOVO schema de endereço
 const addressSchema = require('./address.model'); 
 
 const tutorSchema = new Schema({
@@ -23,45 +23,47 @@ const tutorSchema = new Schema({
     },
     phoneNumber: { 
         type: String, 
-        // required: false 
     },
     rg: { 
         type: String,
-        // unique: false, 
-        sparse: true // Permite vários nulos, mas apenas um RG se preenchido
+        sparse: true 
     },
     cpf: { 
         type: String, 
-        // unique: false, 
-        sparse: true, // Permite vários nulos, mas apenas um CPF se preenchido
+        sparse: true, 
         required: [false, 'O CPF do tutor é obrigatório.']
     },
-    // --- CAMPO DE EMAIL ATUALIZADO ---
     email: { 
         type: String, 
-        // required: false, // (default é false)
         lowercase: true,
-        // unique: false, // Email não precisa ser único (ex: email da família)
         sparse: true
     },
     address: { 
         type: addressSchema, 
         required: true 
     },
+
+    // --- [NOVO] LIGAÇÃO MULTI-TENANCY ---
+    school_id: {
+        type: Schema.Types.ObjectId,
+        ref: 'School', // Referencia o modelo 'School'
+        required: [true, 'A referência da escola (school_id) é obrigatória.'],
+        index: true // Melhora a performance de buscas por escola
+    },
+    // ------------------------------------
+
     // Link para os alunos que este tutor é responsável
     students: [{
         type: Schema.Types.ObjectId,
         ref: 'Student'
     }]
 }, {
-    timestamps: true // Adiciona createdAt e updatedAt
+    timestamps: true 
 });
 
-// --- HOOK ADICIONADO ---
-// Limpa dados opcionais e únicos antes de salvar para evitar erros de duplicidade
+// Hook (inalterado)
 tutorSchema.pre('save', function(next) {
     if (this.rg === '') { this.rg = null; }
-    // O CPF é obrigatório, mas limpamos para o caso de "" ser enviado
     if (this.cpf === '') { this.cpf = null; } 
     if (this.email === '') { this.email = null; }
     next();
@@ -70,4 +72,3 @@ tutorSchema.pre('save', function(next) {
 const Tutor = mongoose.model('Tutor', tutorSchema);
 
 module.exports = Tutor;
-

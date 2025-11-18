@@ -1,30 +1,37 @@
+// src/api/models/horario.model.js
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const horarioSchema = new Schema({
 
-    // [CAMPO NOVO!]
-   // [CAMPO NOVO!]
+    // --- Vínculos de Tempo/Estrutura ---
     termId: { 
-        // Indica a qual bimestre/período (Term) esta grade pertence.
         type: Schema.Types.ObjectId,
-        ref: 'Term', // Link com term.model.js
+        ref: 'Periodo', 
         required: true,
         index: true
     },
-    // --- Vínculos Principais ---
-    classId: { // A qual turma este horário pertence
+    classId: { 
         type: Schema.Types.ObjectId,
         ref: 'Class',
         required: true,
         index: true
     },
-    subjectId: { // Qual disciplina é lecionada
+    // --- LIGAÇÃO MULTI-TENANCY ---
+    school_id: {
+        type: Schema.Types.ObjectId,
+        ref: 'School',
+        required: [true, 'A referência da escola (school_id) é obrigatória.'],
+        index: true
+    },
+    
+    // --- Vínculos de Conteúdo/Pessoa ---
+    subjectId: { 
         type: Schema.Types.ObjectId,
         ref: 'Subject',
         required: true
     },
-    teacherId: { // Qual professor (usuário) leciona
+    teacherId: { 
         type: Schema.Types.ObjectId,
         ref: 'User',
         required: true,
@@ -32,34 +39,35 @@ const horarioSchema = new Schema({
     },
 
     // --- Definição do Tempo ---
-    dayOfWeek: { // 1=Segunda, 2=Terça, 3=Quarta, 4=Quinta, 5=Sexta, 6=Sábado, 0=Domingo
+    dayOfWeek: { 
         type: Number,
         required: true,
         min: 0,
         max: 6
     },
-    startTime: { // Formato "HH:MM" (ex: "07:30")
+    startTime: { 
         type: String,
         required: true,
         trim: true
     },
-    endTime: { // Formato "HH:MM" (ex: "08:20")
+    endTime: { 
         type: String,
         required: true,
         trim: true
     },
     
     // --- Opcionais ---
-    room: { // Sala (pode sobrescrever a sala padrão da turma, se necessário)
+    room: { 
         type: String,
         trim: true
     }
 }, { timestamps: true });
 
-// Índice para garantir que não haja duas aulas no mesmo horário/dia/turma
-horarioSchema.index({ classId: 1, dayOfWeek: 1, startTime: 1 }, { unique: true });
-// Índice para buscar rapidamente a grade do professor
-horarioSchema.index({ teacherId: 1, dayOfWeek: 1 });
+// Índice para garantir que não haja duas aulas no mesmo horário/dia/turma E ESCOLA.
+// O school_id é redundante aqui se classId já o tem, mas é mais seguro:
+horarioSchema.index({ classId: 1, dayOfWeek: 1, startTime: 1, school_id: 1 }, { unique: true });
+// Índice para buscar rapidamente a grade do professor na escola
+horarioSchema.index({ teacherId: 1, dayOfWeek: 1, school_id: 1 });
 
 
 const Horario = mongoose.model('Horario', horarioSchema);

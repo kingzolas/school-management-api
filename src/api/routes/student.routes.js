@@ -1,67 +1,34 @@
+// src/api/routes/student.routes.js
 const express = require('express');
 const router = express.Router();
 const studentController = require('../controllers/student.controller');
-
-// [CORREÇÃO] 1. Importe o middleware que você acabou de criar
 const authMiddleware = require('../middlewares/auth.middleware');
 
+// Criar Aluno
+router.post('/', authMiddleware.verifyToken, studentController.create);
 
+// Aniversariantes (VEM ANTES de /:id)
+router.get('/birthdays', authMiddleware.verifyToken, studentController.getUpcomingBirthdays);
 
+// Buscar Todos
+router.get('/', authMiddleware.verifyToken, studentController.getAll);
 
-// Rota para criar um novo aluno
-router.post(
-    '/', 
-    [authMiddleware.verifyToken], // ⬅️ 2. Agora 'authMiddleware' existe e está sendo usado
-    studentController.create
-);
+// Buscar por ID
+router.get('/:id', authMiddleware.verifyToken, studentController.getById);
 
-// --- CORREÇÃO APLICADA AQUI ---
-// Rota específica para buscar os próximos aniversariantes (VEM ANTES da rota com :id)
-router.get('/birthdays', studentController.getUpcomingBirthdays);
+// Atualizar Aluno
+router.patch('/:id', authMiddleware.verifyToken, studentController.update);
 
-// Rota para buscar todos os alunos
-router.get('/', studentController.getAll);
+// Deletar Aluno
+router.delete('/:id', authMiddleware.verifyToken, studentController.delete);
 
-// Rota para buscar um aluno por ID (VEM DEPOIS da rota /birthdays)
-router.get('/:id', studentController.getById);
+// --- Rotas de Histórico ---
+router.post('/:studentId/history', authMiddleware.verifyToken, studentController.addAcademicRecord);
+router.put('/:studentId/history/:recordId', authMiddleware.verifyToken, studentController.updateAcademicRecord);
+router.delete('/:studentId/history/:recordId', authMiddleware.verifyToken, studentController.deleteAcademicRecord);
 
-// Rota para atualizar um aluno por ID (Protegida também)
-router.patch(
-    '/:id', 
-    [authMiddleware.verifyToken], 
-    studentController.update
-);
-
-// Rota para deletar um aluno por ID (Protegida também)
-router.delete(
-    '/:id', 
-    [authMiddleware.verifyToken], 
-    studentController.delete
-);
-
-// Adiciona um novo registro (Ex: 1º Ano, 2022)
-router.post(
-    '/:studentId/history',
-    [authMiddleware.verifyToken],
-    studentController.addAcademicRecord
-);
-
-// Atualiza um registro existente (pelo ID do registro)
-router.put(
-    '/:studentId/history/:recordId',
-    [authMiddleware.verifyToken],
-    studentController.updateAcademicRecord
-);
-router.put(
-    '/:studentId/tutors/:tutorId', // Note que o '/students' já vem do app.js
-    studentController.updateTutorRelationship
-);
-
-// Deleta um registro existente
-router.delete(
-    '/:studentId/history/:recordId',
-    [authMiddleware.verifyToken],
-    studentController.deleteAcademicRecord
-);
+// --- Rota de Tutor ---
+// [MODIFICADO] Adicionada proteção de auth
+router.put('/:studentId/tutors/:tutorId', authMiddleware.verifyToken, studentController.updateTutorRelationship);
 
 module.exports = router;

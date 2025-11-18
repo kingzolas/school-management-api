@@ -1,11 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const NegotiationController = require('../controllers/negotiation.controller');
-// Importa especificamente a função 'verifyToken' do middleware
 const { verifyToken } = require('../middlewares/auth.middleware');
 
 // ==================================================
-// 🔒 ROTAS INTERNAS (Gestor/Admin)
+// 🔒 ROTAS INTERNAS (Gestor/Admin) - Protegidas
 // ==================================================
 const internalRouter = express.Router();
 
@@ -26,26 +25,22 @@ internalRouter.get('/student/:studentId', NegotiationController.listByStudent);
 
 
 // ==================================================
-// 🔓 ROTAS PÚBLICAS (Aluno/Responsável via Link)
+// 🔓 ROTAS PÚBLICAS (Aluno/Responsável via Link) - Token como chave
 // ==================================================
-// Não usa verifyToken, pois o usuário acessa via Link externo
 const publicRouter = express.Router();
 
 /**
  * POST /api/negotiations/public/validate/:token
- * CORREÇÃO: Inverti a ordem para bater com o Flutter (/validate/TOKEN)
  */
 publicRouter.post('/validate/:token', NegotiationController.validateAccess);
 
 /**
  * POST /api/negotiations/public/pay/:token
- * CORREÇÃO: Mudei de 'checkout' para 'pay' e inverti a ordem para bater com o Flutter
  */
 publicRouter.post('/pay/:token', NegotiationController.generatePayment);
 
 /**
  * GET /api/negotiations/public/status/:token
- * CORREÇÃO: Inverti a ordem para bater com o Flutter (/status/TOKEN)
  */
 publicRouter.get('/status/:token', NegotiationController.getNegotiationStatus);
 

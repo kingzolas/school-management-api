@@ -3,140 +3,123 @@ const AnoLetivo = require('../models/schoolyear.model');
 
 class PeriodoService {
  
- async create(data) {
-  // Log 1: Mostra os dados que chegam (Ex: schoolYearId, startDate)
-  console.log('[PeriodoService.create] 1. DADOS RECEBIDOS:', JSON.stringify(data, null, 2));
+    async create(data, schoolId) {
+        console.log('[PeriodoService.create] DADOS:', JSON.stringify(data, null, 2));
 
-  try {
-      // [CORREÇÃO A] Usando 'data.schoolYearId' que veio do JSON
-   console.log(`[PeriodoService.create] 2. Buscando AnoLetivo com ID: ${data.schoolYearId}`);
-   const anoLetivo = await AnoLetivo.findById(data.schoolYearId); 
-   
-   console.log('[PeriodoService.create] 3. Resultado da busca (AnoLetivo):', anoLetivo);
-   
-   if (!anoLetivo) {
-    console.error('[PeriodoService.create] 4. ERRO: Ano Letivo não encontrado.');
-    throw new Error('Ano Letivo não encontrado.');
-   }
-   
-      // [CORREÇÃO B] Usando 'data.startDate' e 'data.endDate' para validar
-   if (new Date(data.startDate) < anoLetivo.dataInicio || new Date(data.endDate) > anoLetivo.dataFim) {
-    console.warn('[PeriodoService.create] 4. ERRO: As datas do período estão fora do Ano Letivo.');
-        console.warn(`[PeriodoService.create] Datas Período: ${data.startDate} a ${data.endDate}`);
-        console.warn(`[PeriodoService.create] Datas Ano Letivo: ${anoLetivo.dataInicio} a ${anoLetivo.dataFim}`);
-    throw new Error('As datas do período devem estar dentro do Ano Letivo.');
-   }
+        try {
+            // 1. Validação de Segurança e Existência do Ano Letivo
+            // Buscamos o ano letivo garantindo que ele pertence à ESCOLA do usuário.
+            const anoLetivo = await AnoLetivo.findOne({ 
+                _id: data.schoolYearId, 
+                school_id: schoolId 
+            }); 
+            
+            if (!anoLetivo) {
+                throw new Error('Ano Letivo não encontrado ou não pertence à sua escola.');
+            }
+            
+            // 2. Validação de Datas
+            // Mapeia as datas de entrada para objetos Date
+            const start = new Date(data.startDate);
+            const end = new Date(data.endDate);
 
-      // [CORREÇÃO C] Criando o objeto com os nomes que o Model espera
-      // (Conforme o seu periodo.model.js)
-      const dadosParaCriar = {
-        titulo: data.titulo,
-        tipo: data.tipo,
-        dataInicio: data.startDate,  // Mapeando de 'startDate' para 'dataInicio'
-        dataFim: data.endDate,    // Mapeando de 'endDate' para 'dataFim'
-        anoLetivoId: data.schoolYearId // Mapeando de 'schoolYearId' para 'anoLetivoId'
-      };
+            if (start < anoLetivo.startDate || end > anoLetivo.endDate) {
+                 throw new Error('As datas do período devem estar dentro do intervalo do Ano Letivo.');
+            }
 
-      // Usando o objeto mapeado para criar no banco
-   const periodo = await Periodo.create(dadosParaCriar); 
-   
-      console.log('[PeriodoService.create] 5. SUCESSO: Período criado:', periodo);
-   return periodo;
+            // 3. Prepara o objeto para salvar
+            const dadosParaCriar = {
+                titulo: data.titulo,
+                tipo: data.tipo,
+                dataInicio: start,
+                dataFim: end,
+                anoLetivoId: data.schoolYearId,
+                school_id: schoolId // [IMPORTANTE] Salva o ID da escola
+            };
 
-  } catch (error) {
-   console.error(`[PeriodoService.create] 6. ERRO CAPTURADO (catch): ${error.message}`);
-   throw error;
-  }
- }
+            const periodo = await Periodo.create(dadosParaCriar); 
+            return periodo;
 
- // --- MÉTODO CORRIGIDO ---
- async find(query) {
-    // ---- INÍCIO DOS PRINTS ----
-    console.log('[PeriodoService.find] 1. Query recebida do Flutter:', query);
-    // ---- FIM DOS PRINTS ----
+        } catch (error) {
+            // Trata erro de duplicidade (ex: Já existe 1º Bimestre neste ano)
+            if (error.code === 11000) {
+                throw new Error(`O período '${data.titulo}' já existe neste Ano Letivo.`);
+            }
+            throw error;
+        }
+    }
 
-  try {
+    async find(query, schoolId) {
+        try {
+            const filtroDB = {
+                school_id: schoolId // Força o filtro por escola
+            };
 
-      // [A CORREÇÃO ESTÁ AQUI]
-      // Criamos um novo objeto 'filtroDB' para o Mongoose
-      const filtroDB = {};
+            // Mapeamento do filtro do front (schoolYearId) para o banco (anoLetivoId)
+            if (query.schoolYearId) {
+                filtroDB.anoLetivoId = query.schoolYearId;
+            }
+            
+            const periodos = await Periodo.find(filtroDB).sort({ dataInicio: 1 });
+            return periodos;
+        } catch (error) {
+            throw error;
+        }
+    }
 
-      // Se a query do Flutter tiver 'schoolYearId',
-      // nós o mapeamos para 'anoLetivoId' no filtro do banco.
-      if (query.schoolYearId) {
-        filtroDB.anoLetivoId = query.schoolYearId;
-      }
-      
-      // (Você pode adicionar outros mapeamentos aqui se precisar filtrar por mais coisas)
-      // if (query.tipo) {
-      //  filtroDB.tipo = query.tipo;
-      // }
+    async findById(id, schoolId) {
+        try {
+            // Busca garantindo a escola
+            const periodo = await Periodo.findOne({ _id: id, school_id: schoolId });
+            if (!periodo) {
+                throw new Error('Período não encontrado.');
+            }
+            return periodo;
+        } catch (error) {
+            throw error;
+        }
+    }
 
-      // ---- INÍCIO DOS PRINTS ----
-      console.log('[PeriodoService.find] 2. Filtro enviado ao Mongoose:', filtroDB);
-      // ---- FIM DOS PRINTS ----
+    async update(id, data, schoolId) {
+        // Mapeamento dos campos que podem ser atualizados
+        const dadosMapeados = {};
+        if (data.titulo) dadosMapeados.titulo = data.titulo;
+        if (data.tipo) dadosMapeados.tipo = data.tipo;
+        if (data.startDate) dadosMapeados.dataInicio = data.startDate;
+        if (data.endDate) dadosMapeados.dataFim = data.endDate;
+        // Geralmente não se muda o anoLetivoId nem school_id num update simples, 
+        // mas se precisar, adicione aqui com validação extra.
 
-      // Usamos o 'filtroDB' mapeado em vez do 'query' original
-   const periodos = await Periodo.find(filtroDB).sort({ dataInicio: 1 });
+        try {
+            const periodo = await Periodo.findOneAndUpdate(
+                { _id: id, school_id: schoolId }, // Query segura
+                dadosMapeados, 
+                { new: true }
+            );
+            
+            if (!periodo) {
+                throw new Error('Período não encontrado para atualização.');
+            }
+            return periodo;
+        } catch (error) {
+            if (error.code === 11000) {
+                 throw new Error(`Já existe um período com este nome neste Ano Letivo.`);
+            }
+            throw error;
+        }
+    }
 
-      // ---- INÍCIO DOS PRINTS ----
-      console.log('[PeriodoService.find] 3. Períodos encontrados no banco:', periodos);
-      // ---- FIM DOS PRINTS ----
-
-   return periodos;
-  } catch (error) {
-      // ---- INÍCIO DOS PRINTS ----
-      console.error(`[PeriodoService.find] 4. ERRO CAPTURADO (catch): ${error.message}`);
-      // ---- FIM DOS PRINTS ----
-   throw error;
-  }
- }
-
- async findById(id) {
-  try {
-   const periodo = await Periodo.findById(id);
-   if (!periodo) {
-    throw new Error('Período não encontrado.');
-   }
-   return periodo;
-  } catch (error) {
-   throw error;
-  }
- }
-
- async update(id, data) {
-    // [SUGESTÃO DE MELHORIA]
-    // Se o seu 'data' no update também vem do Flutter
-    // você precisará fazer o mesmo mapeamento aqui:
-    const dadosMapeados = {};
-    if (data.titulo) dadosMapeados.titulo = data.titulo;
-    if (data.tipo) dadosMapeados.tipo = data.tipo;
-    if (data.startDate) dadosMapeados.dataInicio = data.startDate;
-    if (data.endDate) dadosMapeados.dataFim = data.endDate;
-    if (data.schoolYearId) dadosMapeados.anoLetivoId = data.schoolYearId;
-
-  try {
-   const periodo = await Periodo.findByIdAndUpdate(id, dadosMapeados, { new: true });
-   if (!periodo) {
-    throw new Error('Período não encontrado.');
-   }
-   return periodo;
-  } catch (error) {
-   throw error;
-  }
- }
-
- async delete(id) {
-  try {
-   const periodo = await Periodo.findByIdAndDelete(id);
-   if (!periodo) {
-    throw new Error('Período não encontrado.');
-   }
-   return { message: 'Período deletado com sucesso.' };
-  } catch (error) {
-   throw error;
-  }
- }
+    async delete(id, schoolId) {
+        try {
+            const periodo = await Periodo.findOneAndDelete({ _id: id, school_id: schoolId });
+            if (!periodo) {
+                throw new Error('Período não encontrado para exclusão.');
+            }
+            return { message: 'Período deletado com sucesso.' };
+        } catch (error) {
+            throw error;
+        }
+    }
 }
 
 module.exports = new PeriodoService();

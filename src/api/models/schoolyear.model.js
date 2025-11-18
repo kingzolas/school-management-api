@@ -4,21 +4,30 @@ const Schema = mongoose.Schema;
 const schoolYearSchema = new Schema({
     year: { 
         type: Number, 
-        required: true, 
-        unique: true // [MODIFICADO] O ano agora é a chave única
+        required: [true, 'O ano é obrigatório.'], 
+        // REMOVIDO: unique: true (agora a unicidade é composta, veja abaixo)
     },
     startDate: { 
         type: Date, 
-        required: true // Ex: 10/02/2025
+        required: [true, 'A data de início é obrigatória.'] 
     },
     endDate: { 
         type: Date, 
-        required: true // Ex: 20/12/2025
+        required: [true, 'A data de término é obrigatória.'] 
+    },
+    // --- [NOVO] LIGAÇÃO MULTI-TENANCY ---
+    school_id: {
+        type: Schema.Types.ObjectId,
+        ref: 'School',
+        required: [true, 'A referência da escola (school_id) é obrigatória.'],
+        index: true
     }
-    // [REMOVIDO] O campo schoolId foi removido
 }, { timestamps: true });
 
-// [REMOVIDO] O índice composto não é mais necessário
+// --- [NOVO] Índice Composto ---
+// Garante que o ano 2025 só exista uma vez NAQUELA ESCOLA.
+// Outra escola pode ter o ano 2025 também sem conflito.
+schoolYearSchema.index({ year: 1, school_id: 1 }, { unique: true });
 
 const SchoolYear = mongoose.model('SchoolYear', schoolYearSchema);
 module.exports = SchoolYear;

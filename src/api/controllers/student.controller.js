@@ -1,14 +1,24 @@
+// src/api/controllers/student.controller.js
 const StudentService = require('../services/student.service');
 const User = require('../models/user.model');
-// [CORREÇÃO] 1. Importe o seu EventEmitter global
-const appEmitter = require('../../loaders/eventEmitter'); // Verifique se o caminho está correto
+const appEmitter = require('../../loaders/eventEmitter'); 
+
+// Helper de verificação de SchoolId
+const getSchoolId = (req) => {
+    if (!req.user || !req.user.school_id) {
+        throw new Error('Usuário não autenticado ou não associado a uma escola.');
+    }
+    return req.user.school_id;
+};
 
 class StudentController {
 
-  async updateTutorRelationship(req, res) {
+    async updateTutorRelationship(req, res) {
         try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
             const { studentId, tutorId } = req.params;
-            const { relationship } = req.body; // Pega o 'relationship' do body
+            const { relationship } = req.body;
 
             if (!relationship) {
                  return res.status(400).json({ message: 'O campo "relationship" é obrigatório.' });
@@ -17,219 +27,246 @@ class StudentController {
             console.log(`[API] PUT /students/${studentId}/tutors/${tutorId}`);
             console.log(`[API] Novo relacionamento: ${relationship}`);
 
+            // [MODIFICADO] Passa o schoolId para o service
             const updatedLink = await StudentService.updateTutorRelationship(
                 studentId,
                 tutorId,
-                relationship
+                relationship,
+                schoolId
             );
             
-            // Retorna o objeto TutorInStudent (o "vínculo") atualizado
             res.status(200).json(updatedLink); 
 
         } catch (error) {
             console.error(`[API] Erro ao atualizar relacionamento: ${error.message}`);
-            // Verifica se o erro foi "não encontrado"
             if (error.message.includes('não encontrado')) {
                  return res.status(404).json({ message: error.message });
+            }
+            if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
             }
             res.status(500).json({ message: 'Erro interno ao atualizar relacionamento.', error: error.message });
         }
     }
-  
-  async create(req, res, next) {
-    try {
-      // --- [INÍCIO DEBUG] ---
-      console.log('--- [DEBUG API] DADOS RECEBIDOS (req.body) ---');
-      // O JSON.stringify(..., null, 2) formata o JSON para facilitar a leitura no console
-      console.log(JSON.stringify(req.body, null, 2));
-      console.log('--- [DEBUG API] FIM DOS DADOS (req.body) ---');
-      // --- [FIM DEBUG] ---
+ 
+    async create(req, res, next) {
+        try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
+            const creatorId = req.user.id; 
 
-      // 1. Pegamos o ID do usuário (do middleware de auth)
-      const creatorId = req.user.id; 
+            // (Debug inalterado)
+            console.log('--- [DEBUG API] DADOS RECEBIDOS (req.body) ---');
+            console.log(JSON.stringify(req.body, null, 2));
+            console.log('--- [DEBUG API] FIM DOS DADOS (req.body) ---');
 
-      // 2. Adicionamos o ID do criador aos dados do aluno
-      const studentData = {
-        ...req.body,
-        creator: creatorId // Garante que o service salve quem criou
-      };
+            const studentData = {
+                ...req.body,
+                creator: creatorId 
+            };
 
-      // --- [INÍCIO DEBUG] ---
-      console.log('--- [DEBUG API] DADOS ENVIADOS PARA O SERVICE (studentData) ---');
-      console.log(JSON.stringify(studentData, null, 2));
-      console.log('--- [DEBUG API] FIM DOS DADOS (studentData) ---');
-      // --- [FIM DEBUG] ---
+            // [MODIFICADO] Passa o schoolId para o service
+            const newStudent = await StudentService.createStudent(studentData, schoolId);
+            console.log('✅ SUCESSO: Aluno processado pelo service e salvo no banco.');
 
-      // 3. Chamamos o service para salvar o aluno
-      const newStudent = await StudentService.createStudent(studentData);
-      console.log('✅ SUCESSO: Aluno processado pelo service e salvo no banco.');
+            // Lógica de WebSocket (inalterada)
+            const creatorDoc = await User.findById(creatorId);
+            const creatorName = creatorDoc ? creatorDoc.fullName : 'Usuário';
 
-      // ==========================================================
-      // [CORREÇÃO] INÍCIO DA LÓGICA DO WEBSOCKET (usando appEmitter)
-      // ==========================================================
-      
-      // 4. Buscamos o nome do criador para enviar no payload
-      const creatorDoc = await User.findById(creatorId);
-      const creatorName = creatorDoc ? creatorDoc.fullName : 'Usuário';
+            const payload = {
+                creator: {
+                    id: req.user.id,
+                    fullName: creatorName
+                },
+                student: newStudent 
+            };
 
-      // 5. Montamos o payload EXATAMENTE como o Flutter espera
-     const payload = {
-        creator: {
-          id: req.user.id,
-          fullName: creatorName
-        },
-        
-        // ✅ CORREÇÃO: Envie o objeto 'newStudent' inteiro.
-        // O 'newStudent' é o documento que o StudentService retornou,
-        // já formatado e pronto para o Flutter.
-        student: newStudent 
-      }
+            appEmitter.emit('student:created', payload); 
+            console.log(`📡 EVENTO EMITIDO: student:created para o aluno ${newStudent.fullName}`);
+            
+            res.status(201).json(newStudent);
 
-      // 6. Emitimos o evento de NEGÓCIO. 
-      // O seu 'websocket.js' está ouvindo por 'student:created'
-      appEmitter.emit('student:created', payload); 
-
-      console.log(`📡 EVENTO EMITIDO: student:created para o aluno ${newStudent.fullName}`);
-      // ==========================================================
-      // [CORREÇÃO] FIM DA LÓGICA DO WEBSOCKET
-      // ==========================================================
-
-      // 7. Retornamos a resposta HTTP de sucesso
-      res.status(201).json(newStudent);
-
-    } catch (error) {
-      // 8. Tratamento de erro
-      console.error('❌ ERRO: Ocorreu um problema no controller ao tentar criar o aluno.');
-      // [DEBUG] Imprimindo o erro completo
-      console.error('Mensagem do Erro:', error.message);
-      console.error('Stack do Erro:', error.stack); // Adicionado para mais detalhes
-      next(error); 
+        } catch (error) {
+            console.error('❌ ERRO: Ocorreu um problema no controller ao tentar criar o aluno.');
+            console.error('Mensagem do Erro:', error.message);
+            console.error('Stack do Erro:', error.stack); 
+            if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
+            }
+            next(error); 
+        }
     }
-  }
 
-  async getAll(req, res) {
-    try {
-      const students = await StudentService.getAllStudents();
-      res.status(200).json(students);
-    } catch (error) {
-      res.status(500).json({ message: 'Erro ao buscar alunos', error: error.message });
+    async getAll(req, res) {
+        try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
+            // [MODIFICADO] Passa o schoolId para o service
+            const students = await StudentService.getAllStudents(schoolId);
+            res.status(200).json(students);
+        } catch (error) {
+            if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
+            }
+            res.status(500).json({ message: 'Erro ao buscar alunos', error: error.message });
+        }
     }
-  }
 
-  async getById(req, res) {
-    try {
-      const student = await StudentService.getStudentById(req.params.id);
-      if (!student) {
-        return res.status(404).json({ message: 'Aluno não encontrado' });
-      }
-      res.status(200).json(student);
-    } catch (error) {
-      res.status(500).json({ message: 'Erro ao buscar aluno', error: error.message });
+    async getById(req, res) {
+        try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
+            const { id } = req.params;
+            
+            // [MODIFICADO] Passa o schoolId para o service
+            const student = await StudentService.getStudentById(id, schoolId);
+            
+            // O service já trata o erro 404
+            res.status(200).json(student);
+            
+        } catch (error) {
+            if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
+            }
+            if (error.message.includes('não encontrado')) {
+                 return res.status(404).json({ message: error.message });
+            }
+            res.status(500).json({ message: 'Erro ao buscar aluno', error: error.message });
+        }
     }
-  }
 
-  async update(req, res) {
-    try {
-      const student = await StudentService.updateStudent(req.params.id, req.body);
-      if (!student) {
-        return res.status(404).json({ message: 'Aluno não encontrado' });
-      }
-      // [SUGESTÃO] Você pode querer emitir um evento 'student:updated' aqui também
-      // const payload = { ... };
-      // appEmitter.emit('student:updated', payload);
-      res.status(200).json(student);
-    } catch (error) {
-      res.status(400).json({ message: 'Erro ao atualizar aluno', error: error.message });
+    async update(req, res) {
+        try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
+            const { id } = req.params;
+
+            // [MODIFICADO] Passa o schoolId para o service
+            const student = await StudentService.updateStudent(id, req.body, schoolId);
+            
+            // O service já trata o erro 404
+            res.status(200).json(student);
+
+        } catch (error) {
+            if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
+            }
+             if (error.message.includes('não encontrado')) {
+                 return res.status(404).json({ message: error.message });
+            }
+            res.status(400).json({ message: 'Erro ao atualizar aluno', error: error.message });
+        }
     }
-  }
 
-  async delete(req, res) {
-    try {
-      const student = await StudentService.deleteStudent(req.params.id);
-      if (!student) {
-        return res.status(404).json({ message: 'Aluno não encontrado' });
-      }
-      // [SUGESTÃO] Você pode querer emitir um evento 'student:deleted' aqui
-      // appEmitter.emit('student:deleted', req.params.id);
-      res.status(200).json({ message: 'Aluno deletado com sucesso' });
-    } catch (error) {
-      res.status(500).json({ message: 'Erro ao deletar aluno', error: error.message });
+    async delete(req, res) {
+        try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
+            const { id } = req.params;
+            
+            // [MODIFICADO] Passa o schoolId para o service
+            const student = await StudentService.deleteStudent(id, schoolId);
+            
+            // O service já trata o erro 404
+            res.status(200).json({ message: 'Aluno deletado com sucesso' });
+            
+        } catch (error) {
+            if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
+            }
+             if (error.message.includes('não encontrado')) {
+                 return res.status(404).json({ message: error.message });
+            }
+            res.status(500).json({ message: 'Erro ao deletar aluno', error: error.message });
+        }
     }
-  }
 
-  // --- FUNÇÃO CORRIGIDA ---
-  async getUpcomingBirthdays(req, res) {
-    try {
-      // A única responsabilidade do controller é chamar o serviço
-      const students = await StudentService.getUpcomingBirthdays();
-      res.status(200).json(students);
-    } catch (error) {
-      res.status(500).json({ message: 'Erro ao buscar aniversariantes', error: error.message });
+    async getUpcomingBirthdays(req, res) {
+        try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
+            // [MODIFICADO] Passa o schoolId para o service
+            const students = await StudentService.getUpcomingBirthdays(schoolId);
+            res.status(200).json(students);
+        } catch (error) {
+            if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
+            }
+            res.status(500).json({ message: 'Erro ao buscar aniversariantes', error: error.message });
+        }
     }
-  }
-async addAcademicRecord(req, res, next) {
-    try {
-      const { studentId } = req.params;
-      const recordData = req.body; // O JSON do AcademicRecordSchema
 
-      // Validação básica
-      if (!recordData.gradeLevel || !recordData.schoolYear || !recordData.finalResult) {
-        return res.status(400).json({ message: 'Campos obrigatórios (gradeLevel, schoolYear, finalResult) não fornecidos.' });
-      }
+    async addAcademicRecord(req, res, next) {
+        try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
+            const { studentId } = req.params;
+            const recordData = req.body; 
 
-      const updatedStudent = await StudentService.addHistoryRecord(studentId, recordData);
-      if (!updatedStudent) {
-        return res.status(404).json({ message: 'Aluno não encontrado' });
-      }
-      
-      res.status(201).json(updatedStudent.academicHistory); // Retorna o histórico atualizado
+            if (!recordData.gradeLevel || !recordData.schoolYear || !recordData.finalResult) {
+                return res.status(400).json({ message: 'Campos obrigatórios (gradeLevel, schoolYear, finalResult) não fornecidos.' });
+            }
 
-    } catch (error) {
-      next(error);
+            // [MODIFICADO] Passa o schoolId para o service
+            const updatedStudent = await StudentService.addHistoryRecord(studentId, recordData, schoolId);
+            
+            res.status(201).json(updatedStudent.academicHistory); 
+
+        } catch (error) {
+            if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
+            }
+             if (error.message.includes('não encontrado')) {
+                 return res.status(404).json({ message: error.message });
+            }
+            next(error);
+        }
     }
-  }
 
-  /**
-  * Atualiza um registro acadêmico específico do histórico do aluno.
-  * Rota: PUT /api/students/:studentId/history/:recordId
-  */
-  async updateAcademicRecord(req, res, next) {
-    try {
-      const { studentId, recordId } = req.params;
-      const updatedData = req.body;
+    async updateAcademicRecord(req, res, next) {
+        try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
+            const { studentId, recordId } = req.params;
+            const updatedData = req.body;
 
-      const updatedStudent = await StudentService.updateHistoryRecord(studentId, recordId, updatedData);
-      if (!updatedStudent) {
-        return res.status(404).json({ message: 'Aluno ou registro não encontrado' });
-      }
-      
-      res.status(200).json(updatedStudent.academicHistory); // Retorna o histórico atualizado
+            // [MODIFICADO] Passa o schoolId para o service
+            const updatedStudent = await StudentService.updateHistoryRecord(studentId, recordId, updatedData, schoolId);
+            
+            res.status(200).json(updatedStudent.academicHistory);
 
-    } catch (error) {
-      next(error);
+        } catch (error) {
+            if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
+            }
+             if (error.message.includes('não encontrado')) {
+                 return res.status(404).json({ message: error.message });
+            }
+            next(error);
+        }
     }
-  }
 
-  /**
-  * Deleta um registro acadêmico específico do histórico do aluno.
-  * Rota: DELETE /api/students/:studentId/history/:recordId
-  */
-  async deleteAcademicRecord(req, res, next) {
-    try {
-      const { studentId, recordId } = req.params;
+    async deleteAcademicRecord(req, res, next) {
+        try {
+            // [MODIFICADO] Pega o schoolId do usuário logado
+            const schoolId = getSchoolId(req);
+            const { studentId, recordId } = req.params;
 
-      const updatedStudent = await StudentService.deleteHistoryRecord(studentId, recordId);
-      if (!updatedStudent) {
-        return res.status(404).json({ message: 'Aluno ou registro não encontrado' });
-      }
-      
-      res.status(200).json(updatedStudent.academicHistory); // Retorna o histórico atualizado
+            // [MODIFICADO] Passa o schoolId para o service
+            const updatedStudent = await StudentService.deleteHistoryRecord(studentId, recordId, schoolId);
 
-    } catch (error) {
-      next(error);
+            res.status(200).json(updatedStudent.academicHistory);
+
+        } catch (error) {
+             if (error.message.includes('não autenticado')) {
+                 return res.status(403).json({ message: error.message });
+            }
+             if (error.message.includes('não encontrado')) {
+                 return res.status(404).json({ message: error.message });
+            }
+            next(error);
+        }
     }
-  }
-
 }
 
 module.exports = new StudentController();

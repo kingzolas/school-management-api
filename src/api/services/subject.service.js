@@ -1,41 +1,45 @@
+// src/api/services/subject.service.js
 const Subject = require('../models/subject.model');
-const StaffProfile = require('../models/staffProfile.model'); // Importa o StaffProfile para checagem
+const StaffProfile = require('../models/staffProfile.model');
 
 class SubjectService {
 
     /**
-     * Cria uma nova disciplina.
+     * Cria uma nova disciplina vinculada a uma escola.
      */
-    async createSubject(subjectData) {
+    async createSubject(subjectData, schoolId) {
         try {
-            const newSubject = new Subject(subjectData);
+            const newSubject = new Subject({
+                ...subjectData,
+                school_id: schoolId // Força o ID da escola
+            });
             await newSubject.save();
             return newSubject;
         } catch (error) {
-            // Trata o erro de "nome duplicado" (índice unique)
             if (error.code === 11000) {
-                throw new Error(`A disciplina '${subjectData.name}' já existe.`);
+                throw new Error(`A disciplina '${subjectData.name}' já existe nesta escola.`);
             }
-            // Re-lança outros erros de validação
             throw error;
         }
     }
 
     /**
-     * Busca todas as disciplinas, permitindo filtros (ex: por 'level').
+     * Busca todas as disciplinas de uma escola específica com filtros opcionais.
      */
-    async getAllSubjects(filter = {}) {
-        // Ordena por nível e depois por nome
-        return await Subject.find(filter).sort({ level: 1, name: 1 });
+    async getAllSubjects(filter = {}, schoolId) {
+        // Garante que só busque dados da escola do usuário
+        const query = { ...filter, school_id: schoolId };
+        return await Subject.find(query).sort({ level: 1, name: 1 });
     }
 
     /**
-     * Busca uma disciplina por ID.
+     * Busca uma disciplina por ID e Escola (segurança extra).
      */
-    async getSubjectById(id) {
-        const subject = await Subject.findById(id);
+    async getSubjectById(id, schoolId) {
+        const subject = await Subject.findOne({ _id: id, school_id: schoolId });
+        
         if (!subject) {
-            throw new Error('Disciplina não encontrada.');
+            throw new Error('Disciplina não encontrada ou você não tem permissão para acessá-la.');
         }
         return subject;
     }
@@ -43,23 +47,27 @@ class SubjectService {
     /**
      * Atualiza uma disciplina.
      */
-    async updateSubject(id, updateData) {
-        // Se o nome está sendo atualizado, checa se ele já existe em outro doc
+    async updateSubject(id, updateData, schoolId) {
+        // Verificação de duplicidade manual para update (scopada por escola)
         if (updateData.name) {
-            try {
-                const existing = await Subject.findOne({ name: updateData.name, _id: { $ne: id } });
-                if (existing) {
-                    throw new Error(`A disciplina '${updateData.name}' já existe.`);
-                }
-            } catch (error) {
-                throw new Error(error.message);
+            const existing = await Subject.findOne({ 
+                name: updateData.name, 
+                school_id: schoolId, 
+                _id: { $ne: id } 
+            });
+            if (existing) {
+                throw new Error(`A disciplina '${updateData.name}' já existe nesta escola.`);
             }
         }
         
-        const updatedSubject = await Subject.findByIdAndUpdate(id, updateData, {
-            new: true, // Retorna o documento atualizado
-            runValidators: true // Roda os validadores (enum, required)
-        });
+        // Impede que o usuário mude a disciplina de escola via update
+        delete updateData.school_id; 
+
+        const updatedSubject = await Subject.findOneAndUpdate(
+            { _id: id, school_id: schoolId }, // Query de segurança
+            updateData,
+            { new: true, runValidators: true }
+        );
 
         if (!updatedSubject) {
             throw new Error('Disciplina não encontrada para atualizar.');
@@ -70,71 +78,62 @@ class SubjectService {
     /**
      * Deleta uma disciplina.
      */
-    async deleteSubject(id) {
-        // --- Regra de Negócio Crítica ---
-        // Verifica se alguma 'StaffProfile' (professor) está usando esta disciplina
+    async deleteSubject(id, schoolId) {
+        // 1. Verifica se a disciplina existe e pertence à escola
+        const subject = await Subject.findOne({ _id: id, school_id: schoolId });
+        if (!subject) {
+            throw new Error('Disciplina não encontrada para deletar.');
+        }
+
+        // 2. Regra de Negócio: Verifica uso em StaffProfile
+        // Nota: StaffProfile também deve ter school_id, mas o ID da disciplina já é único globalmente.
         const usageCount = await StaffProfile.countDocuments({ enabledSubjects: id });
 
         if (usageCount > 0) {
             throw new Error(`Não é possível excluir. Esta disciplina está habilitada para ${usageCount} funcionário(s).`);
         }
-        // --- Fim da Verificação ---
 
-        const deletedSubject = await Subject.findByIdAndDelete(id);
-        if (!deletedSubject) {
-            throw new Error('Disciplina não encontrada para deletar.');
-        }
-        return deletedSubject;
+        await Subject.findByIdAndDelete(id);
+        return subject;
     }
 
-/**
-     * [CORRIGIDO] Cria múltiplas disciplinas (em lote).
+    /**
+     * Cria múltiplas disciplinas (em lote) para uma escola específica.
      */
-    async createMultipleSubjects(subjectsData) {
+    async createMultipleSubjects(subjectsData, schoolId) {
         if (!Array.isArray(subjectsData) || subjectsData.length === 0) {
-            throw new Error('Dados de entrada inválidos. Um array de disciplinas é esperado.');
+            throw new Error('Dados de entrada inválidos.');
         }
 
-        let createdSubjects = []; // Armazena os docs criados
+        // Injeta o school_id em todos os objetos do array
+        const subjectsWithSchool = subjectsData.map(sub => ({
+            ...sub,
+            school_id: schoolId
+        }));
+
+        let createdSubjects = [];
 
         try {
-            // Esta linha SÓ funciona se TUDO der certo (nenhuma duplicata)
-            createdSubjects = await Subject.insertMany(subjectsData, { ordered: false });
-            return createdSubjects; // Retorna a lista completa
+            createdSubjects = await Subject.insertMany(subjectsWithSchool, { ordered: false });
+            return createdSubjects;
 
         } catch (error) {
-            // Entra aqui se PELO MENOS UM falhou (ex: duplicata)
-            // Este é o comportamento esperado quando 'ordered: false' encontra duplicatas
             if (error.name === 'MongoBulkWriteError' && error.code === 11000) {
+                console.warn('Aviso de BulkWrite: Duplicatas ignoradas para esta escola.');
                 
-                console.warn('Aviso de BulkWrite: Algumas disciplinas duplicadas foram ignoradas.');
-                
-                // [A CORREÇÃO]
-                // O 'error.result' contém os IDs que FORAM inseridos, mesmo com o erro
                 if (error.result && error.result.insertedIds && error.result.insertedIds.length > 0) {
-                    
-                    // Pega os IDs dos documentos que *foram* inseridos
                     const insertedIds = error.result.insertedIds.map(doc => doc._id);
-                    
-                    // Busca esses documentos no banco para retornar
                     createdSubjects = await Subject.find({ _id: { $in: insertedIds } });
-                    
-                    // Retorna os que foram criados com sucesso nesta execução
                     return createdSubjects; 
                 } 
                 
-                // Se 'insertedIds' está vazio, significa que NENHUMA nova foi criada
-                // (provavelmente todas já existiam, o que não é um erro fatal)
-                console.log('Nenhuma disciplina nova foi inserida (provavelmente já existem).');
-                return []; // Retorna um array vazio, indicando sucesso mas 0 criações.
+                return []; 
             }
             
-            // Lança outros erros (ex: validação de 'level' falhou)
-            console.error("Erro não esperado no insertMany:", error);
-            throw new Error(`Erro ao inserir disciplinas em lote: ${error.message}`);
+            console.error("Erro no insertMany:", error);
+            throw new Error(`Erro ao inserir disciplinas: ${error.message}`);
         }
     }
-    
 }
 
 module.exports = new SubjectService();

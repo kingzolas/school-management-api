@@ -2,37 +2,47 @@ const SchoolYear = require('../models/schoolyear.model');
 
 class SchoolYearService {
     
-    async create(data) {
+    /**
+     * Cria um novo ano letivo vinculado à escola.
+     */
+    async create(data, schoolId) {
         try {
-            // [REMOVIDA] Validação de schoolId
-            // if (!data.schoolId) { ... }
-
-            const schoolYear = await SchoolYear.create(data);
+            const schoolYear = new SchoolYear({
+                ...data,
+                school_id: schoolId // Força o ID da escola
+            });
+            await schoolYear.save();
             return schoolYear;
         } catch (error) {
             if (error.code === 11000) {
-                // [MODIFICADO] Mensagem de erro atualizada
-                throw new Error('Este ano letivo (ex: 2025) já está cadastrado.');
+                throw new Error(`O ano letivo ${data.year} já está cadastrado nesta escola.`);
             }
             throw error;
         }
     }
 
-    async find(query) {
+    /**
+     * Busca anos letivos apenas da escola solicitante.
+     */
+    async find(query, schoolId) {
         try {
-            // [MODIFICADO] A query não precisa mais de schoolId
-            const schoolYears = await SchoolYear.find(query).sort({ year: -1 });
+            // Força o filtro por escola
+            const filter = { ...query, school_id: schoolId };
+            const schoolYears = await SchoolYear.find(filter).sort({ year: -1 });
             return schoolYears;
         } catch (error) {
             throw error;
         }
     }
 
-    async findById(id) {
+    /**
+     * Busca por ID garantindo que pertença à escola.
+     */
+    async findById(id, schoolId) {
         try {
-            const schoolYear = await SchoolYear.findById(id);
+            const schoolYear = await SchoolYear.findOne({ _id: id, school_id: schoolId });
             if (!schoolYear) {
-                throw new Error('Ano Letivo não encontrado.');
+                throw new Error('Ano Letivo não encontrado ou sem permissão.');
             }
             return schoolYear;
         } catch (error) {
@@ -40,28 +50,55 @@ class SchoolYearService {
         }
     }
 
-    async update(id, data) {
+    /**
+     * Atualiza verificando duplicidade dentro da escola.
+     */
+    async update(id, data, schoolId) {
         try {
-            const schoolYear = await SchoolYear.findByIdAndUpdate(id, data, { new: true });
+            // Se estiver tentando mudar o ano (ex: de 2024 para 2025),
+            // verifica se 2025 já não existe nessa escola.
+            if (data.year) {
+                const existing = await SchoolYear.findOne({ 
+                    year: data.year, 
+                    school_id: schoolId, 
+                    _id: { $ne: id } 
+                });
+                if (existing) {
+                    throw new Error(`O ano letivo ${data.year} já existe nesta escola.`);
+                }
+            }
+
+            // Remove school_id do data para evitar que o usuário troque o registro de escola
+            delete data.school_id;
+
+            const schoolYear = await SchoolYear.findOneAndUpdate(
+                { _id: id, school_id: schoolId }, 
+                data, 
+                { new: true, runValidators: true }
+            );
+
             if (!schoolYear) {
-                throw new Error('Ano Letivo não encontrado.');
+                throw new Error('Ano Letivo não encontrado para atualização.');
             }
             return schoolYear;
         } catch (error) {
-            if (error.code === 11000) {
-                throw new Error('Este ano letivo (ex: 2025) já está cadastrado.');
-            }
             throw error;
         }
     }
 
-    async delete(id) {
+    /**
+     * Deleta garantindo a escola.
+     */
+    async delete(id, schoolId) {
         try {
-            const schoolYear = await SchoolYear.findByIdAndDelete(id);
+            // Aqui você poderia adicionar validação se existem turmas vinculadas a esse ano antes de deletar
+            
+            const schoolYear = await SchoolYear.findOneAndDelete({ _id: id, school_id: schoolId });
+            
             if (!schoolYear) {
-                throw new Error('Ano Letivo não encontrado.');
+                throw new Error('Ano Letivo não encontrado para exclusão.');
             }
-            return { message: 'Ano Letivo deletado com sucesso.' };
+            return { message: 'Ano Letivo deletado com sucesso.', deletedId: id };
         } catch (error) {
             throw error;
         }

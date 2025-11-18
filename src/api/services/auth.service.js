@@ -1,51 +1,60 @@
 // src/api/services/auth.service.js
 const User = require('../models/user.model');
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = process.env.JWT_SECRET; // Pega a chave do .env
+const JWT_SECRET = process.env.JWT_SECRET; 
 
 class AuthService {
     async login(identifier, password) {
-        // [CORREÇÃO] Adiciona .select('+password') para forçar a inclusão da senha
         const user = await User.findOne({
             $or: [{ email: identifier }, { username: identifier }]
-        }).select('+password'); // <<< A CORREÇÃO ESTÁ AQUI
+        }).select('+password'); 
 
         if (!user) {
-            throw new Error('Credenciais inválidas.'); // Usuário não encontrado
+            throw new Error('Credenciais inválidas.'); 
         }
 
-        // [NOVO] Adiciona verificação de status (do seu novo model)
         if (user.status === 'Inativo') {
              throw new Error('Esta conta de usuário está inativa.');
         }
 
-        // Agora user.password estará definido (o hash)
         const isMatch = await user.comparePassword(password);
 
         if (!isMatch) {
-            throw new Error('Credenciais inválidas.'); // Senha incorreta
+            throw new Error('Credenciais inválidas.'); 
         }
 
-        // Se deu tudo certo, gera um token
+        if (!user.school_id) {
+            console.error(`[AUTH_FAILURE] Usuário ${user._id} tentou logar sem um school_id associado.`);
+            throw new Error('Esta conta de usuário não está vinculada a nenhuma escola. Contate o suporte.');
+        }
+        
+        // =================================================================
+        // A CORREÇÃO ESTÁ AQUI
+        // =================================================================
+        // O payload que será colocado DENTRO do token
         const payload = {
-            id: user._id,
+            // Converte os ObjectIds para Strings
+            id: user._id.toString(), // <-- CORRIGIDO
             fullName: user.fullName,
-            roles: user.roles // [MODIFICADO] Usa 'roles' (plural) do seu novo model
+            roles: user.roles,
+            school_id: user.school_id.toString() // <-- CORRIGIDO
         };
+        // =================================================================
 
         if (!JWT_SECRET) {
-             console.error("ERRO CRÍTICO: JWT_SECRET não está definida nas variáveis de ambiente.");
-             throw new Error('Erro interno do servidor ao gerar token.');
+            console.error("ERRO CRÍTICO: JWT_SECRET não está definida nas variáveis de ambiente.");
+            throw new Error('Erro interno do servidor ao gerar token.');
         }
+        
+        console.log(`✅ [AUTH SERVICE] Gerando token para ${user.username} com o payload:`);
+        console.log(payload); // O print agora mostrará strings
 
         const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
 
-        // [NOVO] Popula os perfis de trabalho antes de retornar
-        // Isso garante que o Flutter receba os dados do professor/admin no login
         await user.populate('staffProfiles');
 
         const userObject = user.toObject();
-        delete userObject.password; // Remove a senha ANTES de enviar ao cliente
+        delete userObject.password; 
 
         return { user: userObject, token };
     }

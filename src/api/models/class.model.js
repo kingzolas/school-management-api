@@ -1,17 +1,15 @@
+// src/api/models/class.model.js
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
-// Sub-schema para intervalos (recreios)
+// Sub-schemas (inalterados)
 const breakSchema = new Schema({
     description: { type: String, default: 'Intervalo' },
     startTime: { type: String, required: true }, // "HH:MM"
     endTime: { type: String, required: true }    // "HH:MM"
 }, { _id: false });
 
-// Sub-schema para regras de dias específicos (exceções)
-// (Esta parte já estava correta, só informa o novo N° de aulas)
 const dayOverrideSchema = new Schema({
-    // 1=Seg, 2=Ter, 3=Qua, 4=Qui, 5=Sex, 6=Sáb
     dayOfWeek: { type: Number, required: true, min: 1, max: 6 }, 
     numberOfPeriods: { type: Number, required: true, min: 1 }
 }, { _id: false });
@@ -30,7 +28,7 @@ const classSchema = new Schema({
     },
     level: { 
         type: String,
-        required: [true, 'O nível de ensino (Infantil, Fundamental I, etc.) é obrigatório.'],
+        required: [true, 'O nível de ensino é obrigatório.'],
         enum: ['Educação Infantil', 'Ensino Fundamental I', 'Ensino Fundamental II', 'Ensino Médio'],
     },
     grade: { 
@@ -51,20 +49,22 @@ const classSchema = new Schema({
     },
     capacity: { type: Number, min: [1, 'A capacidade deve ser pelo menos 1.'] },
     
-    // --- [ESTRUTURA DE REGRAS DE HORÁRIO ATUALIZADA] ---
     scheduleSettings: {
-        // Regra Padrão
-        defaultStartTime: { type: String, trim: true },       // "HH:MM"
-        // defaultEndTime: { type: String, trim: true },      // <-- REMOVIDO
-        
-        defaultPeriodDuration: { type: Number, min: 1 },    // <-- [NOVO] Duração da aula em minutos (ex: 50)
-        
-        defaultNumberOfPeriods: { type: Number, min: 1 },     // Ex: 5 (aulas)
-        defaultBreaks: [breakSchema],                         // Lista de intervalos
-        
-        // Regras de Exceção
+        defaultStartTime: { type: String, trim: true },
+        defaultPeriodDuration: { type: Number, min: 1 },
+        defaultNumberOfPeriods: { type: Number, min: 1 },
+        defaultBreaks: [breakSchema],
         dayOverrides: [dayOverrideSchema]
     },
+
+    // --- [NOVO] LIGAÇÃO MULTI-TENANCY ---
+    school_id: {
+        type: Schema.Types.ObjectId,
+        ref: 'School', // Referencia o modelo 'School'
+        required: [true, 'A referência da escola (school_id) é obrigatória.'],
+        index: true // Melhora a performance de buscas por escola
+    },
+    // ------------------------------------
 
     status: {
         type: String,
@@ -74,7 +74,11 @@ const classSchema = new Schema({
     },
 }, { timestamps: true });
 
-classSchema.index({ name: 1, schoolYear: 1 }, { unique: true, collation: { locale: 'pt', strength: 2 } });
+// [MODIFICADO] Índice de unicidade agora inclui a escola
+classSchema.index(
+    { name: 1, schoolYear: 1, school_id: 1 }, 
+    { unique: true, collation: { locale: 'pt', strength: 2 } }
+);
 
 const Class = mongoose.model('Class', classSchema);
 module.exports = Class;

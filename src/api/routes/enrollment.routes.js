@@ -1,42 +1,25 @@
+// src/api/routes/enrollment.routes.js
 const express = require('express');
 const router = express.Router();
 const enrollmentController = require('../controllers/enrollment.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
-// const { isAdminOrStaff } = require('../middlewares/role.middleware'); // Exemplo
 
-// Criar nova matrícula (Ex: Admin ou Secretaria)
-router.post(
-    '/',
-    [authMiddleware.verifyToken /*, isAdminOrStaff */],
-    enrollmentController.create
-);
+// --- Middleware para todas as rotas ---
+router.use(authMiddleware.verifyToken);
 
-// Listar matrículas (com filtros via query params) (Ex: Todos autenticados)
-router.get(
-    '/',
-    [authMiddleware.verifyToken],
-    enrollmentController.getAll
-);
+// Criar nova matrícula
+router.post('/', enrollmentController.create);
 
-// Obter detalhes de uma matrícula (Ex: Todos autenticados)
-router.get(
-    '/:id',
-    [authMiddleware.verifyToken],
-    enrollmentController.getById
-);
+// Listar matrículas
+router.get('/', enrollmentController.getAll);
 
-// Atualizar uma matrícula (status, fee) (Ex: Admin ou Secretaria)
-router.patch(
-    '/:id',
-    [authMiddleware.verifyToken /*, isAdminOrStaff */],
-    enrollmentController.update
-);
+// Obter detalhes de uma matrícula
+router.get('/:id', enrollmentController.getById);
 
-// Deletar (cancelar) uma matrícula (Ex: Admin ou Secretaria)
-router.delete(
-    '/:id',
-    [authMiddleware.verifyToken /*, isAdminOrStaff */],
-    enrollmentController.delete
-);
+// Atualizar uma matrícula
+router.patch('/:id', enrollmentController.update);
+
+// Deletar (cancelar) uma matrícula
+router.delete('/:id', enrollmentController.delete);
 
 module.exports = router;

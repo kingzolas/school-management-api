@@ -1,3 +1,4 @@
+// src/api/services/user.service.js
 const mongoose = require('mongoose');
 const User = require('../models/user.model');
 const StaffProfile = require('../models/staffProfile.model');
@@ -16,17 +17,17 @@ const staffProfileModelFields = [
     'academicFormation', 'enabledLevels', 'enabledSubjects'
 ];
 
-
 class UserService {
     
     /**
-     * [MODULAR] Cria um novo Funcionário (User + StaffProfile).
-     * Usa Transações em Produção (NODE_ENV=production) e Reversão Manual em Desenvolvimento.
+     * Cria um novo Funcionário (User + StaffProfile).
+     * Injeta 'schoolId' nos registros para garantir o vínculo.
      */
-    async createStaff(fullData) {
-        // Separa os dados do req.body
+    async createStaff(fullData, schoolId) {
+        // Separa os dados
         const userData = {};
         const profileData = {};
+        
         Object.keys(fullData).forEach(key => {
             if (userModelFields.includes(key)) {
                 userData[key] = fullData[key];
@@ -35,116 +36,131 @@ class UserService {
             }
         });
 
-        // Verifica o ambiente
+        // --- [CRÍTICO] INJETA O ID DA ESCOLA ---
+        userData.school_id = schoolId;
+        profileData.school_id = schoolId; 
+        // --------------------------------------
+
+        // Lógica com Transação (Recomendado para Produção)
         if (process.env.NODE_ENV === 'production') {
-            // --- LÓGICA DE PRODUÇÃO (COM TRANSAÇÃO) ---
             const session = await mongoose.startSession();
             session.startTransaction();
             try {
+                // 1. Cria User
                 const newUserArr = await User.create([userData], { session });
                 const newUser = newUserArr[0];
 
+                // 2. Cria Profile linkado
                 profileData.user = newUser._id;
                 const newProfileArr = await StaffProfile.create([profileData], { session });
                 const newProfile = newProfileArr[0];
 
+                // 3. Atualiza User com Profile
                 newUser.staffProfiles.push(newProfile._id);
                 await newUser.save({ session });
 
-                await session.commitTransaction(); // Confirma tudo
+                await session.commitTransaction();
 
-                // Busca o usuário populado para retornar e emitir
-                const populatedUser = await this.getUserById(newUser._id);
+                // Retorna populado e seguro
+                const populatedUser = await this.getUserById(newUser._id, schoolId);
                 appEmitter.emit('user:created', populatedUser);
                 return populatedUser;
 
             } catch (error) {
-                await session.abortTransaction(); // Desfaz tudo
-                throw error; // Lança o erro para o controller
+                await session.abortTransaction();
+                throw error;
             } finally {
                 session.endSession();
             }
 
         } else {
-            // --- LÓGICA DE DESENVOLVIMENTO LOCAL (SEM TRANSAÇÃO) ---
-            // (Usa reversão manual)
+            // Lógica Simples (Dev/Test - Sem Réplica Set do Mongo)
             let newUser;
             try {
-                // 1. Cria o Usuário
+                // 1. Cria User
                 newUser = new User(userData);
                 await newUser.save();
                 
-                // 2. Tenta criar o Perfil
+                // 2. Cria Profile
                 profileData.user = newUser._id;
                 const newProfile = new StaffProfile(profileData);
                 await newProfile.save();
 
-                // 3. Liga o Perfil de volta ao Usuário
+                // 3. Linka
                 newUser.staffProfiles.push(newProfile._id);
                 await newUser.save();
 
-                // 4. Busca o usuário populado para retornar e emitir
-                const populatedUser = await this.getUserById(newUser._id);
+                const populatedUser = await this.getUserById(newUser._id, schoolId);
                 appEmitter.emit('user:created', populatedUser);
                 return populatedUser;
                 
             } catch (error) {
-                // Se o usuário foi criado (newUser._id existe) mas o perfil falhou,
-                // precisamos deletar o usuário "órfão".
+                // Rollback manual simples em caso de erro no perfil
                 if (newUser && newUser._id) {
-                    console.warn(`REVERSÃO: Falha ao criar StaffProfile. Deletando usuário ${newUser._id}...`);
+                    console.warn(`REVERSÃO: Falha ao criar StaffProfile. Removendo user ${newUser._id}...`);
                     await User.findByIdAndDelete(newUser._id);
                 }
-                // Lança o erro original (ex: falha de validação do StaffProfile)
                 throw error;
             }
         }
     }
 
     /**
-     * [Mantido] Cria um usuário simples (sem perfil).
+     * Cria um usuário simples (sem perfil de staff).
      */
-    async createUser(userData) {
-        const newUser = new User(userData);
+    async createUser(userData, schoolId) {
+        // Injeta a escola
+        const dataToSave = { ...userData, school_id: schoolId };
+
+        const newUser = new User(dataToSave);
         await newUser.save();
+        
         const userObject = newUser.toObject();
         delete userObject.password;
+        
         appEmitter.emit('user:created', userObject);
         return userObject;
     }
 
     /**
-     * [ATUALIZADO] Busca todos os usuários, populando seus perfis.
+     * Busca todos os usuários APENAS da escola informada.
      */
-    async getAllUsers() {
-        return await User.find()
+    async getAllUsers(schoolId) {
+        return await User.find({ school_id: schoolId })
             .select('-password')
             .populate({
                 path: 'staffProfiles',
-                populate: { path: 'enabledSubjects', model: 'Subject' } // Popula as disciplinas dentro do perfil
+                populate: { path: 'enabledSubjects', model: 'Subject' } 
             });
     }
 
     /**
-     * [ATUALIZADO] Busca um usuário por ID, populando seu perfil.
+     * Busca um usuário por ID, garantindo que pertença à escola.
      */
-    async getUserById(id) {
-        const user = await User.findById(id)
+    async getUserById(id, schoolId) {
+        const user = await User.findOne({ _id: id, school_id: schoolId })
             .select('-password')
             .populate({
                 path: 'staffProfiles',
-                populate: { path: 'enabledSubjects', model: 'Subject' } // Popula as disciplinas
+                populate: { path: 'enabledSubjects', model: 'Subject' } 
             });
-        if (!user) throw new Error('Usuário não encontrado.');
+            
+        if (!user) {
+            throw new Error('Usuário não encontrado ou não pertence a esta escola.');
+        }
         return user;
     }
 
     /**
-     * [ATUALIZADO] Atualiza um funcionário (User e StaffProfile).
+     * Atualiza um funcionário.
      */
-    async updateStaff(id, updateData) {
+    async updateStaff(id, updateData, schoolId) {
         if (updateData.password) delete updateData.password;
         
+        // 1. Busca e Valida Propriedade
+        const user = await User.findOne({ _id: id, school_id: schoolId });
+        if (!user) throw new Error('Usuário não encontrado ou não pertence a esta escola.');
+
         const userData = {};
         const profileData = {};
         Object.keys(updateData).forEach(key => {
@@ -152,34 +168,41 @@ class UserService {
             else if (staffProfileModelFields.includes(key)) profileData[key] = updateData[key];
         });
 
-        const user = await User.findById(id);
-        if (!user) throw new Error('Usuário não encontrado.');
+        // Garante que não muda a escola
+        delete userData.school_id;
+        delete profileData.school_id;
 
+        // 2. Atualiza User
         if (Object.keys(userData).length > 0) {
             Object.assign(user, userData);
             await user.save();
         }
 
+        // 3. Atualiza StaffProfile (se existir)
         if (Object.keys(profileData).length > 0 && user.staffProfiles.length > 0) {
             const profileId = user.staffProfiles[0];
+            // Nota: StaffProfile é filho, assumimos segurança pelo pai (User), 
+            // mas poderíamos validar school_id no profile também.
             await StaffProfile.findByIdAndUpdate(profileId, profileData, { new: true, runValidators: true });
         }
 
-        const fullyPopulatedUser = await this.getUserById(id); 
+        const fullyPopulatedUser = await this.getUserById(id, schoolId); 
         appEmitter.emit('user:updated', fullyPopulatedUser);
         return fullyPopulatedUser;
     }
 
     /**
-     * [ATUALIZADO] Inativa um usuário (Status: 'Inativo')
+     * Inativa um usuário da escola.
      */
-    async inactivateUser(id) {
-        const user = await User.findByIdAndUpdate(
-            id, { status: 'Inativo' }, { new: true }
+    async inactivateUser(id, schoolId) {
+        const user = await User.findOneAndUpdate(
+            { _id: id, school_id: schoolId }, // Filtro seguro
+            { status: 'Inativo' },
+            { new: true }
         ).select('-password').populate('staffProfiles');
 
         if (!user) {
-            throw new Error('Usuário não encontrado.');
+            throw new Error('Usuário não encontrado ou não pertence a esta escola.');
         }
 
         appEmitter.emit('user:updated', user); 

@@ -18,11 +18,12 @@ const courseLoadRoutes = require('./api/routes/courseLoad.routes');
 const invoiceRoutes = require('./api/routes/invoice.routes.js');
 const webhookRoutes = require('./api/routes/webhook.routes.js');
 const assistantRoutes = require('./api/routes/assistant.routes.js');
+const negotiationRoutes = require('./api/routes/negotiation.routes.js'); 
 
 // ===================================================================
 // [NOVA IMPORTAÇÃO]
-// Aqui está a rota que faltava:
-const negotiationRoutes = require('./api/routes/negotiation.routes.js'); 
+// Importa as rotas de Escola
+const schoolRoutes = require('./api/routes/school.routes.js');
 // ===================================================================
 
 const app = express();
@@ -57,11 +58,12 @@ app.use('/api/course-loads', courseLoadRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/webhook', webhookRoutes); 
 app.use('/api/assistant', assistantRoutes); 
+app.use('/api/negotiations', negotiationRoutes);
 
 // ===================================================================
 // [NOVO REGISTRO]
-// Registra o prefixo /api/negotiations para usar o arquivo de rotas
-app.use('/api/negotiations', negotiationRoutes);
+// Registra o prefixo /api/schools para usar o arquivo de rotas
+app.use('/api/schools', schoolRoutes);
 // ===================================================================
 
 module.exports = app;

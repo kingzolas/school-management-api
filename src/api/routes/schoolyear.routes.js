@@ -1,16 +1,14 @@
 const router = require('express').Router();
 const controller = require('../controllers/schoolyear.controller');
-
-// [CORRIGIDO] Importe a função 'verifyToken' de dentro do objeto exportado
 const { verifyToken } = require('../middlewares/auth.middleware');
 
-// Prefix: /api/school-years
+// Todas as rotas são protegidas e exigem login (para pegar o school_id)
+router.use(verifyToken);
 
-// [CORRIGIDO] Use a função 'verifyToken' diretamente
-router.post('/', verifyToken, controller.create);
-router.get('/', verifyToken, controller.getAll);
-router.get('/:id', verifyToken, controller.getById);
-router.put('/:id', verifyToken, controller.update);
-router.delete('/:id', verifyToken, controller.remove);
+router.post('/', controller.create);
+router.get('/', controller.getAll);
+router.get('/:id', controller.getById);
+router.put('/:id', controller.update); // ou .patch
+router.delete('/:id', controller.remove);
 
 module.exports = router;

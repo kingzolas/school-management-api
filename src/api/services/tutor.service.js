@@ -1,115 +1,82 @@
+// src/api/services/tutor.service.js
 const Tutor = require('../models/tutor.model');
 
 class TutorService {
 
     /**
-     * Busca todos os tutores cadastrados.
-     * Popula os alunos associados a cada tutor.
+     * [MODIFICADO] Busca todos os tutores FILTRADOS POR ESCOLA.
      */
-    async getAllTutors() {
+    async getAllTutors(schoolId) {
         try {
-            // .populate('students') busca os dados dos alunos referenciados
-            const tutors = await Tutor.find().populate('students');
+            // [MODIFICADO] Adiciona o filtro { school_id: schoolId }
+            const tutors = await Tutor.find({ school_id: schoolId })
+                                      .populate('students');
             return tutors;
         } catch (error) {
             console.error("Erro no service ao buscar todos os tutores:", error.message);
             throw new Error(`Erro ao buscar tutores: ${error.message}`);
         }
     }
-async updateTutorRelationship(studentId, tutorId, newRelationship) {
-        try {
-            console.log(`[SERVICE] Atualizando relacionamento: Aluno ${studentId}, Tutor ${tutorId}`);
-            
-            // Encontra o aluno pelo ID
-            const student = await Student.findById(studentId);
-            if (!student) {
-                throw new Error('Aluno não encontrado.');
-            }
 
-            // Encontra o vínculo do tutor dentro do array 'tutors' do aluno
-            // Usamos .find() para obter a referência direta ao subdocumento
-            const tutorLink = student.tutors.find(
-                (t) => t.tutorInfo.toString() === tutorId
-            );
-
-            if (!tutorLink) {
-                throw new Error('Vínculo com tutor não encontrado no aluno.');
-            }
-
-            // Atualiza o campo relationship
-            tutorLink.relationship = newRelationship;
-
-            // Salva o documento PAI (o aluno) para persistir a mudança no subdocumento
-            await student.save();
-
-            // Popula o 'tutorInfo' do vínculo específico que acabamos de salvar
-            // para retornar os dados completos para o Flutter
-            await student.populate({
-                path: 'tutors.tutorInfo',
-                model: 'Tutor' // Certifique-se que 'Tutor' é o nome do seu model
-            });
-            
-            // Encontra o vínculo recém-populado para retornar
-            const updatedPopulatedLink = student.tutors.find(
-                 (t) => t.tutorInfo._id.toString() === tutorId
-            );
-
-            return updatedPopulatedLink; // Retorna o TutorInStudent atualizado e populado
-
-        } catch (error) {
-            console.error(`Erro no service ao ATUALIZAR relacionamento:`, error.message);
-            throw new Error(`Erro ao atualizar relacionamento: ${error.message}`);
-        }
-    }
     /**
-     * Busca um tutor específico pelo seu ID.
+     * [MODIFICADO] Busca um tutor por ID, garantindo que ele pertença à escola.
      */
-    async getTutorById(id) {
+    async getTutorById(id, schoolId) {
         try {
-            const tutor = await Tutor.findById(id).populate('students');
+            // [MODIFICADO] Troca findById por findOne com filtro de _id E school_id
+            const tutor = await Tutor.findOne({ _id: id, school_id: schoolId })
+                                     .populate('students');
+            if (!tutor) {
+                 throw new Error('Tutor não encontrado ou não pertence a esta escola.');
+            }
             return tutor;
         } catch (error) {
             console.error(`Erro no service ao buscar tutor por ID (${id}):`, error.message);
             throw new Error(`Erro ao buscar tutor: ${error.message}`);
         }
     }
-async updateTutor(id, tutorData) {
+
+    /**
+     * [MODIFICADO] Atualiza um tutor, garantindo que ele pertença à escola.
+     */
+    async updateTutor(id, tutorData, schoolId) {
         try {
-            // Encontra o tutor pelo ID e atualiza com os novos dados (tutorData)
-            // { new: true } garante que o método retorne o documento ATUALIZADO
-            const updatedTutor = await Tutor.findByIdAndUpdate(id, tutorData, { new: true });
+            // [MODIFICADO] Usa findOneAndUpdate para checar o school_id
+            const updatedTutor = await Tutor.findOneAndUpdate(
+                { _id: id, school_id: schoolId }, // Condição
+                tutorData,                       // Atualização
+                { new: true }                    // Opções
+            );
             
             if (!updatedTutor) {
                 console.warn(`[SERVICE] Tentativa de atualizar tutor não encontrado: ${id}`);
+                throw new Error('Tutor não encontrado ou não pertence a esta escola.');
             }
 
-            return updatedTutor; // Retorna o tutor atualizado
+            return updatedTutor; 
         } catch (error) {
             console.error(`Erro no service ao ATUALIZAR tutor por ID (${id}):`, error.message);
             throw new Error(`Erro ao atualizar tutor: ${error.message}`);
         }
     }
+
     /**
-     * Busca um tutor específico pelo seu CPF.
-     * Esta é a função que o seu frontend vai chamar.
+     * [MODIFICADO] Busca um tutor por CPF, garantindo que ele pertença à escola.
      */
-    async findTutorByCpf(cpf) {
+    async findTutorByCpf(cpf, schoolId) {
         try {
-            // Busca na coleção 'tutors' onde o campo 'cpf' bate
-            const tutor = await Tutor.findOne({ cpf: cpf });
-            return tutor;
+            // [MODIFICADO] Adiciona o filtro { school_id: schoolId }
+            const tutor = await Tutor.findOne({ cpf: cpf, school_id: schoolId });
+            return tutor; // Retorna o tutor ou null (o controller trata o 404)
         } catch (error) {
             console.error(`Erro no service ao buscar tutor por CPF (${cpf}):`, error.message);
             throw new Error(`Erro ao buscar tutor por CPF: ${error.message}`);
         }
     }
 
-    /* Nota: A lógica de "criar" ou "atualizar" o tutor
-    pode ficar aqui, ou pode ficar dentro do 'student.service' 
-    (como no exemplo anterior) para garantir que a criação 
-    do aluno e do tutor seja feita na mesma operação (transação). 
-    Por enquanto, vamos focar na busca.
-    */
+    /* * NOTA: A função 'updateTutorRelationship' foi removida deste arquivo
+     * pois ela pertence e foi implementada no 'student.service.js'.
+     */
 }
 
 module.exports = new TutorService();

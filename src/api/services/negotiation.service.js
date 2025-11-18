@@ -21,278 +21,275 @@ if (MP_ACCESS_TOKEN) {
 
 class NegotiationService {
 
-  /**
-   * Cria a negociação
-   */
-  async createNegotiation(data) {
-    const { studentId, invoiceIds, rules } = data;
+    /**
+     * Cria a negociação, aplicando school_id e createdByUserId.
+     */
+    async createNegotiation(data, schoolId, createdByUserId) {
+        const { studentId, invoiceIds, rules } = data;
 
-    const invoices = await InvoiceModel.find({ _id: { $in: invoiceIds } });
-    
-    if (!invoices || invoices.length === 0) {
-      throw new Error("Nenhuma fatura válida encontrada.");
+        // [SUGESTÃO] Adicionar validação se o StudentModel tem school_id
+        // const student = await StudentModel.findOne({ _id: studentId, school_id: schoolId });
+        // if (!student) throw new Error("Aluno não encontrado nesta escola.");
+
+        const invoices = await InvoiceModel.find({ _id: { $in: invoiceIds } });
+        
+        if (!invoices || invoices.length === 0) {
+            throw new Error("Nenhuma fatura válida encontrada.");
+        }
+
+        const totalDebt = invoices.reduce((acc, inv) => {
+            const val = inv.value || inv.amount || 0; 
+            return acc + Number(val);
+        }, 0);
+
+        const token = crypto.randomBytes(20).toString('hex');
+        const expiresAt = new Date();
+        expiresAt.setHours(expiresAt.getHours() + 48); 
+
+        const negotiation = new NegotiationModel({
+            studentId,
+            invoices: invoiceIds,
+            token,
+            rules,
+            totalOriginalDebt: totalDebt,
+            expiresAt,
+            status: 'PENDING',
+            school_id: schoolId,          // [NOVO]
+            createdByUserId: createdByUserId // [NOVO]
+        });
+
+        await negotiation.save();
+        return negotiation;
     }
 
-    // Soma em CENTAVOS (Ex: 35005)
-    const totalDebt = invoices.reduce((acc, inv) => {
-        const val = inv.value || inv.amount || 0; 
-        return acc + Number(val);
-    }, 0);
+    /**
+     * Lista histórico, garantindo que o gestor só veja negociações de sua escola.
+     */
+    async listByStudent(studentId, schoolId) {
+        return await NegotiationModel.find({ studentId, school_id: schoolId }) // [AJUSTADO] Filtro school_id
+            .populate('invoices')
+            .sort({ createdAt: -1 });
+    }
 
-    const token = crypto.randomBytes(20).toString('hex');
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 48); 
+    // --- ROTAS PÚBLICAS (validateAccess, generatePayment, getStatus) ---
+    // A lógica dessas rotas é mantida, pois a segurança é garantida pelo 'token' único.
 
-    const negotiation = new NegotiationModel({
-      studentId,
-      invoices: invoiceIds,
-      token,
-      rules,
-      totalOriginalDebt: totalDebt,
-      expiresAt,
-      status: 'PENDING'
-    });
+    async validateAccess(token, inputCpf) {
+        const negotiation = await NegotiationModel.findOne({ token })
+            .populate({
+                path: 'studentId',
+                populate: { 
+                    path: 'tutors.tutorId',
+                    model: 'Tutor',
+                    strictPopulate: false
+                }
+            })
+            .populate('invoices');
 
-    await negotiation.save();
-    return negotiation;
-  }
+        if (!negotiation) throw new Error("Negociação não encontrada.");
+        if (new Date() > negotiation.expiresAt) throw new Error("Este link expirou.");
+        if (negotiation.status === 'PAID') throw new Error("Esta negociação já foi paga.");
 
-  async listByStudent(studentId) {
-    return await NegotiationModel.find({ studentId })
-      .populate('invoices')
-      .sort({ createdAt: -1 });
-  }
+        const student = negotiation.studentId;
+        const inCpf = inputCpf.replace(/\D/g, '');
 
-  async validateAccess(token, inputCpf) {
-    const negotiation = await NegotiationModel.findOne({ token })
-        .populate({
-            path: 'studentId',
-            populate: { 
-                path: 'tutors.tutorId',
-                model: 'Tutor',
-                strictPopulate: false
-            }
-        })
-        .populate('invoices');
-
-    if (!negotiation) throw new Error("Negociação não encontrada.");
-    if (new Date() > negotiation.expiresAt) throw new Error("Este link expirou.");
-    if (negotiation.status === 'PAID') throw new Error("Esta negociação já foi paga.");
-
-    const student = negotiation.studentId;
-    const inCpf = inputCpf.replace(/\D/g, '');
-
-    let foundTutor = null;
-    if (student.tutors && student.tutors.length > 0) {
-        for (const t of student.tutors) {
-            if (t.tutorId && t.tutorId.cpf) {
-                const tutorCpf = t.tutorId.cpf.replace(/\D/g, '');
-                if (tutorCpf === inCpf) {
-                    foundTutor = t.tutorId;
-                    break;
+        let foundTutor = null;
+        if (student.tutors && student.tutors.length > 0) {
+            for (const t of student.tutors) {
+                if (t.tutorId && t.tutorId.cpf) {
+                    const tutorCpf = t.tutorId.cpf.replace(/\D/g, '');
+                    if (tutorCpf === inCpf) {
+                        foundTutor = t.tutorId;
+                        break;
+                    }
                 }
             }
         }
+
+        if (!foundTutor && student.cpf && student.cpf.replace(/\D/g, '') === inCpf) {
+            foundTutor = student; 
+        }
+
+        if (!foundTutor) {
+            throw new Error("CPF informado não confere com nenhum responsável cadastrado.");
+        }
+
+        return {
+            studentName: student.fullName || student.name,
+            tutorName: foundTutor.fullName || foundTutor.name,
+            totalDebt: negotiation.totalOriginalDebt, 
+            rules: negotiation.rules,
+            status: negotiation.status,
+            expiresAt: negotiation.expiresAt,
+            invoices: negotiation.invoices.map(inv => ({
+                description: inv.description,
+                value: inv.value,
+                dueDate: inv.dueDate
+            }))
+        };
     }
 
-    if (!foundTutor && student.cpf && student.cpf.replace(/\D/g, '') === inCpf) {
-        foundTutor = student; 
-    }
+    async generatePayment(token, method, paymentData = {}) {
+        const negotiation = await NegotiationModel.findOne({ token })
+            .populate({
+                path: 'studentId',
+                populate: { 
+                    path: 'tutors.tutorId',
+                    model: 'Tutor',
+                    strictPopulate: false
+                }
+            });
 
-    if (!foundTutor) {
-        throw new Error("CPF informado não confere com nenhum responsável cadastrado.");
-    }
+        if (!negotiation) throw new Error("Negociação não encontrada.");
+        if (negotiation.status === 'PAID') throw new Error("Negociação já está paga.");
+        
+        const student = negotiation.studentId;
+        
+        let payerEntity = student; 
+        if (student.tutors && student.tutors.length > 0 && student.tutors[0].tutorId) {
+            payerEntity = student.tutors[0].tutorId;
+        }
 
-    return {
-        studentName: student.fullName || student.name,
-        tutorName: foundTutor.fullName || foundTutor.name,
-        totalDebt: negotiation.totalOriginalDebt, 
-        rules: negotiation.rules,
-        status: negotiation.status,
-        expiresAt: negotiation.expiresAt,
-        invoices: negotiation.invoices.map(inv => ({
-            description: inv.description,
-            value: inv.value,
-            dueDate: inv.dueDate
-        }))
-    };
-  }
+        const payerEmail = isProduction ? (payerEntity.email || 'email@padrao.com') : "test_user_123@testuser.com";
+        const cpfClean = payerEntity.cpf ? payerEntity.cpf.replace(/\D/g, '') : ''; 
 
-  /**
-   * Gera Pagamento (COM CÁLCULO DE DESCONTO)
-   */
-  async generatePayment(token, method, paymentData = {}) {
-    const negotiation = await NegotiationModel.findOne({ token })
-        .populate({
-            path: 'studentId',
-            populate: { 
-                path: 'tutors.tutorId',
-                model: 'Tutor',
-                strictPopulate: false
+        const fullName = payerEntity.fullName || 'Responsável';
+        const names = fullName.trim().split(' ');
+        const firstName = names[0];
+        const lastName = names.length > 1 ? names.slice(1).join(' ') : 'Financeiro';
+
+        // --- CÁLCULO DO VALOR FINAL (COM DESCONTO) ---
+        let finalAmountCents = negotiation.totalOriginalDebt;
+
+        if (method === 'pix' && negotiation.rules && negotiation.rules.allowPixDiscount) {
+            const discountVal = negotiation.rules.pixDiscountValue || 0;
+            // Usa o novo campo pixDiscountType
+            const discountType = negotiation.rules.pixDiscountType || 'percentage'; 
+
+            if (discountVal > 0) {
+                if (discountType === 'percentage') {
+                    const discountAmount = finalAmountCents * (discountVal / 100);
+                    finalAmountCents = finalAmountCents - discountAmount;
+                } else {
+                    const discountAmountCents = discountVal * 100;
+                    finalAmountCents = finalAmountCents - discountAmountCents;
+                }
             }
-        });
+        }
 
-    if (!negotiation) throw new Error("Negociação não encontrada.");
-    if (negotiation.status === 'PAID') throw new Error("Negociação já está paga.");
-    
-    const student = negotiation.studentId;
-    
-    let payerEntity = student; 
-    if (student.tutors && student.tutors.length > 0 && student.tutors[0].tutorId) {
-        payerEntity = student.tutors[0].tutorId;
-    }
+        if (finalAmountCents < 0) finalAmountCents = 0;
 
-    const payerEmail = isProduction ? (payerEntity.email || 'email@padrao.com') : "test_user_123@testuser.com";
-    const cpfClean = payerEntity.cpf ? payerEntity.cpf.replace(/\D/g, '') : ''; 
+        const amountInReais = parseFloat((finalAmountCents / 100).toFixed(2));
 
-    const fullName = payerEntity.fullName || 'Responsável';
-    const names = fullName.trim().split(' ');
-    const firstName = names[0];
-    const lastName = names.length > 1 ? names.slice(1).join(' ') : 'Financeiro';
+        console.log(`[NegotiationService] Valor Original: ${(negotiation.totalOriginalDebt/100).toFixed(2)} | Valor Final (${method}): ${amountInReais}`);
 
-    // --- CÁLCULO DO VALOR FINAL (COM DESCONTO) ---
-    
-    // Começa com o valor total em centavos (ex: 35005)
-    let finalAmountCents = negotiation.totalOriginalDebt;
-
-    // Se for PIX e tiver regra de desconto ativa
-    if (method === 'pix' && negotiation.rules && negotiation.rules.allowPixDiscount) {
-        const discountVal = negotiation.rules.pixDiscountValue || 0;
-        const discountType = negotiation.rules.pixDiscountType || 'percentage';
-
-        if (discountVal > 0) {
-            if (discountType === 'percentage') {
-                // Ex: 10% -> 35005 - (35005 * 0.10) = 31504.5
-                const discountAmount = finalAmountCents * (discountVal / 100);
-                finalAmountCents = finalAmountCents - discountAmount;
-            } else {
-                // Ex: R$ 50,00 (fixed) -> O input vem como 50.
-                // Convertemos 50 reais para 5000 centavos
-                const discountAmountCents = discountVal * 100;
-                finalAmountCents = finalAmountCents - discountAmountCents;
+        let paymentBody = {
+            transaction_amount: amountInReais, 
+            description: `Acordo - ${student.fullName}`,
+            notification_url: `${NOTIFICATION_BASE_URL}/api/webhook/mp-negotiation`,
+            payer: {
+                email: payerEmail,
+                first_name: firstName,
+                last_name: lastName,
+                identification: { type: 'CPF', number: cpfClean }
+            },
+            metadata: {
+                negotiation_id: negotiation._id.toString(),
+                token: negotiation.token
             }
+        };
+
+        try {
+            let paymentResponse;
+
+            // --- PIX ---
+            if (method === 'pix') {
+                const expirationDate = new Date();
+                expirationDate.setHours(expirationDate.getHours() + 24);
+
+                paymentBody = {
+                    ...paymentBody,
+                    payment_method_id: 'pix',
+                    date_of_expiration: expirationDate.toISOString(),
+                };
+
+                console.log(`[NegotiationService] Criando PIX no MP...`);
+                paymentResponse = await paymentClient.create({ body: paymentBody });
+                
+                const responseData = paymentResponse; 
+                negotiation.paymentExternalId = responseData.id.toString();
+                await negotiation.save();
+
+                return {
+                    type: 'pix',
+                    status: responseData.status,
+                    qrCode: responseData.point_of_interaction.transaction_data.qr_code,
+                    copyPaste: responseData.point_of_interaction.transaction_data.qr_code,
+                    qrCodeBase64: responseData.point_of_interaction.transaction_data.qr_code_base64,
+                    ticketUrl: responseData.point_of_interaction.transaction_data.ticket_url
+                };
+            } 
+            
+            // --- CARTÃO ---
+            else if (method === 'credit_card') {
+                if (!paymentData.token) throw new Error("Token do cartão é obrigatório.");
+                
+                paymentBody = {
+                    ...paymentBody,
+                    token: paymentData.token,
+                    installments: Number(paymentData.installments),
+                    payment_method_id: paymentData.paymentMethodId,
+                    issuer_id: paymentData.issuerId, 
+                };
+
+                console.log(`[NegotiationService] Processando Cartão no MP...`);
+                paymentResponse = await paymentClient.create({ body: paymentBody });
+                const responseData = paymentResponse;
+
+                if (responseData.status === 'rejected') throw new Error(`Pagamento recusado: ${responseData.status_detail}`);
+
+                negotiation.paymentExternalId = responseData.id.toString();
+                
+                if (responseData.status === 'approved') {
+                    negotiation.status = 'PAID';
+                    await this._markInvoicesAsPaid(negotiation.invoices);
+                }
+                await negotiation.save();
+
+                return {
+                    type: 'credit_card',
+                    status: responseData.status,
+                    statusDetail: responseData.status_detail,
+                    id: responseData.id
+                };
+            } 
+            else {
+                throw new Error("Método inválido.");
+            }
+
+        } catch (error) {
+            console.error('Erro no Mercado Pago:', error);
+            const mpError = error.cause && error.cause[0] ? error.cause[0].description : error.message;
+            throw new Error(`Erro no pagamento: ${mpError}`);
         }
     }
 
-    // Garante que não ficou negativo
-    if (finalAmountCents < 0) finalAmountCents = 0;
-
-    // Converte Centavos para Reais para o Mercado Pago (ex: 31504.5 -> 315.05)
-    const amountInReais = parseFloat((finalAmountCents / 100).toFixed(2));
-
-    console.log(`[NegotiationService] Valor Original: ${(negotiation.totalOriginalDebt/100).toFixed(2)} | Valor Final (${method}): ${amountInReais}`);
-
-    let paymentBody = {
-      transaction_amount: amountInReais, // Valor com desconto aplicado
-      description: `Acordo - ${student.fullName}`,
-      notification_url: `${NOTIFICATION_BASE_URL}/api/webhook/mp-negotiation`,
-      payer: {
-        email: payerEmail,
-        first_name: firstName,
-        last_name: lastName,
-        identification: { type: 'CPF', number: cpfClean }
-      },
-      metadata: {
-        negotiation_id: negotiation._id.toString(),
-        token: negotiation.token
-      }
-    };
-
-    try {
-      let paymentResponse;
-
-      // --- PIX ---
-      if (method === 'pix') {
-        const expirationDate = new Date();
-        expirationDate.setHours(expirationDate.getHours() + 24);
-
-        paymentBody = {
-          ...paymentBody,
-          payment_method_id: 'pix',
-          date_of_expiration: expirationDate.toISOString(),
-        };
-
-        console.log(`[NegotiationService] Criando PIX no MP...`);
-        paymentResponse = await paymentClient.create({ body: paymentBody });
-        
-        const responseData = paymentResponse; 
-        negotiation.paymentExternalId = responseData.id.toString();
-        await negotiation.save();
-
-        return {
-          type: 'pix',
-          status: responseData.status,
-          qrCode: responseData.point_of_interaction.transaction_data.qr_code,
-          copyPaste: responseData.point_of_interaction.transaction_data.qr_code,
-          qrCodeBase64: responseData.point_of_interaction.transaction_data.qr_code_base64,
-          ticketUrl: responseData.point_of_interaction.transaction_data.ticket_url
-        };
-      } 
-      
-      // --- CARTÃO ---
-      else if (method === 'credit_card') {
-        if (!paymentData.token) throw new Error("Token do cartão é obrigatório.");
-        
-        // Se for cartão, não aplicamos o desconto do PIX (já usamos o valor com/sem desconto acima)
-        // Mas se você quiser garantir que cartão SEMPRE paga cheio, reinicie finalAmountCents aqui.
-        // Por padrão do seu código, só aplica se method === 'pix', então aqui o valor já deve estar cheio.
-
-        paymentBody = {
-          ...paymentBody,
-          token: paymentData.token,
-          installments: Number(paymentData.installments),
-          payment_method_id: paymentData.paymentMethodId,
-          issuer_id: paymentData.issuerId, 
-        };
-
-        console.log(`[NegotiationService] Processando Cartão no MP...`);
-        paymentResponse = await paymentClient.create({ body: paymentBody });
-        const responseData = paymentResponse;
-
-        if (responseData.status === 'rejected') throw new Error(`Pagamento recusado: ${responseData.status_detail}`);
-
-        negotiation.paymentExternalId = responseData.id.toString();
-        
-        if (responseData.status === 'approved') {
-            negotiation.status = 'PAID';
-            await this._markInvoicesAsPaid(negotiation.invoices);
+    async getStatus(token) {
+        const negotiation = await NegotiationModel.findOne({ token }, 'status expiresAt');
+        if (!negotiation) throw new Error("Negociação não encontrada.");
+        if (negotiation.status === 'PENDING' && new Date() > negotiation.expiresAt) {
+            return 'EXPIRED';
         }
-        await negotiation.save();
-
-        return {
-          type: 'credit_card',
-          status: responseData.status,
-          statusDetail: responseData.status_detail,
-          id: responseData.id
-        };
-      } 
-      else {
-        throw new Error("Método inválido.");
-      }
-
-    } catch (error) {
-      console.error('Erro no Mercado Pago:', error);
-      const mpError = error.cause && error.cause[0] ? error.cause[0].description : error.message;
-      throw new Error(`Erro no pagamento: ${mpError}`);
+        return negotiation.status;
     }
-  }
 
-  async getStatus(token) {
-    const negotiation = await NegotiationModel.findOne({ token }, 'status expiresAt');
-    if (!negotiation) throw new Error("Negociação não encontrada.");
-    if (negotiation.status === 'PENDING' && new Date() > negotiation.expiresAt) {
-        return 'EXPIRED';
+    async _markInvoicesAsPaid(invoiceIds) {
+        if(!invoiceIds || invoiceIds.length === 0) return;
+        await InvoiceModel.updateMany(
+            { _id: { $in: invoiceIds } },
+            { $set: { status: 'paid', paidAt: new Date(), paymentMethod: 'negotiation' } }
+        );
     }
-    return negotiation.status;
-  }
-
-  async _markInvoicesAsPaid(invoiceIds) {
-      if(!invoiceIds || invoiceIds.length === 0) return;
-      await InvoiceModel.updateMany(
-          { _id: { $in: invoiceIds } },
-          { $set: { status: 'paid', paidAt: new Date(), paymentMethod: 'negotiation' } }
-      );
-  }
 }
 
 module.exports = new NegotiationService();

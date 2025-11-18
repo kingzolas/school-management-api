@@ -1,42 +1,43 @@
+// src/api/controllers/evento.controller.js
 const EventoService = require('../services/evento.service');
-const appEmitter = require('../../loaders/eventEmitter'); // Seu emissor global
+const appEmitter = require('../../loaders/eventEmitter'); 
 
 class EventoController {
 
     async create(req, res, next) {
         try {
-            // Opcional: Adicionar quem criou o evento vindo do token
-            // const eventoData = { ...req.body, teacherId: req.user.id };
-            const newEvento = await EventoService.createEvento(req.body);
+            const schoolId = req.user.school_id; // [NOVO] Captura o schoolId
+            
+            // [MODIFICADO] Passa o schoolId para o Service
+            const newEvento = await EventoService.createEvento(req.body, schoolId);
             
             appEmitter.emit('evento:created', newEvento);
-            console.log(`📡 EVENTO EMITIDO: evento:created para ${newEvento.title}`);
             
             res.status(201).json(newEvento);
         } catch (error) {
             console.error('❌ ERRO [EventoController.create]:', error.message);
+            // Trata erro de referência da escola
+             if (error.message.includes('não pertence à sua escola')) {
+                return res.status(403).json({ message: error.message });
+            }
             next(error); 
         }
     }
 
-    /**
-     * [NOVO] Cria múltiplos eventos (em lote).
-     */
     async createBulk(req, res, next) {
-        // Espera um body que é um array: [ {...}, {...} ]
         const eventosData = req.body; 
+        const schoolId = req.user.school_id; // [NOVO] Captura o schoolId
 
         if (!Array.isArray(eventosData) || eventosData.length === 0) {
             return res.status(400).json({ message: 'O corpo da requisição deve conter um array de eventos.' });
         }
 
         try {
-            const createdEventos = await EventoService.createMultipleEventos(eventosData);
+            // [MODIFICADO] Passa o schoolId para o Service
+            const createdEventos = await EventoService.createMultipleEventos(eventosData, schoolId);
 
-            // Emite um evento WebSocket para CADA evento criado
             createdEventos.forEach(evento => {
                 appEmitter.emit('evento:created', evento);
-                console.log(`📡 EVENTO EMITIDO (Lote): evento:created para ${evento.title}`);
             });
 
             res.status(201).json({
@@ -45,14 +46,19 @@ class EventoController {
             });
         } catch (error) {
             console.error('❌ ERRO [EventoController.createBulk]:', error.message);
+            if (error.message.includes('não pertence à sua escola')) {
+                 return res.status(403).json({ message: error.message });
+            }
             next(error);
         }
     }
 
     async getAll(req, res, next) {
         try {
-            // Filtros: ?classId=...&startDate=...&endDate=...&isSchoolWide=true
-            const eventos = await EventoService.getAllEventos(req.query);
+            const schoolId = req.user.school_id; // [NOVO] Captura o schoolId
+            
+            // [MODIFICADO] Passa o schoolId para o Service
+            const eventos = await EventoService.getAllEventos(req.query, schoolId);
             res.status(200).json(eventos);
         } catch (error) {
             console.error('❌ ERRO [EventoController.getAll]:', error.message);
@@ -62,7 +68,11 @@ class EventoController {
 
     async getById(req, res, next) {
         try {
-            const evento = await EventoService.getEventoById(req.params.id);
+            const schoolId = req.user.school_id; // [NOVO] Captura o schoolId
+            
+            // [MODIFICADO] Passa o schoolId para o Service
+            const evento = await EventoService.getEventoById(req.params.id, schoolId);
+            
             res.status(200).json(evento);
         } catch (error) {
             console.error(`❌ ERRO [EventoController.getById ${req.params.id}]:`, error.message);
@@ -75,13 +85,17 @@ class EventoController {
 
     async update(req, res, next) {
         try {
-            const updatedEvento = await EventoService.updateEvento(req.params.id, req.body);
+            const schoolId = req.user.school_id; // [NOVO] Captura o schoolId
+            
+            // [MODIFICADO] Passa o schoolId para o Service
+            const updatedEvento = await EventoService.updateEvento(req.params.id, req.body, schoolId);
+            
             appEmitter.emit('evento:updated', updatedEvento);
-            console.log(`📡 EVENTO EMITIDO: evento:updated para ID ${updatedEvento._id}`);
+            
             res.status(200).json(updatedEvento);
         } catch (error) {
             console.error(`❌ ERRO [EventoController.update ${req.params.id}]:`, error.message);
-             if (error.message.includes('não encontrado')) {
+             if (error.message.includes('não pertence à sua escola') || error.message.includes('não encontrado para atualizar')) {
                 return res.status(404).json({ message: error.message });
             }
             next(error);
@@ -90,9 +104,13 @@ class EventoController {
 
     async delete(req, res, next) {
         try {
-            const deletedEvento = await EventoService.deleteEvento(req.params.id);
+            const schoolId = req.user.school_id; // [NOVO] Captura o schoolId
+            
+            // [MODIFICADO] Passa o schoolId para o Service
+            const deletedEvento = await EventoService.deleteEvento(req.params.id, schoolId);
+            
             appEmitter.emit('evento:deleted', deletedEvento); 
-            console.log(`📡 EVENTO EMITIDO: evento:deleted para ID ${req.params.id}`);
+            
             res.status(200).json({ message: 'Evento deletado com sucesso', deletedEvento });
         } catch (error) {
             console.error(`❌ ERRO [EventoController.delete ${req.params.id}]:`, error.message);

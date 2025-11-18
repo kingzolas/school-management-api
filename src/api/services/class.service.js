@@ -1,109 +1,116 @@
+// src/api/services/class.service.js
 const Class = require('../models/class.model');
-const Enrollment = require('../models/enrollment.model'); // Necessário para a verificação de deleção
-const mongoose = require('mongoose'); // Necessário para $lookup
+const Enrollment = require('../models/enrollment.model'); 
+const mongoose = require('mongoose'); 
 
 class ClassService {
 
     /**
-     * Cria uma nova turma.
+     * [MODIFICADO] Cria uma nova turma, vinculada à escola.
      */
-    async createClass(classData) {
+    async createClass(classData, schoolId) {
         try {
-            const newClass = new Class(classData);
+            // [MODIFICADO] Adiciona o school_id aos dados
+            const newClass = new Class({
+                ...classData,
+                school_id: schoolId
+            });
             await newClass.save();
-            // Retorna o objeto simples, o evento de websocket vai disparar
-            // A contagem de alunos é 0, o que está correto.
             return newClass;
         } catch (error) {
             if (error.code === 11000) {
-                throw new Error(`Turma '${classData.name}' já existe para o ano letivo ${classData.schoolYear}.`);
+                // [MODIFICADO] Mensagem de erro mais específica
+                throw new Error(`Turma '${classData.name}' já existe para o ano letivo ${classData.schoolYear} nesta escola.`);
             }
             throw error;
         }
     }
 
     /**
-     * [MODIFICADO] Busca todas as turmas, calculando a contagem de alunos.
+     * [MODIFICADO] Busca todas as turmas, filtradas pela escola.
      */
-    async getAllClasses(filter = {}, sort = { schoolYear: -1, name: 1 }) {
+    async getAllClasses(filter = {}, sort = { schoolYear: -1, name: 1 }, schoolId) {
         const aggregationPipeline = [];
+        const { ObjectId } = mongoose.Types;
 
         // --- Etapa 1: Filtro (Match) ---
-        // Converte filtros de string para os tipos corretos do schema
-        const matchFilter = {};
+        // [MODIFICADO] O filtro principal OBRIGATÓRIO é o school_id
+        const matchFilter = {
+            school_id: new ObjectId(schoolId)
+        };
+
         if (filter.schoolYear) {
             matchFilter.schoolYear = parseInt(filter.schoolYear, 10);
         }
         if (filter.status) {
             matchFilter.status = filter.status;
         }
-        // Adiciona $match apenas se houver filtros
-        if (Object.keys(matchFilter).length > 0) {
-            aggregationPipeline.push({ $match: matchFilter });
-        }
+        
+        aggregationPipeline.push({ $match: matchFilter });
 
         // --- Etapa 2: $lookup (Join) com Enrollments ---
         aggregationPipeline.push({
             $lookup: {
-                from: 'enrollments', // Nome da coleção de matrículas
-                localField: '_id', // Campo da 'Class'
-                foreignField: 'class', // Campo da 'Enrollment'
-                as: 'enrollments' // Nome do array temporário
+                from: 'enrollments', 
+                let: { classId: '$_id', schoolId: '$school_id' }, // Passa variáveis
+                pipeline: [
+                    { 
+                        // Filtra matrículas pela turma E pela escola (Segurança)
+                        $match: {
+                            $expr: {
+                                $and: [
+                                    { $eq: ['$class', '$$classId'] },
+                                    { $eq: ['$school_id', '$$schoolId'] },
+                                    { $eq: ['$status', 'Ativa'] } // Filtra status aqui
+                                ]
+                            }
+                        }
+                    },
+                    { $count: 'count' } // Conta os resultados
+                ],
+                as: 'activeEnrollments' // Nome do array temporário
             }
         });
 
         // --- Etapa 3: $addFields (Cálculo da Contagem) ---
         aggregationPipeline.push({
             $addFields: {
-                // Filtra o array 'enrollments' para incluir apenas os com status 'Ativa'
-                activeEnrollments: {
-                    $filter: {
-                        input: '$enrollments',
-                        as: 'enrollment',
-                        cond: { $eq: ['$$enrollment.status', 'Ativa'] }
-                    }
-                }
-            }
-        });
-
-        aggregationPipeline.push({
-            $addFields: {
-                // Adiciona o campo studentCount com o tamanho do array filtrado
-                studentCount: { $size: '$activeEnrollments' }
+                 // Pega o primeiro (e único) resultado da contagem, ou 0 se for vazio
+                studentCount: { $ifNull: [ { $first: '$activeEnrollments.count' }, 0 ] }
             }
         });
 
         // --- Etapa 4: $project (Limpeza) ---
-        // Remove os arrays temporários grandes da resposta final
         aggregationPipeline.push({
             $project: {
-                enrollments: 0, // Remove o array completo de matrículas
-                activeEnrollments: 0 // Remove o array filtrado
+                activeEnrollments: 0 // Remove o array temporário
             }
         });
 
         // --- Etapa 5: $sort ---
         aggregationPipeline.push({ $sort: sort });
 
-        // Executa a agregação
         const classes = await Class.aggregate(aggregationPipeline);
         return classes;
     }
 
     /**
-     * Busca uma turma específica pelo ID (pode ser necessário popular aqui se houver detalhes)
+     * [MODIFICADO] Busca uma turma por ID, garantindo que pertença à escola.
      */
-    async getClassById(id) {
-        // Para esta rota, podemos fazer o cálculo de contagem separado se necessário
-        const classDoc = await Class.findById(id);
+    async getClassById(id, schoolId) {
+        // [MODIFICADO] Filtra por _id E school_id
+        const classDoc = await Class.findOne({ _id: id, school_id: schoolId });
         if (!classDoc) {
-            throw new Error(`Turma com ID ${id} não encontrada.`);
+            throw new Error(`Turma com ID ${id} não encontrada nesta escola.`);
         }
-        // Se a tela de "detalhes" da turma também precisar da contagem:
-        const studentCount = await Enrollment.countDocuments({ class: id, status: 'Ativa' });
         
-        // Adiciona a contagem ao objeto antes de retornar
-        // Retornamos como um objeto JS simples para poder adicionar o campo
+        // [MODIFICADO] Filtra contagem por school_id
+        const studentCount = await Enrollment.countDocuments({ 
+            class: id, 
+            status: 'Ativa', 
+            school_id: schoolId 
+        });
+        
         const classObject = classDoc.toObject();
         classObject.studentCount = studentCount;
         
@@ -111,49 +118,59 @@ class ClassService {
     }
 
     /**
-     * Atualiza os dados de uma turma.
+     * [MODIFICADO] Atualiza os dados de uma turma, garantindo que pertença à escola.
      */
-    async updateClass(id, updateData) {
+    async updateClass(id, updateData, schoolId) {
+        // [MODIFICADO] Checagem de unicidade agora inclui school_id
         if (updateData.name || updateData.schoolYear) {
-             const classDoc = await Class.findById(id); // Busca o doc atual
+             const classDoc = await Class.findOne({ _id: id, school_id: schoolId }); 
+             if (!classDoc) {
+                 throw new Error(`Turma com ID ${id} não encontrada nesta escola.`);
+             }
              const existing = await Class.findOne({
                  _id: { $ne: id },
                  name: updateData.name || classDoc.name,
-                 schoolYear: updateData.schoolYear || classDoc.schoolYear
-                });
+                 schoolYear: updateData.schoolYear || classDoc.schoolYear,
+                 school_id: schoolId // Checa na mesma escola
+              });
              if (existing) {
-                 throw new Error(`Já existe outra turma '${existing.name}' para o ano letivo ${existing.schoolYear}.`);
+                 throw new Error(`Já existe outra turma '${existing.name}' para o ano letivo ${existing.schoolYear} nesta escola.`);
              }
         }
 
-        const updatedClass = await Class.findByIdAndUpdate(id, updateData, {
-            new: true, runValidators: true
-        });
+        // [MODIFICADO] Atualiza usando findOneAndUpdate com school_id
+        const updatedClass = await Class.findOneAndUpdate(
+            { _id: id, school_id: schoolId }, // Condição
+            updateData, // Dados
+            { new: true, runValidators: true } // Opções
+        );
+
         if (!updatedClass) {
-            throw new Error(`Turma com ID ${id} não encontrada para atualização.`);
+            throw new Error(`Turma com ID ${id} não encontrada nesta escola.`);
         }
         
-        // Pega a contagem de alunos para retornar o objeto completo
-        const studentCount = await Enrollment.countDocuments({ class: id, status: 'Ativa' });
+        // [MODIFICADO] Filtra contagem por school_id
+        const studentCount = await Enrollment.countDocuments({ class: id, status: 'Ativa', school_id: schoolId });
         const classObject = updatedClass.toObject();
         classObject.studentCount = studentCount;
 
-        return classObject; // Retorna com a contagem
+        return classObject;
     }
 
     /**
-     * Deleta uma turma.
+     * [MODIFICADO] Deleta uma turma, garantindo que pertença à escola.
      */
-    async deleteClass(id) {
-        // Regra de Negócio: Não deletar turma se houver *qualquer* matrícula (ativa ou não)
-        const enrollments = await Enrollment.countDocuments({ class: id });
+    async deleteClass(id, schoolId) {
+        // [MODIFICADO] Filtra contagem por school_id
+        const enrollments = await Enrollment.countDocuments({ class: id, school_id: schoolId });
         if (enrollments > 0) {
-            throw new Error('Não é possível excluir turma. Existem matrículas (ativas ou passadas) associadas a ela.');
+            throw new Error('Não é possível excluir turma. Existem matrículas (ativas ou passadas) associadas a ela nesta escola.');
         }
 
-        const deletedClass = await Class.findByIdAndDelete(id);
+        // [MODIFICADO] Deleta usando findOneAndDelete com school_id
+        const deletedClass = await Class.findOneAndDelete({ _id: id, school_id: schoolId });
         if (!deletedClass) {
-            throw new Error(`Turma com ID ${id} não encontrada para deleção.`);
+            throw new Error(`Turma com ID ${id} não encontrada nesta escola.`);
         }
         return deletedClass;
     }

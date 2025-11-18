@@ -1,10 +1,9 @@
+// src/api/models/student.model.js
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
-// Importa o schema de endereço (que já está correto no seu editor)
 const addressSchema = require('./address.model');
-// O tutorSchema não é mais importado aqui
 
-// --- SUB-SCHEMA PARA FICHA DE SAÚDE ---
+// --- SUB-SCHEMA PARA FICHA DE SAÚDE --- (Inalterado)
 const healthInfoSchema = new Schema({
     hasHealthProblem: { type: Boolean, default: false },
     healthProblemDetails: { type: String, default: '' },
@@ -22,46 +21,43 @@ const healthInfoSchema = new Schema({
     foodObservations: { type: String, default: '' },
 }, { _id: false });
 
-// --- SUB-SCHEMA PARA PESSOAS AUTORIZADAS ---
+// --- SUB-SCHEMA PARA PESSOAS AUTORIZADAS --- (Inalterado)
 const authorizedPickupSchema = new Schema({
     fullName: { type: String, required: true },
-    relationship: { type: String, required: true }, // Parentesco
+    relationship: { type: String, required: true },
     phoneNumber: { type: String, required: true },
 }, { _id: false });
 
+// --- SUB-SCHEMA PARA NOTAS --- (Inalterado)
 const gradeSchema = new Schema({
-    subjectName: { // Nome da disciplina (Ex: "Língua Portuguesa", "Matemática")
+    subjectName: {
         type: String,
         required: true,
         trim: true
     },
-    gradeValue: { // A nota (Ex: "7,5", "8,0", "**", "Apto")
-        type: String, // Usamos String para ser flexível
+    gradeValue: {
+        type: String, 
         required: true,
         trim: true
     }
-}, { _id: false }); // _id: false para não criar IDs para cada nota
+}, { _id: false });
 
-
-/**
- * Sub-schema para o registro acadêmico completo de UM ano.
- * Um aluno terá um ARRAY destes (um para o 1º Ano, um para o 2º, etc.)
- */
+// --- SUB-SCHEMA PARA REGISTRO ACADÊMICO --- (Inalterado)
 const academicRecordSchema = new Schema({
-    gradeLevel: { // Série / Ano (Ex: "1º Ano", "2º Ano", "Maternal")
+    gradeLevel: { 
         type: String,
         required: true,
         trim: true
     },
-    schoolYear: { // Ano civil (Ex: 2022, 2023)
+    schoolYear: { 
         type: Number,
         required: true
     },
-    schoolName: { // Nome da escola (Pode ser a "Sossego" ou outra)
+    schoolName: {
         type: String,
         required: true,
         trim: true,
-        default: 'Escola Sossego da Mamãe' // Default
+        default: 'Escola Sossego da Mamãe' 
     },
     city: {
         type: String,
@@ -69,27 +65,25 @@ const academicRecordSchema = new Schema({
         trim: true,
         default: 'Parauapebas'
     },
-    state: { // UF
+    state: { 
         type: String,
         required: true,
         trim: true,
         default: 'PA'
     },
-    grades: { // A lista de notas daquele ano
+    grades: {
         type: [gradeSchema],
         default: []
     },
-    annualWorkload: { // Carga Horária Anual (Ex: 800)
-        type: String, // String para flexibilidade (Ex: "800 HRS")
+    annualWorkload: { 
+        type: String, 
         trim: true
     },
-    finalResult: { // Ex: "Aprovado", "Reprovado", "Transferido"
+    finalResult: { 
         type: String,
         required: true,
         trim: true
     }
-    // Não precisamos de _id aqui, pois o Mongoose cria automaticamente
-    // e usaremos esse ID para editar/deletar o registro.
 });
 
 
@@ -145,14 +139,13 @@ const studentSchema = new Schema({
         type: addressSchema,
         required: true
     },
-    // --- ESTRUTURA DE TUTORES ATUALIZADA ---
     tutors: {
         type: [
             {
-                _id: false, // Não cria subdocument IDs para os vínculos
+                _id: false, 
                 tutorId: { 
                     type: Schema.Types.ObjectId,
-                    ref: 'Tutor', // Referencia a coleção 'Tutor'
+                    ref: 'Tutor', 
                     required: true
                 },
                 relationship: {
@@ -162,7 +155,6 @@ const studentSchema = new Schema({
                 }
             }
         ],
-        // Validação para garantir 1 ou 2 tutores
         validate: [
             (val) => val.length >= 1 && val.length <= 2, 
             'É necessário cadastrar pelo menos 1 (um) e no máximo 2 (dois) tutores.'
@@ -185,7 +177,16 @@ const studentSchema = new Schema({
         ref: 'Class', 
         default: null
     },
-    // --- ADICIONE ESTE NOVO CAMPO NO FINAL DO SEU SCHEMA ---
+    
+    // --- [NOVO] LIGAÇÃO MULTI-TENANCY ---
+    school_id: {
+        type: Schema.Types.ObjectId,
+        ref: 'School', // Referencia o modelo 'School'
+        required: [true, 'A referência da escola (school_id) é obrigatória.'],
+        index: true // Melhora a performance de buscas por escola
+    },
+    // ------------------------------------
+
     academicHistory: {
         type: [academicRecordSchema],
         default: []
@@ -194,7 +195,7 @@ const studentSchema = new Schema({
     timestamps: true 
 });
 
-// Hook para limpar dados do ALUNO
+// Hook (inalterado)
 studentSchema.pre('save', function(next) {
     if (this.rg === '') { this.rg = null; }
     if (this.cpf === '') { this.cpf = null; }
@@ -202,9 +203,6 @@ studentSchema.pre('save', function(next) {
     next();
 });
 
-
-
 const Student = mongoose.model('Student', studentSchema);
 
 module.exports = Student;
-
