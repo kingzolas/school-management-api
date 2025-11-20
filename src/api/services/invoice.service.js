@@ -34,11 +34,11 @@ const paymentClient = new Payment(client);
 // ==============================================================================
 
 const TEMPLATES_CRIACAO = [
-    "Olá {tutor}! Tudo bem? 😊\nEstamos passando para enviar a fatura referente a *{descricao}* do aluno(a) *{aluno}*.\n📅 Vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nPara facilitar, o código Pix Copia e Cola segue na mensagem abaixo:",
+    "Olá {tutor}! Tudo bem? 😊\nEstamos enviando a fatura referente a: *{descricao}*.\n📅 Vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nPara facilitar, o código Pix Copia e Cola segue na mensagem abaixo:",
     
-    "Oi {tutor}, como vai?\nA mensalidade do(a) *{aluno}* referente a *{descricao}* já está disponível.\nO valor é R$ {valor} com vencimento em {vencimento}.\n\nUse o código abaixo para realizar o pagamento:",
+    "Oi {tutor}, como vai?\nA mensalidade (*{descricao}*) já está disponível para pagamento.\nValor: R$ {valor} - Vence em: {vencimento}.\n\nUse o código abaixo no seu banco:",
     
-    "Academy Hub Informa: Nova fatura gerada.\n🎓 Aluno: *{aluno}*\n📝 Referência: {descricao}\n💲 Total: R$ {valor}\n🗓️ Vence dia: {vencimento}.\n\nSegue o Pix Copia e Cola separado para facilitar:"
+    "Academy Hub Informa: Fatura disponível.\n📝 Referência: {descricao}\n💲 Total: R$ {valor}\n🗓️ Vencimento: {vencimento}.\n\nSegue o Pix Copia e Cola:"
 ];
 
 const TEMPLATES_LEMBRETE = [
