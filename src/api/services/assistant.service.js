@@ -1,4 +1,3 @@
-// src/api/services/assistant.service.js
 const { genAI } = require('../../config/gemini.js');
 const Student = require('../models/student.model.js');
 const Tutor = require('../models/tutor.model.js');
@@ -10,10 +9,14 @@ const Subject = require('../models/subject.model.js');
 const Periodo = require('../models/periodo.model.js');
 const CargaHoraria = require('../models/cargaHoraria.model.js'); 
 const StaffProfile = require('../models/staffProfile.model.js'); 
-const mongoose = require('mongoose'); 
 const Invoice = require('../models/invoice.model.js');
+// --- NOVOS IMPORTS PARA COBERTURA TOTAL (CRÍTICO) ---
+const Evento = require('../models/evento.model.js');
+const School = require('../models/school.model.js');
+const Negotiation = require('../models/negotiation.model.js');
+const mongoose = require('mongoose');
 
-// Acesso aos modelos compilados
+// Acesso aos modelos compilados (Pattern Singleton Mongoose)
 const SchoolYear = mongoose.models.SchoolYear || mongoose.model('SchoolYear'); 
 
 // ==========================================================
@@ -29,154 +32,228 @@ const MODEL_PRIORITY = [
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // ==========================================================
-// 1. "MANUAL DE INSTRUÇÕES"
+// 1. CÉREBRO: "MANUAL DE INSTRUÇÕES" & MAPA DE DADOS
 // ==========================================================
 const systemInstructionText = `
-Você é um assistente do sistema AcademyHub, atuando como um **Analista de Dados Inteligente e Proativo**.
-Seu objetivo é responder perguntas sobre alunos, turmas, professores, disciplinas e dados escolares, sempre buscando a resposta mais completa e contextualizada.
+Você é um **Agente Analista de Dados Sênior** do sistema AcademyHub.
+Sua inteligência vai além de responder perguntas simples: você investiga, cruza dados e raciocina para resolver problemas complexos.
 
-⚙️ REGRAS GERAIS E INTELIGÊNCIA:
-1. Sempre use as ferramentas disponíveis antes de responder.
-2. Use as informações brutas (JSON) das ferramentas para realizar **INTERPRETAÇÕES E CRUZAMENTOS**.
-3. Se a pergunta envolver a **GRADE DE AULAS AGENDADAS** ou o professor que leciona (Ex: "Onde tem aula de Artes?"), use 'getSchedule'.
-4. Se a pergunta envolver **CARGA HORÁRIA CURRICULAR** ou Balanço de Horas (Planejado vs. Agendado), use 'getCurriculumInfo'. **Se o período não for especificado, a ferramenta somará automaticamente a carga horária em TODOS os períodos letivos da turma.**
-5. Se a pergunta envolver CONTAGEM ou AGRUPAMENTO simples (gênero, raça, bairro, ou contagem de um filtro), use 'analyzeSchoolData'.
-6. Se a pergunta envolver **ANÁLISE ESTATÍSTICA COMPLEXA** (ex: "percentual por idade"), use 'analyzeStudentData'.
-7. Se envolver **DETALHES ACADÊMICOS INDIVIDUAIS** (notas, disciplina com menor nota, resultado final), use 'getStudentAcademicPerformance'.
-8. Se envolver detalhes de UM aluno (aniversário, idade, tutores, endereço), use 'getStudentInfo'.
-9. Se envolver detalhes de UM professor (salário, contrato, cargo, telefone, e-mail, habilitações), use 'getTeacherInfo'.
-10. Seja breve, direto e informativo, mas não omita informações que possam levar a uma resposta mais rica.
-11. A data atual é ${new Date().toLocaleDateString('pt-BR')}.
-12. Se a ferramenta 'getStudentFinancialInfo' retornar 'actionType': 'RENDER_INVOICE_CARD', sua resposta textual deve ser curta (ex: "Aqui está a fatura solicitada:") e OBRIGATORIAMENTE você deve incluir no final da resposta uma tag oculta com o JSON da fatura no formato: 
-:::INVOICE_JSON:::{...dados_da_fatura_aqui}:::INVOICE_JSON:::
-Isso é fundamental para o aplicativo exibir o QR Code.
-13. [CRÍTICO] Ao incluir o JSON da fatura na tag oculta, você deve gerar um **JSON VÁLIDO RFC 8259**. 
-   - Use **ASPAS DUPLAS** (") para todas as chaves e valores de string. Ex: {"key": "value"}
-   - NÃO USE aspas simples.
-   - O formato final deve ser: :::INVOICE_JSON:::{"_id": "...", "value": 100}:::INVOICE_JSON:::
+🗺️ SEU MAPA MENTAL DO BANCO DE DADOS:
+Você tem acesso a TODAS as áreas do sistema. Use este guia para navegar:
+
+1. **Institucional & Calendário:**
+   - **School**: Dados da escola (CNPJ, Endereço, Contato).
+   - **Evento**: Calendário escolar (Feriados, Reuniões, Provas, Eventos).
+   - **SchoolYear**: Anos letivos configurados.
+
+2. **Pessoas (Identity):**
+   - **Student (Alunos)**: Entidade central. Possui lista de 'tutors' (pais) e 'Class' (via Enrollment).
+   - **Tutor (Responsáveis)**: Onde estão os DADOS CIVIS (CPF, RG, Endereço, Profissão).
+   - **User (Staff/Professores)**: Usuários do sistema. Contratos estão em 'StaffProfile'.
+
+3. **Acadêmico (School Life):**
+   - **Enrollment**: Conecta Student -> Class.
+   - **Class**: A Turma (Ex: '3º Ano A'). Define o Turno e a Série.
+   - **Horario**: A Grade de Aulas. Conecta Class + Subject + Teacher + Dia da Semana.
+   - **Subject**: A Disciplina (Matemática, História).
+   - **CargaHoraria**: Planejamento de horas (Planejado vs Realizado).
+
+4. **Financeiro & Cobrança:**
+   - **Invoice**: Faturas geradas. Linkam Student (beneficiário) e Tutor (pagador).
+   - **Negotiation**: Histórico de acordos e negociações de dívidas.
+
+🧠 PROTOCOLO DE RACIOCÍNIO (CHAIN OF THOUGHT):
+Você tem permissão para executar múltiplas ferramentas em sequência (Loop de Agente) até ter certeza da resposta.
+
+- **Caso 1: Feriados/Eventos**
+  - *User:* "Tem aula amanhã?" ou "Quais os feriados da semana?"
+  - *Pensamento:* "Preciso consultar o calendário."
+  - *Ação:* Use 'getSchoolEvents' definindo as datas.
+
+- **Caso 2: Grade de Horários (Indireta)**
+  - *User:* "Que aula a Milena tem sexta-feira?"
+  - *Pensamento:* "Eu não sei a turma da Milena. A ferramenta 'getSchedule' pede ID ou Nome da Turma. Preciso descobrir a turma primeiro."
+  - *Ação 1:* Chame 'getStudentInfo({ name: 'Milena' })'.
+  - *Análise:* O retorno mostra que ela está na turma '9º Ano B'.
+  - *Pensamento:* "Agora tenho a turma. Vou buscar a grade."
+  - *Ação 2:* Chame 'getSchedule({ className: '9º Ano B', dayOfWeek: 'Sexta-feira' })'.
+  - *Resultado:* Responda ao usuário.
+
+- **Caso 3: Financeiro**
+  - Se o retorno de 'getStudentFinancialInfo' indicar 'actionType: RENDER_INVOICE_CARD', sua resposta final deve ser curta e conter OBRIGATORIAMENTE a tag oculta :::INVOICE_JSON::: fornecida pela ferramenta.
+
+📅 Contexto Temporal: Hoje é ${new Date().toLocaleDateString('pt-BR')}, ${new Date().toLocaleDateString('pt-BR', { weekday: 'long' })}.
 `;
 
 // ==========================================================
-// 2. FERRAMENTAS
+// 2. CORPO: FERRAMENTAS (TOOLS)
 // ==========================================================
 const tools = [
  {
   functionDeclarations: [
+    // --- ÁREA: INSTITUCIONAL & EVENTOS ---
+    {
+        name: 'getSchoolEvents',
+        description: "Busca no CALENDÁRIO ESCOLAR: Feriados, Reuniões, Provas ou Eventos. Use datas no formato ISO (YYYY-MM-DD) ou deixe em branco para ver eventos futuros próximos.",
+        parameters: {
+            type: 'object',
+            properties: {
+                startDate: { type: 'string', description: "Data inicial (YYYY-MM-DD)." },
+                endDate: { type: 'string', description: "Data final (YYYY-MM-DD)." },
+                type: { type: 'string', description: "Tipo opcional (Feriado, Reunião, Pedagógico)." }
+            }
+        }
+    },
+    {
+        name: 'getSchoolDetails',
+        description: "Busca dados da própria instituição: Endereço, Telefone, CNPJ, Razão Social.",
+        parameters: { type: 'object', properties: {} } // Sem parâmetros, traz a escola ativa
+    },
+
+    // --- ÁREA: BUSCA GERAL ---
+    {
+        name: 'findPerson',
+        description: "Busca UNIVERSAL (Google do sistema). Encontra Alunos, Responsáveis ou Staff por CPF, RG, E-mail, Telefone ou Nome Parcial. Use para identificar donos de documentos ou contatos perdidos.",
+        parameters: {
+            type: 'object',
+            properties: {
+                searchTerm: { type: 'string', description: "Termo de busca (CPF, email, nome, telefone)." },
+                role: { type: 'string', enum: ['student', 'tutor', 'staff', 'any'], description: "Filtro de tipo de pessoa (opcional)." }
+            },
+            required: ['searchTerm']
+        }
+    },
+
+    // --- ÁREA: FINANCEIRO & NEGOCIAÇÃO ---
     {
       name: 'getStudentFinancialInfo',
-      description: "Busca informações financeiras, faturas em atraso, faturas pagas ou dados para pagamento (QR Code) de um aluno. Permite filtrar por mês/ano.",
+      description: "Busca situação financeira, faturas, débitos ou códigos PIX.",
       parameters: {
         type: 'object',
         properties: {
           studentName: { type: 'string' },
-          month: { type: 'number', description: "Mês numérico (1-12). Opcional." },
-          year: { type: 'number', description: "Ano (ex: 2024). Opcional." },
-          status: { type: 'string', enum: ['pending', 'paid', 'overdue', 'canceled', 'all'], description: "Filtro de status." },
-          intent: { type: 'string', enum: ['consult', 'payment_code'], description: "Se a intenção é apenas saber o status ('consult') ou obter o código PIX ('payment_code')." }
+          month: { type: 'number' },
+          year: { type: 'number' },
+          status: { type: 'string', enum: ['pending', 'paid', 'overdue', 'canceled', 'all'] },
+          intent: { type: 'string', enum: ['consult', 'payment_code'] }
         },
         required: ['studentName']
       },
     },
+    {
+        name: 'getNegotiations',
+        description: "Busca histórico de negociações/acordos financeiros de um aluno ou responsável.",
+        parameters: {
+            type: 'object',
+            properties: {
+                studentName: { type: 'string' },
+                status: { type: 'string', enum: ['active', 'completed', 'broken', 'all'] }
+            },
+            required: ['studentName']
+        }
+    },
+
+    // --- ÁREA: ALUNOS & ACADÊMICO ---
    {
     name: 'getStudentInfo',
-    description: "Obtém informações detalhadas de um aluno (data de aniversário, idade, tutores, matrícula/ turma, endereço, saúde).",
+    description: "Raio-X do Aluno: Retorna TODOS os dados cadastrais, matrícula e, PRINCIPALMENTE, os dados completos dos responsáveis (CPF, RG, Profissão, Trabalho). Use para descobrir turmas e parentesco.",
     parameters: {
-     type: 'object',
-     properties: { name: { type: 'string' } },
-     required: ['name'],
+      type: 'object',
+      properties: { name: { type: 'string' } },
+      required: ['name'],
     },
    },
    {
     name: 'getStudentAcademicPerformance',
-    description: "Busca informações sobre notas e desempenho acadêmico de um aluno em um ano letivo específico. Usada para descobrir a menor nota, resultados finais de matérias, etc.",
+    description: "Boletim escolar: notas, faltas e desempenho.",
     parameters: {
-     type: 'object',
-     properties: {
-      name: { type: 'string' },
-      schoolYear: { type: 'number', description: "Opcional. O ano letivo para analisar (Ex: 2024). Se omitido, use o ano atual." },
-     },
-     required: ['name'],
-    },
-   },
-   {
-    name: 'findStudents',
-    description: "Busca alunos com base em filtros gerais como nome ou status.",
-    parameters: {
-     type: 'object',
-     properties: {
-      name: { type: 'string' },
-      className: { type: 'string' },
-      isActive: { type: 'boolean' },
+      type: 'object',
+      properties: {
+       name: { type: 'string' },
+       schoolYear: { type: 'number' },
+      },
+      required: ['name'],
      },
     },
-   },
-   {
-    name: 'analyzeSchoolData',
-    description: "Faz análises quantitativas simples, usando o poder de agregação do banco de dados (Ex: contagem por bairro, gênero, raça).",
-    parameters: {
-     type: 'object',
-     properties: {
-      neighborhood: { type: 'string' },
-      className: { type: 'string' },
-      status: { type: 'string' },
-      shift: { type: 'string' },
-      hasAllergy: { type: 'boolean' },
-      hasDisability: { type: 'boolean' },
-      gender: { type: 'string' },
-      analysisType: { type: 'string', enum: ['aniversario', 'raça', 'gênero'] }, 
-      startMonth: { type: 'number', description: "Mês inicial (1-12) para análise de aniversário." },
-      endMonth: { type: 'number', description: "Mês final (1-12) para análise de aniversário." },
+    {
+     name: 'findStudents',
+     description: "Listagem/Filtro de alunos (útil para contar quantos alunos existem em uma categoria).",
+     parameters: {
+      type: 'object',
+      properties: {
+       name: { type: 'string' },
+       className: { type: 'string' },
+       isActive: { type: 'boolean' },
+      },
      },
     },
-   },
+    {
+     name: 'analyzeSchoolData',
+     description: "Análises demográficas (Estatísticas de Gênero, Raça, Bairro, Deficiências).",
+     parameters: {
+      type: 'object',
+      properties: {
+       neighborhood: { type: 'string' },
+       className: { type: 'string' },
+       status: { type: 'string' },
+       shift: { type: 'string' },
+       hasAllergy: { type: 'boolean' },
+       hasDisability: { type: 'boolean' },
+       gender: { type: 'string' },
+       analysisType: { type: 'string', enum: ['aniversario', 'raça', 'gênero'] }, 
+       startMonth: { type: 'number' },
+       endMonth: { type: 'number' },
+      },
+     },
+    },
     {
         name: 'analyzeStudentData',
-        description: "Coleta dados brutos de alunos para permitir à IA realizar cálculos estatísticos complexos, como cálculo de percentual por idade, ou média de notas.",
+        description: "Coleta dados brutos de idade ou notas para cálculos estatísticos (média, percentual).",
         parameters: {
             type: 'object',
             properties: {
                 targetAnalysis: { type: 'string', enum: ['idade', 'media_notas'] },
-                className: { type: 'string', description: "Filtro opcional. Nome da turma." },
+                className: { type: 'string' },
             },
             required: ['targetAnalysis'],
         },
     },
     {
         name: 'getCurriculumInfo',
-        description: "Busca a matriz curricular (Carga Horária Planejada) e calcula o Balanço de Horas (Planejado vs. Agendado/Realizado).",
+        description: "Matriz Curricular: Carga horária planejada vs realizada.",
         parameters: {
             type: 'object',
             properties: {
-                className: { type: 'string', description: "Opcional. Nome da turma para filtrar." },
-                subjectName: { type: 'string', description: "Opcional. Nome da disciplina para filtrar." },
-                periodoName: { type: 'string', description: "Opcional. Título do período ('1º Bimestre'). Se omitido, a função buscará a soma total da Carga Horária em todos os períodos letivos para a turma/disciplina." },
+                className: { type: 'string' },
+                subjectName: { type: 'string' },
+                periodoName: { type: 'string' },
             },
         },
     },
     {
         name: 'getSchedule',
-        description: "Busca a grade de horários de aulas (Horario) filtrando por TURMA, PROFESSOR, DISCIPLINA ou DIA da semana.",
+        description: "Grade de Aulas (Horário Escolar). Filtra por Turma, Professor ou Dia. Se precisar da grade de um aluno, descubra a turma dele antes.",
         parameters: {
             type: 'object',
             properties: {
-                className: { type: 'string', description: "Opcional. Nome completo da turma." },
-                subjectName: { type: 'string', description: "Opcional. Nome completo da disciplina." },
-                teacherName: { type: 'string', description: "Opcional. Nome completo do professor." },
-                dayOfWeek: { type: 'string', description: "Opcional. Dia da semana por extenso (ex: Segunda, Terça, Quarta)." },
+                className: { type: 'string', description: "Nome da turma (Ex: '9º Ano A')" },
+                subjectName: { type: 'string' },
+                teacherName: { type: 'string' },
+                dayOfWeek: { type: 'string', description: "Ex: 'Segunda-feira'" },
             },
         },
     },
    {
     name: 'getTeacherInfo',
-    description: "Obtém informações detalhadas de um professor ou funcionário (cargo, contrato, salário, telefone, e-mail, habilitações).",
+    description: "Dados de RH: Contratos, Salários e Habilitações de Professores/Staff.",
     parameters: {
-     type: 'object',
-     properties: {
-      name: { type: 'string' },
+      type: 'object',
+      properties: {
+       name: { type: 'string' },
+      },
+      required: ['name'],
      },
-     required: ['name'],
     },
-   },
   ],
  },
 ];
@@ -218,11 +295,143 @@ function calculateDurationInMinutes(startTime, endTime) {
 
 
 // ==========================================================
-// 3. IMPLEMENTAÇÕES DAS FERRAMENTAS
+// 3. MEMBROS: IMPLEMENTAÇÃO (LÓGICA)
 // ==========================================================
 const toolImplementations = {
+
+  // --- INSTITUCIONAL E CALENDÁRIO ---
+  getSchoolEvents: async ({ startDate, endDate, type }) => {
+    console.log(`[TOOL] getSchoolEvents: ${startDate} a ${endDate} (Tipo: ${type || 'Todos'})`);
+    try {
+        const query = {};
+        
+        // Se não passar data, pega os próximos 30 dias
+        const start = startDate ? new Date(startDate) : new Date();
+        const end = endDate ? new Date(endDate) : new Date(new Date().setDate(new Date().getDate() + 30));
+        
+        query.date = { $gte: start, $lte: end };
+        
+        if (type) {
+            query.type = new RegExp(type, 'i');
+        }
+
+        // Busca eventos e ordena por data
+        const events = await Evento.find(query).sort({ date: 1 }).lean();
+
+        if (!events.length) return { message: `Nenhum evento encontrado entre ${start.toLocaleDateString()} e ${end.toLocaleDateString()}.` };
+
+        return {
+            message: `Encontrei ${events.length} eventos.`,
+            eventos: events.map(e => ({
+                titulo: e.title,
+                data: new Date(e.date).toLocaleDateString('pt-BR'),
+                tipo: e.type,
+                descricao: e.description || 'N/A'
+            }))
+        };
+    } catch (err) {
+        return { error: `Erro ao buscar eventos: ${err.message}` };
+    }
+  },
+
+  getSchoolDetails: async () => {
+    console.log(`[TOOL] getSchoolDetails`);
+    try {
+        // Pega a primeira escola cadastrada (normalmente só há uma)
+        const school = await School.findOne().lean();
+        if (!school) return { message: "Nenhuma escola cadastrada no sistema." };
+        
+        return {
+            nome: school.name,
+            cnpj: school.cnpj,
+            email: school.email,
+            telefone: school.phone,
+            endereco: school.address,
+            diretor: school.principalName
+        };
+    } catch (err) {
+        return { error: err.message };
+    }
+  },
+
+  // --- FINANCEIRO AVANÇADO ---
+  getNegotiations: async ({ studentName, status }) => {
+    console.log(`[TOOL] getNegotiations: ${studentName}`);
+    try {
+        const student = await Student.findOne({ fullName: new RegExp(studentName, 'i') }).select('_id').lean();
+        if (!student) return { error: `Aluno '${studentName}' não encontrado.` };
+
+        const query = { student: student._id };
+        if (status && status !== 'all') query.status = status;
+
+        const negotiations = await Negotiation.find(query).sort({ createdAt: -1 }).lean();
+
+        if (!negotiations.length) return { message: `Nenhuma negociação encontrada para este aluno.` };
+
+        return {
+            total: negotiations.length,
+            negociacoes: negotiations.map(n => ({
+                data: new Date(n.createdAt).toLocaleDateString(),
+                status: n.status,
+                valorTotal: (n.totalAmount / 100).toFixed(2),
+                parcelas: n.installmentsCount
+            }))
+        };
+    } catch (err) {
+        return { error: err.message };
+    }
+  },
+  
+  // --- BUSCA UNIVERSAL ---
+  findPerson: async ({ searchTerm, role = 'any' }) => {
+    console.log(`[TOOL] findPerson: Buscando '${searchTerm}' em role: ${role}`);
+    const cleanTerm = searchTerm.replace(/[^a-zA-Z0-9@\.]/g, ''); 
+    const isDigits = /^\d+$/.test(cleanTerm.replace(/\D/g, ''));
+    const regex = new RegExp(searchTerm, 'i');
+
+    // Estratégia: Busca textual ou numérica
+    const textFilters = { $or: [{ fullName: regex }, { email: regex }, { phoneNumber: regex }] };
+    const docFilters = isDigits ? { $or: [{ cpf: { $regex: cleanTerm } }, { rg: { $regex: cleanTerm } }] } : null;
+    
+    const finalFilter = docFilters ? { $or: [...textFilters.$or, ...docFilters.$or] } : textFilters;
+
+    const results = { students: [], tutors: [], staff: [] };
+
+    try {
+        // Executa as buscas em paralelo para performance
+        const promises = [];
+        
+        if (role === 'any' || role === 'student') {
+            promises.push(Student.find(finalFilter).select('fullName cpf rg email phoneNumber').lean().then(r => results.students = r));
+        }
+        if (role === 'any' || role === 'tutor') {
+            promises.push(Tutor.find(finalFilter).select('fullName cpf rg email phoneNumber profession workplace').lean().then(r => results.tutors = r));
+        }
+        if (role === 'any' || role === 'staff') {
+            promises.push(User.find({ ...finalFilter, roles: { $in: ['Admin', 'Manager', 'Professor', 'Staff'] } }).select('fullName email phoneNumber roles').lean().then(r => results.staff = r));
+        }
+        
+        await Promise.all(promises);
+
+        const matches = [];
+        results.students.forEach(s => matches.push(`[ALUNO] Nome: ${s.fullName}, CPF: ${s.cpf || 'N/A'}, Email: ${s.email}`));
+        results.tutors.forEach(t => matches.push(`[RESPONSÁVEL] Nome: ${t.fullName}, CPF: ${t.cpf || 'N/A'}, Profissão: ${t.profession || 'N/A'}, Local Trabalho: ${t.workplace || 'N/A'}`));
+        results.staff.forEach(u => matches.push(`[STAFF] Nome: ${u.fullName}, Cargo: ${u.roles.join('/')}, Email: ${u.email}`));
+
+        if (matches.length === 0) return { message: `Nenhuma pessoa encontrada para o termo '${searchTerm}'. Tente remover pontuação ou buscar parte do nome.` };
+        
+        return { 
+            message: `Encontrei ${matches.length} registro(s).`,
+            dados: matches
+        };
+
+    } catch (err) {
+        return { error: `Erro na busca universal: ${err.message}` };
+    }
+  },
+
   getStudentFinancialInfo: async ({ studentName, month, year, status, intent }) => {
-    console.log(`[ASSISTANT] IA escolheu: getStudentFinancialInfo para ${studentName} (Intent: ${intent})`);
+    console.log(`[TOOL] getStudentFinancialInfo: ${studentName} (Intent: ${intent})`);
 
     try {
       const student = await Student.findOne({ fullName: new RegExp(studentName, 'i') }).select('_id fullName').lean();
@@ -233,7 +442,6 @@ const toolImplementations = {
       if (month || year) {
         const targetYear = year || new Date().getFullYear();
         let startDate, endDate;
-
         if (month) {
            startDate = new Date(targetYear, month - 1, 1);
            endDate = new Date(targetYear, month, 0, 23, 59, 59);
@@ -254,7 +462,7 @@ const toolImplementations = {
       }
 
       const invoices = await Invoice.find(query)
-        .populate('tutor', 'fullName')
+        .populate('tutor', 'fullName cpf email') 
         .populate('student', 'fullName')
         .sort({ dueDate: 1 })
         .lean();
@@ -263,24 +471,23 @@ const toolImplementations = {
         return { message: `Nenhuma fatura encontrada para ${student.fullName} com os critérios informados.` };
       }
 
-      // Intenção PAGAMENTO
-        if (intent === 'payment_code') {
+      // Intenção PAGAMENTO (QR CODE)
+      if (intent === 'payment_code') {
            const targetInvoice = invoices.find(inv => inv.status === 'pending');
            if (!targetInvoice) {
-             return { message: `O aluno ${student.fullName} não possui faturas pendentes para o período solicitado.` };
+             return { message: `O aluno ${student.fullName} não possui faturas pendentes no filtro selecionado.` };
            }
 
            const lightInvoice = { ...targetInvoice };
-           lightInvoice.mp_pix_qr_base64 = ""; 
+           lightInvoice.mp_pix_qr_base64 = ""; // Limpa string grande se existir, mantém só o necessário
 
            const safeJsonString = JSON.stringify(lightInvoice);
 
            return {
-             message: `Retorne EXATAMENTE esta resposta para o usuário: "Aqui está a fatura de ${student.fullName}:" seguido da tag oculta abaixo.`,
+             message: `Fatura encontrada. Instruindo frontend a renderizar.`,
              hidden_payload: `:::INVOICE_JSON:::${safeJsonString}:::INVOICE_JSON:::`,
-             instruction: "NÃO altere o conteúdo dentro das tags :::INVOICE_JSON:::."
            };
-        }
+      }
       
       // Intenção CONSULTA
       const summary = {
@@ -293,25 +500,27 @@ const toolImplementations = {
           canceled: invoices.filter(i => i.status === 'canceled').length,
         },
         invoices: invoices.map(i => ({
+           id: i._id,
            vencimento: new Date(i.dueDate).toLocaleDateString(),
            valor: (i.value / 100).toFixed(2),
-           status: i.status
+           status: i.status,
+           pagador: i.tutor?.fullName || 'Não definido'
         }))
       };
 
       return {
-         message: `Resumo financeiro de ${student.fullName}: ${summary.statusBreakdown.overdue} faturas em atraso, ${summary.statusBreakdown.paid} pagas.`,
+         message: `Resumo financeiro de ${student.fullName}: ${summary.statusBreakdown.overdue} em atraso, ${summary.statusBreakdown.paid} pagas.`,
          data: summary
       };
 
     } catch (err) {
-      console.error('[ASSISTANT] Erro financeiro:', err);
+      console.error('[TOOL] Erro financeiro:', err);
       return { error: err.message };
     }
   },
 
  findStudents: async (args) => {
-  console.log('[ASSISTANT] IA escolheu: findStudents com args:', JSON.stringify(args));
+  console.log('[TOOL] findStudents:', JSON.stringify(args));
   const filter = {};
   if (args.name) filter.fullName = { $regex: new RegExp(args.name, 'i') };
   if (args.isActive !== undefined) filter.isActive = args.isActive;
@@ -325,16 +534,22 @@ const toolImplementations = {
    const totalCount = await Student.countDocuments(filter);
    return { totalCount, resultsSample: students };
   } catch (err) {
-   console.error('[ASSISTANT] Erro em findStudents:', err);
    return { error: err.message };
   }
  },
 
+ // --- RAIO-X DO ALUNO (ONISCIENTE) ---
  getStudentInfo: async ({ name }) => {
-  console.log(`[ASSISTANT] IA escolheu: getStudentInfo para '${name}'`);
+  console.log(`[TOOL] getStudentInfo: '${name}'`);
   try {
+    // 1. Busca o aluno e popula os tutores SEM esconder campos sensíveis (exceto senhas)
+    // Isso permite buscar CPF, RG, Profissão, etc.
    const student = await Student.findOne({ fullName: { $regex: new RegExp(name, 'i') } })
-    .populate({ path: 'tutors.tutorId', model: 'Tutor', select: 'fullName phoneNumber email' })
+    .populate({ 
+        path: 'tutors.tutorId', 
+        model: 'Tutor', 
+        select: '-password -loginHash -__v' // AQUI ESTÁ O SEGREDO DA ONISCIÊNCIA
+    })
     .lean();
 
    if (!student) return { error: `Aluno '${name}' não encontrado.` };
@@ -343,53 +558,45 @@ const toolImplementations = {
     .populate({ path: 'class', model: 'Class', select: 'name grade level shift schoolYear status' })
     .lean();
 
-    const idade = calculateAge(student.birthDate);
-
-   const tutores = (student.tutors || [])
-    .filter(t => t.tutorId)
-    .map(t => ({
-     nome: t.tutorId.fullName,
-     parentesco: t.relationship,
-     telefone: t.tutorId.phoneNumber || null,
-     email: t.tutorId.email || null,
-    }));
-
-   const info = {
-    nome: student.fullName,
-    idade,
-        dataNascimento: student.birthDate 
-            ? new Date(student.birthDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) 
-            : null,
-    turma: enrollment
-     ? {
-       nome: enrollment.class?.name || null,
-       serie: enrollment.class?.grade || null,
-       nivel: enrollment.class?.level || null,
-       turno: enrollment.class?.shift || null,
-       anoLetivo: enrollment.academicYear || null,
-       statusMatricula: enrollment.status || null,
-      }
-     : null,
-    tutores,
-    endereco: student.address || null,
-    saude: student.healthInfo
-     ? {
-       alergia: !!student.healthInfo.hasAllergy,
-       deficiencia: !!student.healthInfo.hasDisability,
-      }
-     : null,
-    isActive: !!student.isActive,
+   // Estrutura rica e bruta para a IA interpretar
+   const richData = {
+    dadosPessoais: {
+        _id: student._id,
+        nomeCompleto: student.fullName,
+        dataNascimento: student.birthDate ? new Date(student.birthDate).toLocaleDateString('pt-BR') : 'N/A',
+        idade: calculateAge(student.birthDate),
+        genero: student.gender,
+        rg: student.rg,
+        cpf: student.cpf,
+        endereco: student.address,
+        saude: student.healthInfo
+    },
+    academico: enrollment ? {
+        turma: enrollment.class?.name,
+        serie: enrollment.class?.grade,
+        turno: enrollment.class?.shift,
+        situacao: enrollment.status
+    } : "Sem matrícula ativa",
+    // Expondo todos os dados dos responsáveis para a IA filtrar
+    responsaveis: (student.tutors || []).map(t => {
+        if(!t.tutorId) return null;
+        return {
+            ...t.tutorId, // Espalha CPF, RG, Profissão, etc.
+            tipoRelacionamento: t.relationship,
+            autorizadoBuscar: t.authorizedToPickUp
+        };
+    }).filter(Boolean)
    };
 
-   return info;
+   return richData;
   } catch (err) {
-   console.error('[ASSISTANT] Erro em getStudentInfo:', err);
-   return { error: `Erro ao obter informações de ${name}: ${err.message}` };
+   console.error('[TOOL] Erro em getStudentInfo:', err);
+   return { error: `Erro ao obter informações: ${err.message}` };
   }
  },
 
  getStudentAcademicPerformance: async ({ name, schoolYear = new Date().getFullYear() }) => {
-  console.log(`[ASSISTANT] IA escolheu: getStudentAcademicPerformance para '${name}' no ano ${schoolYear}`);
+  console.log(`[TOOL] getStudentAcademicPerformance: '${name}'`);
   try {
    const student = await Student.findOne({ fullName: { $regex: new RegExp(name, 'i') } })
     .select('fullName academicHistory')
@@ -397,7 +604,7 @@ const toolImplementations = {
 
    if (!student) return { error: `Aluno(a) '${name}' não encontrado(a).` };
 
-   const record = student.academicHistory.find(r => r.schoolYear === schoolYear);
+   const record = student.academicHistory?.find(r => r.schoolYear === schoolYear);
 
    if (!record) {
     return { 
@@ -440,27 +647,22 @@ const toolImplementations = {
    };
 
   } catch (err) {
-   console.error('[ASSISTANT] Erro em getStudentAcademicPerformance:', err);
-   return { error: `Erro ao buscar desempenho acadêmico: ${err.message}` };
+   console.error('[TOOL] Erro acadêmico:', err);
+   return { error: `Erro ao buscar desempenho: ${err.message}` };
   }
  },
 
  analyzeSchoolData: async (args) => {
-  console.log('[ASSISTANT] IA escolheu: analyzeSchoolData com args:', JSON.stringify(args));
+  console.log('[TOOL] analyzeSchoolData:', JSON.stringify(args));
   const { neighborhood, className, status, shift, hasAllergy, hasDisability, gender, analysisType, startMonth, endMonth } = args || {};
 
     const studentFilter = {};
     const enrollmentFilter = {};
 
     const genderMap = {
-    masculino: 'Masculino',
-    homem: 'Masculino',
-    meninos: 'Masculino',
-    feminino: 'Feminino',
-    mulher: 'Feminino',
-    meninas: 'Feminino',
-    outro: 'Outro',
-    outros: 'Outro',
+        masculino: 'Masculino', homem: 'Masculino', meninos: 'Masculino',
+        feminino: 'Feminino', mulher: 'Feminino', meninas: 'Feminino',
+        outro: 'Outro', outros: 'Outro',
     };
     const normalizedGender = gender ? (genderMap[gender.toLowerCase()] || gender) : null;
 
@@ -480,8 +682,7 @@ const toolImplementations = {
         enrollmentFilter.class = turma._id;
     }
 
-
-    // LÓGICA DE ANÁLISE CUSTOMIZADA
+    // ANÁLISE DE GÊNERO
     if (analysisType === 'gênero') {
         let matchFilter = { ...studentFilter };
         if (Object.keys(enrollmentFilter).length > 0) {
@@ -497,32 +698,24 @@ const toolImplementations = {
 
         let totalStudents = 0;
         const counts = {};
-        
         genderGroup.forEach(item => {
             counts[item._id || 'Não Informado'] = item.total;
             totalStudents += item.total;
         });
 
-        return {
-            message: `Análise de Gênero. Total de alunos: ${totalStudents}. A IA deve calcular o percentual.`,
-            total: totalStudents,
-            analise: 'Gênero',
-            counts: counts
-        };
+        return { message: `Análise de Gênero concluída.`, total: totalStudents, analise: 'Gênero', counts: counts };
     }
     
+    // ANÁLISE DE ANIVERSÁRIO
     if (analysisType === 'aniversario') {
-        if (!startMonth || !endMonth || startMonth < 1 || endMonth > 12) {
-            return { error: "Para análise de aniversário, 'startMonth' e 'endMonth' válidos (1-12) são obrigatórios." };
-        }
+        if (!startMonth || !endMonth) return { error: "Meses obrigatórios." };
         let studentsToAnalyze = await Student.find(studentFilter).select('_id birthDate').lean();
         if (Object.keys(enrollmentFilter).length > 0) {
             const enrollments = await Enrollment.find(enrollmentFilter).select('student').lean();
-            const enrolledStudentIds = enrollments.map(e => e.student.toString());
-            studentsToAnalyze = studentsToAnalyze.filter(s => enrolledStudentIds.includes(s._id.toString()));
+            const ids = enrollments.map(e => e.student.toString());
+            studentsToAnalyze = studentsToAnalyze.filter(s => ids.includes(s._id.toString()));
         }
 
-        let count = 0;
         const targetMonths = [];
         let current = startMonth;
         while (true) {
@@ -531,436 +724,192 @@ const toolImplementations = {
             current = (current % 12) + 1;
         }
         
-        studentsToAnalyze.forEach(student => {
-            if (student.birthDate) {
-                const month = new Date(student.birthDate).getUTCMonth() + 1; 
-                if (targetMonths.includes(month)) {
-                    count++;
-                }
-            }
+        let count = 0;
+        studentsToAnalyze.forEach(s => {
+            if (s.birthDate && targetMonths.includes(new Date(s.birthDate).getUTCMonth() + 1)) count++;
         });
 
-        const startMonthName = monthNames[startMonth - 1];
-        const endMonthName = monthNames[endMonth - 1];
-
-        return { 
-            message: `Foram encontrados ${count} aluno(s) que fazem aniversário entre ${startMonthName} e ${endMonthName}.`, 
-            total: count,
-            analise: 'Aniversário',
-            periodo: `${startMonthName} a ${endMonthName}`
-        };
+        return { message: `Aniversariantes encontrados.`, total: count, analise: 'Aniversário', periodo: `${monthNames[startMonth-1]} a ${monthNames[endMonth-1]}` };
     }
     
+    // ANÁLISE RACIAL
     if (analysisType === 'raça') {
-        const raceGroup = await Student.aggregate([
-            { $match: studentFilter },
-            { $group: { _id: '$race', total: { $sum: 1 } } }
-        ]);
-
-        let totalStudents = 0;
-        const counts = {};
-        
-        raceGroup.forEach(item => {
-            counts[item._id || 'Não Informada'] = item.total;
-            totalStudents += item.total;
-        });
-
-        if (Object.keys(enrollmentFilter).length > 0) {
-            const enrolledStudents = await Enrollment.find(enrollmentFilter).select('student').lean();
-            const enrolledStudentIds = enrolledStudents.map(e => e.student);
-            
-            const studentsWithRace = await Student.find({
-                _id: { $in: enrolledStudentIds },
-                ...studentFilter
-            }).select('race').lean();
-            
-            const filteredRaceCounts = {};
-            let filteredTotal = 0;
-            
-            studentsWithRace.forEach(student => {
-                const raceKey = student.race || 'Não Informada';
-                filteredRaceCounts[raceKey] = (filteredRaceCounts[raceKey] || 0) + 1;
-                filteredTotal++;
-            });
-            
-            return {
-                message: `Análise racial para ${filteredTotal} aluno(s) filtrado(s):`,
-                total: filteredTotal,
-                analise: 'Raça',
-                counts: filteredRaceCounts
-            };
-
-        }
-
-        return {
-            message: `Análise racial de todos os alunos (${totalStudents} no total):`,
-            total: totalStudents,
-            analise: 'Raça',
-            counts: counts
-        };
+        const raceGroup = await Student.aggregate([{ $match: studentFilter }, { $group: { _id: '$race', total: { $sum: 1 } } }]);
+        let total = 0; const counts = {};
+        raceGroup.forEach(i => { counts[i._id || 'N/I'] = i.total; total += i.total; });
+        return { message: "Análise racial concluída", total, counts };
     }
 
-    // LÓGICA DE CONTAGEM SIMPLES (Fallback)
-    if (Object.keys(enrollmentFilter).length === 0) {
-        const count = await Student.countDocuments(studentFilter);
-        return { message: `Foram encontrados ${count} aluno(s) com os filtros aplicados.`, total: count };
-    } else {
-        const alunos = await Student.find(studentFilter).select('_id').lean();
-        const alunoIds = alunos.map(a => a._id);
-
-        const count = await Enrollment.countDocuments({
-            student: { $in: alunoIds },
-            ...enrollmentFilter,
-        });
-        return { message: `Foram encontrados ${count} aluno(s) de acordo com os filtros aplicados.`, total: count };
-    }
+    // CONTAGEM PADRÃO
+    const count = await Student.countDocuments(studentFilter);
+    return { message: `Contagem simples concluída.`, total: count };
  },
 
  analyzeStudentData: async (args) => {
-    console.log('[ASSISTANT] IA escolheu: analyzeStudentData com args:', JSON.stringify(args));
+    console.log('[TOOL] analyzeStudentData:', JSON.stringify(args));
     const { targetAnalysis, className } = args;
 
     try {
         let studentFilter = {};
-        
         if (className) {
             const turma = await Class.findOne({ name: new RegExp(className, 'i') }).select('_id').lean();
             if (!turma) return { error: `Turma '${className}' não encontrada.` };
-            
             const enrolledStudents = await Enrollment.find({ class: turma._id }).select('student').lean();
-            const studentIds = enrolledStudents.map(e => e.student);
-            studentFilter._id = { $in: studentIds };
+            studentFilter._id = { $in: enrolledStudents.map(e => e.student) };
         }
         
         if (targetAnalysis === 'idade') {
             const students = await Student.find(studentFilter).select('birthDate').lean();
-            
-            if (!students.length) return { message: `Não há alunos encontrados para a análise de idade com os filtros aplicados.` };
-
-            let totalStudents = 0;
             const ageCounts = {};
-
-            students.forEach(student => {
-                if (student.birthDate) {
-                    const age = calculateAge(student.birthDate);
-                    if (age !== null) {
-                        ageCounts[age] = (ageCounts[age] || 0) + 1;
-                        totalStudents++;
-                    }
-                }
+            let total = 0;
+            students.forEach(s => {
+                const age = calculateAge(s.birthDate);
+                if (age !== null) { ageCounts[age] = (ageCounts[age] || 0) + 1; total++; }
             });
-
-            const analysisResult = {
-                analise: 'Idade',
-                totalStudents,
-                groups: Object.keys(ageCounts).sort((a, b) => a - b).map(age => {
-                    const count = ageCounts[age];
-                    const percentage = totalStudents > 0 ? ((count / totalStudents) * 100).toFixed(2) : 0;
-                    return {
-                        idade: parseInt(age),
-                        contagem: count,
-                        percentual: `${percentage}%`
-                    };
-                })
-            };
-            
-            analysisResult.message = `Análise de Idade de ${totalStudents} aluno(s). Turma: ${className || 'Todos'}. A IA deve agora interpretar e apresentar o resultado percentual.`;
-            
-            return analysisResult;
+            return { analise: 'Idade', totalStudents: total, distribuicao: ageCounts };
         }
-
-        return { error: `Tipo de análise '${targetAnalysis}' não suportado atualmente.` };
-
+        return { error: `Análise '${targetAnalysis}' não suportada.` };
     } catch (err) {
-        console.error('[ASSISTANT] Erro em analyzeStudentData:', err);
-        return { error: `Erro ao realizar análise de dados: ${err.message}` };
+        return { error: err.message };
     }
 },
 
 getCurriculumInfo: async ({ className, subjectName, periodoName }) => {
-    console.log(`[ASSISTANT] IA escolheu: getCurriculumInfo para Turma: ${className}, Disciplina: ${subjectName}, Período: ${periodoName}`);
+    console.log(`[TOOL] getCurriculumInfo: Turma=${className}, Materia=${subjectName}`);
     
     try {
         const filter = {};
         
-        // 1. Encontrar a Turma (Class)
-        let classObj = null;
         if (className) {
-            classObj = await Class.findOne({ name: new RegExp(className, 'i') }).select('_id name').lean();
+            const classObj = await Class.findOne({ name: new RegExp(className, 'i') }).select('_id name').lean();
             if (!classObj) return { message: `Turma '${className}' não encontrada.` };
             filter.classId = classObj._id;
         }
-        
-        // 2. Encontrar a Disciplina (Subject)
-        let subjectObj = null;
         if (subjectName) {
-            subjectObj = await Subject.findOne({ name: new RegExp(subjectName, 'i') }).select('_id name').lean();
+            const subjectObj = await Subject.findOne({ name: new RegExp(subjectName, 'i') }).select('_id name').lean();
             if (!subjectObj) return { message: `Disciplina '${subjectName}' não encontrada.` };
             filter.subjectId = subjectObj._id;
         }
-
-        // 3. Encontrar o Período (Periodo)
-        let periodoObj = null;
         if (periodoName) {
-            const periodoRegex = new RegExp(periodoName, 'i');
-            periodoObj = await Periodo.findOne({ titulo: periodoRegex }).sort({ dataFim: -1 }).select('_id titulo').lean();
-            if (!periodoObj) return { message: `Período '${periodoName}' não encontrado.` };
+            const periodoObj = await Periodo.findOne({ titulo: new RegExp(periodoName, 'i') }).sort({ dataFim: -1 }).lean();
+            if (periodoObj) filter.periodoId = periodoObj._id;
         } 
         
-        // --- 4. BUSCA DE CARGA HORÁRIA PLANEJADA (CargaHoraria) ---
-        
-        const loadFilter = {
-            classId: filter.classId,
-            subjectId: filter.subjectId,
-        };
-        
-        if (periodoObj) {
-            loadFilter.periodoId = periodoObj._id;
-            filter.termId = periodoObj._id; 
-        }
-        
-        const loads = await CargaHoraria.find(loadFilter)
-            .populate('subjectId', 'name')
-            .populate('classId', 'name')
-            .populate('periodoId', 'titulo')
+        const loads = await CargaHoraria.find(filter)
+            .populate('subjectId', 'name').populate('classId', 'name').populate('periodoId', 'titulo')
             .lean();
-
-        if (subjectName && className && loads.length === 0) {
-             const periodMsg = periodoObj ? ` no período ${periodoObj.titulo}` : ` em **nenhum período**.`;
-             return { message: `Não foram encontradas horas planejadas (Carga Horária) para a disciplina ${subjectName} na turma ${className}${periodMsg}` };
-        }
-        
-        // --- 5. Análise e Cálculo (Maior Carga e Balanço) ---
-        
-        let totalTargetHours = 0;
-        let maiorCarga = { horas: -1, disciplina: 'N/A', turma: 'N/A', periodo: 'N/A' };
-        
-        loads.forEach(load => {
-            totalTargetHours += load.targetHours;
-            if (load.targetHours > maiorCarga.horas) {
-                maiorCarga = {
-                    horas: load.targetHours,
-                    disciplina: load.subjectId.name,
-                    turma: load.classId?.name,
-                    periodo: load.periodoId?.titulo
-                };
-            }
-        });
-        
-        // CÁLCULO DE CARGA HORÁRIA AGENDADA (para o Balanço)
-        let totalScheduledMinutes = 0;
-        let scheduledHours = 0;
-        let balance = null;
-        
-        if (filter.classId && filter.subjectId && filter.termId) {
-            const scheduleFilter = {
-                classId: filter.classId,
-                subjectId: filter.subjectId,
-                termId: filter.termId 
-            };
             
-            const schedule = await Horario.find(scheduleFilter).lean();
-            
-            schedule.forEach(aula => {
-                totalScheduledMinutes += calculateDurationInMinutes(aula.startTime, aula.endTime);
-            });
-            
-            scheduledHours = totalScheduledMinutes / 60; 
-            balance = (scheduledHours - totalTargetHours).toFixed(2);
-        }
-
-        const analysisResult = {
-            message: `Análise curricular: Total de Carga Horária Planejada.`,
-            periodoUtilizado: periodoObj ? periodoObj.titulo : 'Todos os Períodos Letivos Encontrados',
-            totalHorasPlanejadas: totalTargetHours,
-            maiorCargaHorariaEncontrada: maiorCarga.horas > -1 ? maiorCarga : null,
-            balancoDeHoras: (filter.classId && filter.subjectId && filter.termId) ? {
-                horasPlanejadas: totalTargetHours,
-                horasAgendadas: parseFloat(scheduledHours.toFixed(2)),
-                diferenca: parseFloat(balance), 
-                status: balance > 0 ? "Excesso Agendado" : balance < 0 ? "Abaixo do Planejado" : "Balanceado"
-            } : undefined,
-            specificLoad: (subjectName && className) ? {
-                 horasPlanejadas: totalTargetHours,
-                 horasAgendadas: scheduledHours ? parseFloat(scheduledHours.toFixed(2)) : 0,
-                 periodo: periodoObj ? periodoObj.titulo : 'Soma Total'
-            } : undefined,
-            fullLoads: !subjectName && !className ? loads.map(l => ({ 
-                disciplina: l.subjectId.name, 
-                turma: l.classId?.name, 
-                horas: l.targetHours, 
-                periodo: l.periodoId?.titulo 
-            })).sort((a, b) => b.horas - a.horas) : undefined
+        // Simplificando retorno para a IA
+        return {
+            totalRegistros: loads.length,
+            dados: loads.map(l => ({
+                disciplina: l.subjectId?.name,
+                turma: l.classId?.name,
+                horasPlanejadas: l.targetHours,
+                periodo: l.periodoId?.titulo
+            }))
         };
-        
-        return analysisResult;
         
     } catch (err) {
-        console.error('[ASSISTANT] Erro em getCurriculumInfo:', err);
-        return { error: `Erro ao buscar informações curriculares: ${err.message}` };
+        return { error: `Erro curricular: ${err.message}` };
     }
 },
 
 getSchedule: async ({ className, subjectName, teacherName, dayOfWeek }) => {
-    console.log(`[ASSISTANT] IA escolheu: getSchedule para Turma: ${className}, Disciplina: ${subjectName}, Professor: ${teacherName}, Dia: ${dayOfWeek}`);
+    console.log(`[TOOL] getSchedule: Turma=${className}, Prof=${teacherName}, Dia=${dayOfWeek}`);
     
     try {
         const filter = {};
         
-        // 1. Filtrar por Turma (Class)
         if (className) {
-            const classObj = await Class.findOne({ name: new RegExp(className, 'i') }).select('_id').lean();
+            const classObj = await Class.findOne({ name: new RegExp(className, 'i') }).select('_id name').lean();
             if (!classObj) return { error: `Turma '${className}' não encontrada.` };
             filter.classId = classObj._id;
         }
-
-        // 2. Filtrar por Disciplina (Subject)
         if (subjectName) {
             const subjectObj = await Subject.findOne({ name: new RegExp(subjectName, 'i') }).select('_id').lean();
             if (!subjectObj) return { error: `Disciplina '${subjectName}' não encontrada.` };
             filter.subjectId = subjectObj._id;
         }
-        
-        // 3. Filtrar por Professor (User)
         if (teacherName) {
-            const teacherObj = await User.findOne({ fullName: new RegExp(teacherName, 'i'), roles: { $in: ['Professor', 'Staff'] } }).select('_id').lean();
-            if (!teacherObj) return { error: `Professor(a) '${teacherName}' não encontrado(a).` };
+            const teacherObj = await User.findOne({ fullName: new RegExp(teacherName, 'i') }).select('_id').lean();
+            if (!teacherObj) return { error: `Professor '${teacherName}' não encontrado.` };
             filter.teacherId = teacherObj._id;
         }
-        
-        // 4. Filtrar por Dia da Semana
         if (dayOfWeek) {
             const normalizedDay = dayOfWeek.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace('-feira', '').trim();
             const dayNumber = dayMapToNumber[normalizedDay];
-            if (dayNumber === undefined) {
-                return { error: `Dia da semana '${dayOfWeek}' não reconhecido. Use: Segunda, Terça, Quarta, Quinta, Sexta, Sábado ou Domingo.` };
-            }
-            filter.dayOfWeek = dayNumber;
+            if (dayNumber !== undefined) filter.dayOfWeek = dayNumber;
         }
 
-        // 5. Buscar os Horários (Horario)
         const schedules = await Horario.find(filter)
             .populate('classId', 'name shift')
             .populate('subjectId', 'name')
             .populate('teacherId', 'fullName')
-            .populate({ path: 'termId', model: 'Periodo', select: 'titulo' }) 
+            .sort({ dayOfWeek: 1, startTime: 1 })
             .lean();
             
-        if (!schedules.length) {
-            const criteria = [
-                className && `Turma: ${className}`,
-                subjectName && `Disciplina: ${subjectName}`,
-                teacherName && `Professor(a): ${teacherName}`,
-                dayOfWeek && `Dia: ${dayOfWeek}`
-            ].filter(Boolean).join(', ');
-            
-            return { message: `Não há aulas agendadas com os critérios fornecidos: ${criteria || 'Geral'}.` };
-        }
+        if (!schedules.length) return { message: `Nenhuma aula encontrada com esses filtros.` };
 
-        const formattedSchedules = schedules.map(s => ({
+        const formatted = schedules.map(s => ({
             dia: dayMap[s.dayOfWeek],
-            inicio: s.startTime,
-            fim: s.endTime,
-            turma: s.classId?.name || 'N/A',
-            disciplina: s.subjectId?.name || 'N/A',
-            professor: s.teacherId?.fullName || 'Não Atribuído',
-            periodo: s.termId?.titulo || 'N/A',
-            sala: s.room || 'N/A',
+            hora: `${s.startTime} - ${s.endTime}`,
+            turma: s.classId?.name,
+            materia: s.subjectId?.name,
+            professor: s.teacherId?.fullName,
+            sala: s.room
         }));
 
-        formattedSchedules.sort((a, b) => {
-            if (a.dia !== b.dia) {
-                return dayMapToNumber[a.dia.toLowerCase().normalize("NFD").replace(/-feira/g, "")] - dayMapToNumber[b.dia.toLowerCase().normalize("NFD").replace(/-feira/g, "")];
-            }
-            return a.inicio.localeCompare(b.inicio);
-        });
-
         return {
-            message: `Grade de aulas encontrada.`,
-            totalClasses: schedules.length,
-            schedules: formattedSchedules,
+            message: `Grade encontrada com ${formatted.length} aulas.`,
+            aulas: formatted
         };
 
     } catch (err) {
-        console.error('[ASSISTANT] Erro em getSchedule:', err);
-        return { error: `Erro ao buscar a grade de aulas: ${err.message}` };
+        return { error: `Erro na grade: ${err.message}` };
     }
 },
 
- getTeacherSchedule: async ({ name }) => {
-   console.log(`[ASSISTANT] IA (Legado) redirecionou getTeacherSchedule para getSchedule com Professor: ${name}`);
-   return toolImplementations.getSchedule({ teacherName: name });
-},
-
-
  getTeacherInfo: async ({ name }) => {
- console.log(`[ASSISTANT] IA escolheu: getTeacherInfo para '${name}'`);
+ console.log(`[TOOL] getTeacherInfo: '${name}'`);
  try {
-   const user = await User.findOne({
-    fullName: new RegExp(name, 'i'),
-    status: 'Ativo'
-   }).populate({
-       path: 'staffProfiles',
-       model: 'StaffProfile',
-       populate: { 
-          path: 'enabledSubjects',
-          model: 'Subject',
-          select: 'name'
-        }
+   const user = await User.findOne({ fullName: new RegExp(name, 'i') })
+      .populate({
+         path: 'staffProfiles',
+         populate: { path: 'enabledSubjects', select: 'name' }
       }).lean();
 
-   if (!user) {
-    return { error: `Usuário '${name}' não encontrado ou inativo.` };
-   }
+   if (!user) return { error: `Funcionário '${name}' não encontrado.` };
 
-      if (!user.staffProfiles || user.staffProfiles.length === 0) {
-        return { 
-          message: `${user.fullName} é um usuário, mas não possui um perfil de funcionário (StaffProfile) cadastrado. Informações de contato: E-mail: ${user.email}, Telefone: ${user.phoneNumber || 'Não Informado'}` 
-        };
-      }
-      
-      const profiles = user.staffProfiles.map(profile => ({
-        cargo: profile.mainRole,
-        vinculo: profile.employmentType,
-        modeloRemuneracao: profile.remunerationModel,
-        salario: profile.salaryAmount || null,
-        valorHora: profile.hourlyRate || null,
-        cargaHorariaSemanal: profile.weeklyWorkload || null,
-        dataAdmissao: profile.admissionDate ? new Date(profile.admissionDate).toLocaleDateString('pt-BR') : null,
-        formacao: profile.academicFormation || null,
-        niveisHabilitados: profile.enabledLevels || [],
-        disciplinasHabilitadas: (profile.enabledSubjects || []).map(sub => sub.name),
-      }));
-
-   const info = {
-        nomeCompleto: user.fullName,
+   return {
+        nome: user.fullName,
         email: user.email,
-        telefone: user.phoneNumber, 
-        status: user.status,
-        perfis: profiles,
+        telefone: user.phoneNumber,
+        contratos: (user.staffProfiles || []).map(p => ({
+            cargo: p.mainRole,
+            salario: p.salaryAmount,
+            admissao: p.admissionDate
+        }))
       };
-
-   return info;
   } catch (err) {
-   console.error('[ASSISTANT] Erro em getTeacherInfo:', err);
-   return { error: `Erro ao buscar informações do funcionário: ${err.message}` };
+   return { error: err.message };
   }
  },
 };
 
 // ==========================================================
-// 4. ORQUESTRADOR PRINCIPAL COM FALLBACK
+// 4. ORQUESTRADOR: AGENTE RE-ACT (THINK -> ACT -> OBSERVE)
 // ==========================================================
 class AssistantService {
   async generateResponse(prompt, history, userId) {
     let lastError = null;
+    const MAX_TURNS = 5; // Limite de passos para evitar loops infinitos
 
-    // Loop de tentativas (Flash -> Flash Lite -> Pro)
+    // Tenta com modelos diferentes em caso de falha (Flash -> Lite -> Pro)
     for (const modelName of MODEL_PRIORITY) {
       try {
-        console.log(`[ASSISTANT] Tentando gerar resposta com modelo: ${modelName}`);
+        console.log(`[AGENT] Iniciando pensamento com: ${modelName}`);
 
-        // Inicializa o modelo específico desta iteração
         const model = genAI.getGenerativeModel({
           model: modelName,
           tools,
@@ -970,83 +919,98 @@ class AssistantService {
         const chat = model.startChat({
           history: [
             { role: 'user', parts: [{ text: systemInstructionText }] },
-            { role: 'model', parts: [{ text: 'Entendido. Estou pronto para ajudar no AcademyHub.' }] },
+            { role: 'model', parts: [{ text: 'Entendido. Sou um Agente Autônomo. Vou investigar os dados passo a passo até encontrar a resposta exata.' }] },
             ...(history || []),
           ],
         });
 
-        const result = await chat.sendMessage(prompt);
-        const candidate = result.response.candidates?.[0];
+        // 1. Envia a pergunta inicial
+        let result = await chat.sendMessage(prompt);
+        let candidate = result.response.candidates?.[0];
         
-        if (!candidate?.content?.parts) {
-           // Se a resposta for vazia mas não deu erro, pode ser um problema do modelo.
-           // Vamos tratar como erro para tentar o próximo modelo.
-           throw new Error('Resposta vazia do modelo (Empty Candidate)');
-        }
+        // -----------------------------------------------------
+        // O LOOP DE RACIOCÍNIO (The Re-Act Loop)
+        // -----------------------------------------------------
+        let currentTurn = 0;
 
-        const parts = candidate.content.parts;
-        const functionCalls = parts.filter(p => !!p.functionCall).map(p => p.functionCall);
+        // Enquanto a IA quiser chamar ferramentas...
+        while (
+            candidate?.content?.parts?.some(p => p.functionCall) && 
+            currentTurn < MAX_TURNS
+        ) {
+            currentTurn++;
+            const parts = candidate.content.parts;
+            const functionCalls = parts.filter(p => !!p.functionCall).map(p => p.functionCall);
+            const responses = [];
 
-        // SE HOUVER CHAMADA DE FUNÇÃO
-        if (functionCalls.length > 0) {
-          const responses = [];
-          for (const call of functionCalls) {
-            const impl = toolImplementations[call.name];
-            let res = impl ? await impl(call.args) : { error: `Função '${call.name}' não implementada.` };
-            
-            if (res.hidden_payload) {
-               res = { message: res.message + "\n" + res.hidden_payload };
+            console.log(`[AGENT] Passo ${currentTurn}: Executando ${functionCalls.length} ferramenta(s)...`);
+
+            // Executa cada ferramenta solicitada pela IA
+            for (const call of functionCalls) {
+                const impl = toolImplementations[call.name];
+                let functionResult;
+
+                if (impl) {
+                    try {
+                        // Executa a função Javascript real
+                        functionResult = await impl(call.args);
+                    } catch (execErr) {
+                        functionResult = { error: `Erro de execução: ${execErr.message}` };
+                    }
+                } else {
+                    functionResult = { error: `Ferramenta '${call.name}' não existe.` };
+                }
+
+                // Log leve para debug
+                console.log(`   -> ${call.name} retornou dados.`);
+
+                // Tratamento especial para payload oculto (ex: Invoice JSON)
+                if (functionResult.hidden_payload) {
+                    functionResult = { 
+                        message: functionResult.message + "\n" + functionResult.hidden_payload 
+                    };
+                }
+
+                // Prepara resposta para a IA
+                responses.push({
+                    functionResponse: {
+                        name: call.name,
+                        response: typeof functionResult === 'object' ? functionResult : { message: functionResult },
+                    },
+                });
             }
 
-            responses.push({
-              functionResponse: {
-                name: call.name,
-                response: typeof res === 'object' ? res : { message: res },
-              },
-            });
-          }
+            // Devolve os resultados para a IA e aguarda o PRÓXIMO pensamento dela
+            result = await chat.sendMessage(responses);
+            candidate = result.response.candidates?.[0];
+        }
+        // -----------------------------------------------------
 
-          const second = await chat.sendMessage(responses);
-          const finalCandidate = second.response.candidates?.[0];
-          const finalText = finalCandidate?.content?.parts?.map(p => p.text).join('\n') || null;
+        const finalText = candidate?.content?.parts?.map(p => p.text).join('\n');
 
-          if (!finalText) {
-            const firstFR = responses[0]?.functionResponse?.response;
-            return typeof firstFR === 'object' ? JSON.stringify(firstFR, null, 2) : String(firstFR);
-          }
-
-          console.log(`[ASSISTANT] Sucesso com modelo ${modelName}`);
-          return finalText;
+        if (!finalText) {
+             // Se saiu do loop sem texto, algo estranho aconteceu
+             return "Concluí a tarefa, mas não gerei uma resposta de texto. Verifique os logs.";
         }
 
-        // SE FOR RESPOSTA DE TEXTO DIRETA
-        console.log(`[ASSISTANT] Sucesso com modelo ${modelName}`);
-        return parts.map(p => p.text).join('\n') || 'Não consegui compreender a pergunta.';
+        console.log(`[AGENT] Raciocínio concluído em ${currentTurn} passos.`);
+        return finalText;
 
       } catch (err) {
-        // Captura erros específicos de sobrecarga (503) ou servidor (500, 504)
-        const isOverloaded = err.message.includes('503') || 
-                             err.message.includes('overloaded') || 
-                             err.message.includes('500') || 
-                             err.message.includes('internal error');
-
+        const isOverloaded = err.message.includes('503') || err.message.includes('overloaded') || err.message.includes('500');
         if (isOverloaded) {
-          console.warn(`⚠️ [FALLBACK] Modelo ${modelName} falhou (Server Error/Overloaded). Tentando próximo...`);
+          console.warn(`⚠️ [FALLBACK] Modelo ${modelName} instável. Tentando próximo...`);
           lastError = err;
-          // Espera 1 segundo antes de tentar o próximo modelo para não floodar
           await sleep(1000);
-          continue; // Vai para a próxima iteração do loop (próximo modelo)
+          continue; 
         } else {
-          // Se for erro de código, sintaxe ou lógica, lança o erro e para tudo.
-          console.error('[ASSISTANT] Erro irrecuperável (não é sobrecarga):', err);
+          console.error('[AGENT] Erro fatal:', err);
           throw err; 
         }
       }
     }
 
-    // Se sair do loop, todos os modelos falharam
-    console.error('[ASSISTANT] ERRO CRÍTICO: Todos os modelos falharam.', lastError);
-    return 'Desculpe, nossos servidores de IA estão momentaneamente sobrecarregados. Tente novamente em alguns instantes.';
+    return 'Desculpe, nossos servidores de IA estão momentaneamente sobrecarregados.';
   }
 }
 

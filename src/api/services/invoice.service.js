@@ -2,6 +2,8 @@
 const Invoice = require('../models/invoice.model.js');
 const Student = require('../models/student.model.js');
 const Tutor = require('../models/tutor.model.js');
+const School = require('../models/school.model.js'); 
+const whatsappService = require('./whatsapp.service.js');
 const { MercadoPagoConfig, Payment } = require('mercadopago');
 
 require('dotenv').config();
@@ -26,6 +28,29 @@ const client = new MercadoPagoConfig({
 });
 const paymentClient = new Payment(client);
 
+// ==============================================================================
+// TEMPLATES DE MENSAGENS (ANTI-BANIMENTO)
+// O sistema escolherá um destes aleatoriamente a cada envio.
+// ==============================================================================
+
+const TEMPLATES_CRIACAO = [
+    "Olá {tutor}! Tudo bem? 😊\nEstamos passando para enviar a fatura referente a *{descricao}* do aluno(a) *{aluno}*.\n📅 Vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nPara facilitar, o código Pix Copia e Cola segue na mensagem abaixo:",
+    
+    "Oi {tutor}, como vai?\nA mensalidade do(a) *{aluno}* referente a *{descricao}* já está disponível.\nO valor é R$ {valor} com vencimento em {vencimento}.\n\nUse o código abaixo para realizar o pagamento:",
+    
+    "Academy Hub Informa: Nova fatura gerada.\n🎓 Aluno: *{aluno}*\n📝 Referência: {descricao}\n💲 Total: R$ {valor}\n🗓️ Vence dia: {vencimento}.\n\nSegue o Pix Copia e Cola separado para facilitar:"
+];
+
+const TEMPLATES_LEMBRETE = [
+    "Bom dia {tutor}! Lembrando que a mensalidade de *{aluno}* vence hoje ({vencimento}).\nValor: R$ {valor}.\nEvite juros realizando o pagamento pelo Pix abaixo:",
+    
+    "Olá {tutor}, hoje é o dia do vencimento da fatura do(a) *{aluno}*.\nReferente a: {descricao}\nTotal: R$ {valor}.\n\nSegue o código para pagamento rápido:",
+    
+    "Oi! Passando para lembrar do pagamento referente a *{descricao}* que vence hoje.\nAluno: {aluno}\n\nCopie o código abaixo para pagar no app do seu banco:"
+];
+
+// ==============================================================================
+
 class InvoiceService {
  
   /**
@@ -34,7 +59,7 @@ class InvoiceService {
   async createInvoice(invoiceData, schoolId) {
     const { studentId, tutorId, value, dueDate, description } = invoiceData;
 
-    // 1. Validações de Segurança (Verifica se Aluno e Tutor pertencem à escola)
+    // 1. Validações de Segurança
     const student = await Student.findOne({ _id: studentId, school_id: schoolId });
     if (!student) throw new Error('Aluno não encontrado ou não pertence a esta escola.');
 
@@ -42,11 +67,12 @@ class InvoiceService {
     if (!tutor) throw new Error('Tutor não encontrado ou não pertence a esta escola.');
 
     if (!tutor.cpf || tutor.cpf.length < 11) throw new Error('Tutor sem CPF válido.');
-    if (!tutor.email) throw new Error('Tutor sem e-mail válido.');
+    
+    // Verifica se o tutor tem e-mail (em produção)
+    if (!tutor.email && isProduction) throw new Error('Tutor sem e-mail válido.');
 
-    // Lógica de e-mail para Sandbox
-    const payerEmail = isProduction ? tutor.email : "test_user_123@testuser.com";
-
+    // Lógica de e-mail para Sandbox vs Produção
+    const payerEmail = (isProduction && tutor.email) ? tutor.email : "test_user_123@testuser.com";
     const valorEmReais = parseFloat((value / 100).toFixed(2));
     
     const dataVencimento = new Date(dueDate);
@@ -70,7 +96,6 @@ class InvoiceService {
           number: tutor.cpf.replace(/\D/g, ''),
         },
       },
-      // Adiciona o ID da escola ao metadata para facilitar o rastreamento no webhook (opcional)
       metadata: { school_id: schoolId.toString() } 
     };
 
@@ -87,7 +112,7 @@ class InvoiceService {
       const newInvoice = new Invoice({
         student: studentId,
         tutor: tutorId,
-        school_id: schoolId, // [NOVO] Salva o ID da escola
+        school_id: schoolId, 
         description,
         value: value, 
         dueDate: dataVencimento,
@@ -101,12 +126,120 @@ class InvoiceService {
       });
 
       await newInvoice.save();
+
+      // --- DISPARO WHATSAPP ---
+      // Chama o novo método inteligente que escolhe a mensagem
+      this.notifyInvoiceSmart(schoolId, tutor, student, newInvoice, 'criacao')
+          .catch(err => console.error('⚠️ Falha ao enviar notificação WhatsApp:', err.message));
+      // ------------------------
+
       return await this.getInvoiceById(newInvoice._id, schoolId);
 
     } catch (error) {
       console.error('❌ ERRO MP Create:', error);
       throw new Error(`Falha na criação da fatura: ${error.message}`);
     }
+  }
+
+  /**
+   * [NOVO] Método Inteligente de Notificação
+   * - Verifica conexão
+   * - Formata valores e datas
+   * - Sorteia mensagem (Anti-ban)
+   * - Envia Pix separado
+   * * @param type 'criacao' | 'lembrete'
+   */
+  async notifyInvoiceSmart(schoolId, tutor, student, invoice, type = 'criacao') {
+      console.log(`[Zap] Iniciando envio inteligente (${type})...`);
+
+      // 1. Verifica se a escola tem WhatsApp Conectado
+      const school = await School.findById(schoolId);
+      
+      if (!school || school.whatsapp?.status !== 'connected') {
+          console.log(`[Zap] Escola ${schoolId} não conectada. Abortando.`);
+          return; 
+      }
+
+      // 2. Identifica o telefone
+      const phone = tutor.phoneNumber || tutor.telefone || tutor.celular; 
+      if (!phone) {
+          console.warn(`[Zap] Tutor ${tutor._id} sem telefone.`);
+          return;
+      }
+
+      // 3. Formatação dos dados para a mensagem
+      const valorFormatado = (invoice.value / 100).toFixed(2).replace('.', ',');
+      
+      // Ajuste de Timezone para exibir a data correta no Brasil
+      const dataFormatada = new Date(invoice.dueDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' });
+      
+      const primeiroNome = tutor.fullName.split(' ')[0];
+
+      // 4. Seleção Aleatória de Template (ANTI-BAN)
+      const listaTemplates = type === 'lembrete' ? TEMPLATES_LEMBRETE : TEMPLATES_CRIACAO;
+      const templateEscolhido = listaTemplates[Math.floor(Math.random() * listaTemplates.length)];
+
+      // 5. Montagem da Mensagem (Substituição de variáveis)
+      const msgTexto = templateEscolhido
+          .replace('{tutor}', primeiroNome)
+          .replace('{aluno}', student.fullName)
+          .replace('{descricao}', invoice.description)
+          .replace('{valor}', valorFormatado)
+          .replace('{vencimento}', dataFormatada);
+
+      // 6. Envio Sequencial
+      try {
+          // A) Envia o Texto Explicativo
+          await whatsappService.sendText(schoolId, phone, msgTexto);
+          
+          // B) Delay de segurança (1.5s) para garantir a ordem visual no celular do cliente
+          await new Promise(r => setTimeout(r, 1500));
+
+          // C) Envia APENAS o código Pix (Copia e Cola)
+          if (invoice.mp_pix_copia_e_cola) {
+              await whatsappService.sendText(schoolId, phone, invoice.mp_pix_copia_e_cola);
+          }
+          
+          console.log(`[Zap] Mensagens enviadas com sucesso para ${phone}`);
+      } catch (error) {
+          console.error(`[Zap] Erro ao enviar mensagem:`, error.message);
+      }
+  }
+
+  /**
+   * [NOVO] Método para Cobrança Automática (Cron Job)
+   * Busca faturas vencendo HOJE e dispara os lembretes.
+   */
+  async processDailyReminders() {
+      console.log('⏰ [Service] Processando lembretes de vencimento...');
+      
+      const hoje = new Date();
+      hoje.setHours(0, 0, 0, 0);
+      
+      const amanha = new Date(hoje);
+      amanha.setDate(amanha.getDate() + 1);
+
+      // Busca faturas PENDENTES que vencem HOJE
+      const faturasVencendo = await Invoice.find({
+          status: 'pending',
+          dueDate: { $gte: hoje, $lt: amanha }
+      }).populate('student').populate('tutor');
+
+      console.log(`🔎 Encontradas ${faturasVencendo.length} faturas vencendo hoje.`);
+
+      for (const fatura of faturasVencendo) {
+          // Dispara notificação do tipo 'lembrete'
+          await this.notifyInvoiceSmart(
+              fatura.school_id, 
+              fatura.tutor, 
+              fatura.student, 
+              fatura, 
+              'lembrete'
+          );
+          
+          // Pequeno delay entre um aluno e outro para não sobrecarregar a API
+          await new Promise(r => setTimeout(r, 2000));
+      }
   }
 
   /**
@@ -139,10 +272,6 @@ class InvoiceService {
   * Webhook Handler - Não recebe schoolId, pois o ID do MP é global.
   */
   async handlePaymentWebhook(paymentId) {
-    // ... (Mantém a lógica inalterada, pois o Webhook é global e busca por mp_payment_id) ...
-    // A segurança da fatura já está no registro (school_id), mas a operação do webhook 
-    // é apenas de *update* e não de consulta multi-tenant.
-    
     // 1. Busca a fatura no banco local
     const invoice = await Invoice.findOne({ mp_payment_id: paymentId });
 
@@ -170,7 +299,6 @@ class InvoiceService {
       invoice.status = novoStatus;
       if (novoStatus === 'paid' && !invoice.paidAt) { 
         invoice.paidAt = new Date();
-        // A data de pagamento só é preenchida aqui pelo Webhook.
       }
       await invoice.save();
     }
@@ -195,11 +323,8 @@ class InvoiceService {
     }
   }
 
-  /**
-  * Busca todas as faturas da escola do usuário logado.
-  */
   async getAllInvoices(filters = {}, schoolId) {
-    const query = { school_id: schoolId }; // [NOVO] Filtro obrigatório
+    const query = { school_id: schoolId }; 
     if (filters.status) query.status = filters.status;
 
     return Invoice.find(query)
@@ -208,21 +333,14 @@ class InvoiceService {
       .populate('tutor', 'fullName');
   }
 
-  /**
-  * Busca uma fatura específica da escola do usuário logado.
-  */
   async getInvoiceById(invoiceId, schoolId) {
-    return Invoice.findOne({ _id: invoiceId, school_id: schoolId }) // [NOVO] Filtro obrigatório
+    return Invoice.findOne({ _id: invoiceId, school_id: schoolId }) 
       .populate('student', 'fullName profilePicture')
       .populate('tutor', 'fullName');
   }
 
-  /**
-  * Busca faturas de um aluno específico, garantindo que o aluno pertença à escola.
-  */
   async getInvoicesByStudent(studentId, schoolId) {
-    // Busca faturas onde o studentId é o fornecido E o school_id é o do usuário
-    return Invoice.find({ student: studentId, school_id: schoolId }) // [NOVO] Filtro obrigatório
+    return Invoice.find({ student: studentId, school_id: schoolId }) 
       .sort({ dueDate: -1 })
       .populate('tutor', 'fullName');
   }
@@ -232,7 +350,7 @@ class InvoiceService {
     today.setHours(0, 0, 0, 0);
     
     return Invoice.find({
-      school_id: schoolId, // [NOVO] Filtro obrigatório
+      school_id: schoolId, 
       dueDate: { $lt: today },
       status: { $nin: ['paid', 'canceled'] }
     })

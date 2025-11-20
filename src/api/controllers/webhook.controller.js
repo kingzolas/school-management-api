@@ -3,6 +3,34 @@ const NegotiationService = require('../services/negotiation.service'); // Import
 const appEmitter = require('../../loaders/eventEmitter');
 
 class WebhookController {
+/**
+   * [NOVO] Lida com notificações do WhatsApp (Evolution API)
+   */
+  async handleWhatsappWebhook(req, res) {
+    try {
+      // Responde rápido para a Evolution não ficar tentando de novo (o erro 404 vem daqui)
+      res.status(200).json({ status: 'recebido' });
+
+      const { event, data } = req.body;
+
+      // Se for mensagem nova recebida
+      if (event === 'messages.upsert' && !data.key.fromMe) {
+        const remoteJid = data.key.remoteJid; 
+        const phone = remoteJid.split('@')[0];
+        const pushName = data.pushName;
+        
+        // Extrai texto simples
+        let textMessage = data.message?.conversation || data.message?.extendedTextMessage?.text || '';
+        
+        if (textMessage) {
+          console.log(`📩 [WhatsApp] Msg de ${pushName} (${phone}): ${textMessage}`);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Erro no Webhook WhatsApp:', error.message);
+    }
+  }
+
   /**
    * Lida com as notificações de pagamento do Mercado Pago
    * Agora atua como um Roteador: verifica se é Fatura ou Negociação.

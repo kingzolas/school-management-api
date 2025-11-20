@@ -13,5 +13,9 @@ router.post(
   webhookController.handleMpWebhook
 );
 
+
+// [NOVO] Rota PÚBLICA para o WHATSAPP (Evolution API)
+// Essa é a rota que a Evolution está tentando chamar e dando 404
+router.post('/whatsapp', webhookController.handleWhatsappWebhook);
 module.exports = router;
 

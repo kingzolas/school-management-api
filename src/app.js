@@ -19,6 +19,7 @@ const invoiceRoutes = require('./api/routes/invoice.routes.js');
 const webhookRoutes = require('./api/routes/webhook.routes.js');
 const assistantRoutes = require('./api/routes/assistant.routes.js');
 const negotiationRoutes = require('./api/routes/negotiation.routes.js'); 
+const whatsappRoutes = require('./api/routes/whatsapp.routes');
 
 // ===================================================================
 // [NOVA IMPORTAÇÃO]
@@ -59,6 +60,7 @@ app.use('/api/invoices', invoiceRoutes);
 app.use('/api/webhook', webhookRoutes); 
 app.use('/api/assistant', assistantRoutes); 
 app.use('/api/negotiations', negotiationRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
 
 // ===================================================================
 // [NOVO REGISTRO]
