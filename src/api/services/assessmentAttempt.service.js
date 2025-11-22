@@ -1,3 +1,4 @@
+const mongoose = require('mongoose'); // [IMPORTANTE] Necessário para validar ID
 const Assessment = require('../models/assessment.model');
 const AssessmentAttempt = require('../models/assessmentAttempt.model');
 
@@ -7,13 +8,19 @@ class AssessmentAttemptService {
      * Inicia uma tentativa (Aluno abriu a prova)
      */
     async startAttempt(studentId, assessmentId, schoolId) {
+        // [CORREÇÃO] Valida se o ID é um formato válido do MongoDB (24 chars hex)
+        // Isso evita o CastError e o crash 500 se o link estiver quebrado
+        if (!mongoose.isValidObjectId(assessmentId)) {
+            throw new Error('Link da atividade inválido (ID incorreto).');
+        }
+
         const assessment = await Assessment.findOne({ 
             _id: assessmentId, 
             school_id: schoolId, 
             status: 'PUBLISHED' 
         });
 
-        if (!assessment) throw new Error('Atividade indisponível.');
+        if (!assessment) throw new Error('Atividade indisponível ou não encontrada.');
 
         // Verifica se já existe tentativa (se não permitir retry)
         if (!assessment.settings.allowRetry) {
@@ -35,9 +42,6 @@ class AssessmentAttemptService {
 
         await attempt.save();
         
-        // Retorna a prova para o aluno (O front precisa disso pra renderizar)
-        // Importante: O Frontend recebe a prova completa aqui, o backend só valida no final.
-        // Se quiser segurança extrema, pode limpar o "correctIndex" aqui, mas dificultaria o feedback imediato no front.
         return { attemptId: attempt._id, assessment }; 
     }
 
@@ -45,6 +49,10 @@ class AssessmentAttemptService {
      * Finaliza a prova (Aluno clicou em Enviar)
      */
     async submitAttempt(attemptId, submissionData, schoolId) {
+        if (!mongoose.isValidObjectId(attemptId)) {
+            throw new Error('ID da tentativa inválido.');
+        }
+
         const attempt = await AssessmentAttempt.findOne({ _id: attemptId, school_id: schoolId });
         if (!attempt) throw new Error('Tentativa não encontrada.');
         
@@ -52,8 +60,8 @@ class AssessmentAttemptService {
 
         const assessment = await Assessment.findById(attempt.assessment_id);
 
-        // Lógica de Correção (Servidor é autoridade)
-        const studentAnswers = submissionData.answers || []; // Array vindo do Front
+        // Lógica de Correção
+        const studentAnswers = submissionData.answers || []; 
         let correctCount = 0;
         let calculatedScore = 0;
         
@@ -61,13 +69,12 @@ class AssessmentAttemptService {
         const processedAnswers = studentAnswers.map(ans => {
             const questionConfig = assessment.questions[ans.questionIndex];
             
-            // Segurança: Verifica se a questão existe
             if (!questionConfig) return null;
 
             const isCorrect = questionConfig.correctIndex === ans.selectedOptionIndex;
             if (isCorrect) {
                 correctCount++;
-                calculatedScore += questionConfig.points; // Soma pontos
+                calculatedScore += questionConfig.points; 
             }
 
             return {
@@ -93,7 +100,7 @@ class AssessmentAttemptService {
             totalTimeMs: submissionData.telemetry.totalTimeMs,
             focusLostCount: submissionData.telemetry.focusLostCount,
             focusLostTimeMs: submissionData.telemetry.focusLostTimeMs,
-            browserUserAgent: submissionData.telemetry.deviceInfo
+            deviceInfo: submissionData.telemetry.deviceInfo
         };
 
         await attempt.save();
@@ -101,11 +108,15 @@ class AssessmentAttemptService {
     }
     
     /**
-     * Dashboard: Pega resultados de uma prova específica (Para o Professor)
+     * Dashboard: Pega resultados de uma prova específica
      */
     async getResultsByAssessment(assessmentId, schoolId) {
+        if (!mongoose.isValidObjectId(assessmentId)) {
+            throw new Error('ID da atividade inválido.');
+        }
+
         return await AssessmentAttempt.find({ assessment_id: assessmentId, school_id: schoolId })
-            .populate('student_id', 'fullName enrollmentNumber') // Traz nome do aluno
+            .populate('student_id', 'fullName enrollmentNumber') 
             .sort({ score: -1 });
     }
 }

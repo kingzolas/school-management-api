@@ -1,4 +1,3 @@
-// src/api/models/student.model.js
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 const addressSchema = require('./address.model');
@@ -12,7 +11,7 @@ const studentAuthSchema = new Schema({
     },
     passwordHash: { 
         type: String, 
-        select: false // Não retorna nas buscas padrão
+        select: false // Segurança: não retorna a senha nas buscas normais
     },
     firstAccess: { 
         type: Boolean, 
@@ -64,56 +63,129 @@ const academicRecordSchema = new Schema({
     finalResult: { type: String, required: true, trim: true }
 });
 
+
 const studentSchema = new Schema({
     // [NOVO] Matrícula para Login
     enrollmentNumber: {
         type: String,
-        required: [true, 'A matrícula é obrigatória.'],
-        unique: true,
+        unique: true, 
         trim: true
+        // Não colocamos 'required: true' aqui para não quebrar alunos antigos sem matrícula,
+        // mas o Service vai garantir que novos alunos tenham.
     },
-    // [NOVO] Credenciais
+    // [NOVO] Credenciais de Acesso
     accessCredentials: {
         type: studentAuthSchema,
         default: () => ({})
     },
 
-    fullName: { type: String, required: [true, 'O nome completo é obrigatório.'], trim: true },
-    birthDate: { type: Date, required: [true, 'A data de nascimento é obrigatória.'] },
-    gender: { type: String, required: true, enum: ['Masculino', 'Feminino', 'Outro'] },
-    race: { type: String, required: true, enum: ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Prefiro não dizer'] },
-    nationality: { type: String, required: true },
-    profilePictureUrl: { type: String, default: null },
-    email: { type: String, lowercase: true, sparse: true, trim: true },
-    phoneNumber: { type: String },
-    rg: { type: String, sparse: true },
-    cpf: { type: String, sparse: true },
-    birthCertificateUrl: { type: String },
-    address: { type: addressSchema, required: true },
-    tutors: {
-        type: [{
-            _id: false, 
-            tutorId: { type: Schema.Types.ObjectId, ref: 'Tutor', required: true },
-            relationship: { type: String, required: [true, 'O parentesco é obrigatório.'], enum: ['Mãe', 'Pai', 'Avó/Avô', 'Tio/Tia', 'Outro'] }
-        }],
-        validate: [(val) => val.length >= 1 && val.length <= 2, 'É necessário cadastrar pelo menos 1 (um) e no máximo 2 (dois) tutores.']
+    fullName: {
+        type: String,
+        required: [true, 'O nome completo é obrigatório.'],
+        trim: true
     },
-    healthInfo: { type: healthInfoSchema, default: () => ({}) },
-    authorizedPickups: { type: [authorizedPickupSchema], default: [] },
-    isActive: { type: Boolean, default: true },
-    classId: { type: Schema.Types.ObjectId, ref: 'Class', default: null },
+    birthDate: {
+        type: Date,
+        required: [true, 'A data de nascimento é obrigatória.']
+    },
+    gender: {
+        type: String,
+        required: true,
+        enum: ['Masculino', 'Feminino', 'Outro']
+    },
+    race: {
+        type: String,
+        required: true,
+        enum: ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Prefiro não dizer']
+    },
+    nationality: {
+        type: String,
+        required: true
+    },
+    profilePictureUrl: { 
+        type: String,
+        default: null
+    },
+    email: { 
+        type: String,
+        lowercase: true,
+        sparse: true, 
+        trim: true
+    },
+    phoneNumber: {
+        type: String
+    },
+    rg: { 
+        type: String,
+        sparse: true
+    },
+    cpf: {
+        type: String,
+        sparse: true
+    },
+    birthCertificateUrl: { 
+        type: String
+    },
+    address: { 
+        type: addressSchema,
+        required: true
+    },
+    tutors: {
+        type: [
+            {
+                _id: false, 
+                tutorId: { 
+                    type: Schema.Types.ObjectId,
+                    ref: 'Tutor', 
+                    required: true
+                },
+                relationship: {
+                    type: String,
+                    required: [true, 'O parentesco é obrigatório.'],
+                    enum: ['Mãe', 'Pai', 'Avó/Avô', 'Tio/Tia', 'Outro']
+                }
+            }
+        ],
+        validate: [
+            (val) => val.length >= 1 && val.length <= 2, 
+            'É necessário cadastrar pelo menos 1 (um) e no máximo 2 (dois) tutores.'
+        ]
+    },
+    healthInfo: {
+        type: healthInfoSchema,
+        default: () => ({})
+    },
+    authorizedPickups: {
+        type: [authorizedPickupSchema],
+        default: []
+    },
+    isActive: { 
+        type: Boolean,
+        default: true
+    },
+    classId: { 
+        type: Schema.Types.ObjectId,
+        ref: 'Class', 
+        default: null
+    },
     
     // --- LIGAÇÃO MULTI-TENANCY ---
     school_id: {
         type: Schema.Types.ObjectId,
-        ref: 'School',
+        ref: 'School', 
         required: [true, 'A referência da escola (school_id) é obrigatória.'],
-        index: true
+        index: true 
     },
 
-    academicHistory: { type: [academicRecordSchema], default: [] }
-}, { timestamps: true });
+    academicHistory: {
+        type: [academicRecordSchema],
+        default: []
+    }
+}, {
+    timestamps: true 
+});
 
+// Hook (inalterado)
 studentSchema.pre('save', function(next) {
     if (this.rg === '') { this.rg = null; }
     if (this.cpf === '') { this.cpf = null; }
@@ -122,4 +194,5 @@ studentSchema.pre('save', function(next) {
 });
 
 const Student = mongoose.model('Student', studentSchema);
+
 module.exports = Student;

@@ -11,15 +11,18 @@ class AssessmentAttemptController {
     async start(req, res, next) {
         try {
             const schoolId = getSchoolId(req);
-            const studentId = req.user.studentId; // Assumindo que o middleware de auth colocou isso
+            // studentId vem do middleware auth ajustado
+            const studentId = req.user.studentId; 
             const { assessmentId } = req.body;
 
-            if (!studentId) return res.status(403).json({ message: 'Apenas alunos podem iniciar provas.' });
+            if (!studentId) {
+                return res.status(403).json({ message: 'Apenas alunos podem iniciar provas.' });
+            }
 
             const result = await AssessmentAttemptService.startAttempt(studentId, assessmentId, schoolId);
             res.status(201).json(result);
         } catch (error) {
-            next(error);
+            next(error); // Repassa para o middleware de erro padrão
         }
     }
 
@@ -28,7 +31,7 @@ class AssessmentAttemptController {
         try {
             const schoolId = getSchoolId(req);
             const { attemptId } = req.params;
-            const submissionData = req.body; // { answers: [], telemetry: {} }
+            const submissionData = req.body; 
 
             const result = await AssessmentAttemptService.submitAttempt(attemptId, submissionData, schoolId);
             res.status(200).json(result);
@@ -42,8 +45,6 @@ class AssessmentAttemptController {
         try {
             const schoolId = getSchoolId(req);
             const { assessmentId } = req.params;
-            
-            // Aqui poderia ter verificação se user é Professor/Admin
             
             const results = await AssessmentAttemptService.getResultsByAssessment(assessmentId, schoolId);
             res.status(200).json(results);
