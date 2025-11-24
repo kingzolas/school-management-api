@@ -212,9 +212,13 @@ class StudentService {
     /**
      * [MODIFICADO] Atualiza relacionamento, garantindo que o aluno pertença à escola.
      */
+   /**
+     * [CORRIGIDO] Atualiza relacionamento e retorna também o ALUNO para o WebSocket.
+     */
     async updateTutorRelationship(studentId, tutorId, newRelationship, schoolId) {
         try {
             const student = await Student.findOne({ _id: studentId, school_id: schoolId });
+            
             if (!student) {
                 throw new Error('Aluno não encontrado ou não pertence a esta escola.');
             }
@@ -230,6 +234,7 @@ class StudentService {
             tutorLink.relationship = newRelationship;
             await student.save();
 
+            // Popula para retornar os dados bonitinhos
             await student.populate({
                 path: 'tutors.tutorId',
                 model: 'Tutor' 
@@ -244,11 +249,16 @@ class StudentService {
                  (t) => t.tutorInfo._id.toString() === tutorId
             );
 
-            return updatedPopulatedLink; 
+            // --- [MUDANÇA AQUI] ---
+            // Retornamos um objeto com as duas informações necessárias
+            return { 
+                updatedLink: updatedPopulatedLink, 
+                student: student // O aluno completo para o WebSocket
+            }; 
 
         } catch (error) {
             console.error(`Erro no service ao ATUALIZAR relacionamento:`, error.message);
-            throw new Error(`Erro ao atualizar relacionamento: ${error.message}`);
+            throw error; 
         }
     }
 

@@ -15,7 +15,6 @@ class StudentController {
 
     async updateTutorRelationship(req, res) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
             const { studentId, tutorId } = req.params;
             const { relationship } = req.body;
@@ -25,16 +24,19 @@ class StudentController {
             }
             
             console.log(`[API] PUT /students/${studentId}/tutors/${tutorId}`);
-            console.log(`[API] Novo relacionamento: ${relationship}`);
 
-            // [MODIFICADO] Passa o schoolId para o service
-            const updatedLink = await StudentService.updateTutorRelationship(
+            // [CORREÇÃO] Destrutura o retorno do service para pegar o link E o aluno
+            const { updatedLink, student } = await StudentService.updateTutorRelationship(
                 studentId,
                 tutorId,
                 relationship,
                 schoolId
             );
             
+            // Agora a variável 'student' EXISTE e pode ser enviada no evento
+            appEmitter.emit('student:updated', student);
+            
+            // Responde ao Flutter apenas com o link (como esperado pelo front)
             res.status(200).json(updatedLink); 
 
         } catch (error) {
