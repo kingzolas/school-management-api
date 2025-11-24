@@ -3,7 +3,7 @@ const Schema = mongoose.Schema;
 const addressSchema = require('./address.model'); 
 
 const schoolSchema = new Schema({
-    // ... (Mantenha todos os seus campos existentes: name, logo, legalName, etc.) ...
+    // ... (Seus campos existentes) ...
     name: { type: String, required: true, trim: true },
     logo: { data: { type: Buffer, default: null }, contentType: { type: String, default: null } },
     legalName: { type: String, required: true, trim: true },
@@ -18,15 +18,24 @@ const schoolSchema = new Schema({
     
     status: { type: String, enum: ['Ativa', 'Inativa', 'Bloqueada'], default: 'Ativa', required: true },
 
-    // --- [NOVO] Configuração do WhatsApp (Evolution API) ---
+    // --- Configuração do WhatsApp (Evolution API) ---
     whatsapp: {
-        instanceName: { type: String }, // ex: school_64f...
+        instanceName: { type: String },
         status: { 
             type: String, 
             enum: ['connected', 'disconnected', 'pairing'], 
             default: 'disconnected' 
         },
         updatedAt: { type: Date }
+    },
+
+    // --- [NOVO] Configuração do Mercado Pago (Por Escola) ---
+    mercadoPagoConfig: {
+        prodClientId: { type: String, trim: true, select: false },
+        prodClientSecret: { type: String, trim: true, select: false },
+        prodPublicKey: { type: String, trim: true }, // Public Key geralmente não é crítica expor se necessário no front
+        prodAccessToken: { type: String, trim: true, select: false }, // CRÍTICO: select false para não vazar
+        isConfigured: { type: Boolean, default: false }
     }
 
 }, { timestamps: true });

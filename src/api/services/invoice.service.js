@@ -1,4 +1,3 @@
-// src/api/services/invoice.service.js
 const Invoice = require('../models/invoice.model.js');
 const Student = require('../models/student.model.js');
 const Tutor = require('../models/tutor.model.js');
@@ -10,23 +9,12 @@ require('dotenv').config();
 
 const isProduction = process.env.NODE_ENV === 'production';
 
-const MP_ACCESS_TOKEN = isProduction 
-  ? process.env.MP_ACCESS_TOKEN_PROD 
-  : process.env.MP_ACCESS_TOKEN_TEST;
-
+// A URL de notificação continua global ou pode ser ajustada conforme sua infra
 const NOTIFICATION_BASE_URL = isProduction 
   ? process.env.PROD_URL 
   : process.env.NGROK_URL;
 
-if (!MP_ACCESS_TOKEN) console.error('MP_ACCESS_TOKEN não definido.');
 if (!NOTIFICATION_BASE_URL) console.error('URL de notificação não definida.');
-
-// Configuração SDK Mercado Pago
-const client = new MercadoPagoConfig({
-  accessToken: MP_ACCESS_TOKEN,
-  options: { timeout: 5000 }
-});
-const paymentClient = new Payment(client);
 
 // ==============================================================================
 // TEMPLATES DE MENSAGENS (ANTI-BANIMENTO)
@@ -52,6 +40,31 @@ const TEMPLATES_LEMBRETE = [
 // ==============================================================================
 
 class InvoiceService {
+
+  /**
+   * [HELPER PRIVADO]
+   * Busca as credenciais da escola e retorna uma instância configurada do Mercado Pago
+   */
+  async _getMpClient(schoolId) {
+    const school = await School.findById(schoolId).select('+mercadoPagoConfig.prodAccessToken');
+    
+    if (!school) {
+        throw new Error('Escola não encontrada para processar pagamento.');
+    }
+
+    if (!school.mercadoPagoConfig || !school.mercadoPagoConfig.prodAccessToken) {
+        throw new Error('As credenciais do Mercado Pago não estão configuradas para esta escola.');
+    }
+
+    const client = new MercadoPagoConfig({
+        accessToken: school.mercadoPagoConfig.prodAccessToken,
+        options: { timeout: 5000 }
+    });
+
+    const paymentClient = new Payment(client);
+    
+    return { client, paymentClient };
+  }
  
   /**
   * Cria fatura, gera PIX no MP e salva com school_id
@@ -70,6 +83,9 @@ class InvoiceService {
     
     // Verifica se o tutor tem e-mail (em produção)
     if (!tutor.email && isProduction) throw new Error('Tutor sem e-mail válido.');
+
+    // Prepara Instância do MP específica da Escola
+    const { paymentClient } = await this._getMpClient(schoolId);
 
     // Lógica de e-mail para Sandbox vs Produção
     const payerEmail = (isProduction && tutor.email) ? tutor.email : "test_user_123@testuser.com";
@@ -100,7 +116,7 @@ class InvoiceService {
     };
 
     try {
-      console.log('[MP Service] Criando pagamento PIX...');
+      console.log(`[MP Service] Criando pagamento PIX para Escola ID: ${schoolId}...`);
       const paymentResponse = await paymentClient.create({ body: paymentBody });
       const payment = paymentResponse;
       const paymentId = payment.id.toString();
@@ -255,6 +271,8 @@ class InvoiceService {
     // 2. Tenta cancelar no Mercado Pago
     if (invoice.mp_payment_id) {
       try {
+        // Busca instância correta da escola
+        const { paymentClient } = await this._getMpClient(schoolId);
         await paymentClient.cancel({ id: invoice.mp_payment_id });
       } catch (error) {
         console.warn(`⚠️ Aviso: Erro ao cancelar no MP (pode já estar expirado): ${error.message}`);
@@ -269,7 +287,8 @@ class InvoiceService {
   }
 
   /**
-  * Webhook Handler - Não recebe schoolId, pois o ID do MP é global.
+  * Webhook Handler - Não recebe schoolId, pois o ID do MP é global na URL (a menos que use query param).
+  * Aqui buscamos a fatura primeiro para descobrir a escola.
   */
   async handlePaymentWebhook(paymentId) {
     // 1. Busca a fatura no banco local
@@ -282,7 +301,8 @@ class InvoiceService {
     // 2. Se encontrou, é dele. Continua o processo...
     let paymentDetails;
     try {
-      paymentDetails = await this.getMpPaymentStatus(paymentId);
+      // Passamos o school_id da fatura encontrada para validar a credencial correta
+      paymentDetails = await this.getMpPaymentStatus(paymentId, invoice.school_id);
     } catch (error) {
       return { processed: true, invoice: invoice, mpStatus: 'error_fetching' };
     }
@@ -314,8 +334,10 @@ class InvoiceService {
 
   // --- Helpers ---
 
-  async getMpPaymentStatus(paymentId) {
+  // Método atualizado para receber schoolId e buscar o client correto
+  async getMpPaymentStatus(paymentId, schoolId) {
     try {
+      const { paymentClient } = await this._getMpClient(schoolId);
       const response = await paymentClient.get({ id: paymentId });
       return response; 
     } catch (error) {

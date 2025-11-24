@@ -75,7 +75,7 @@ class SchoolController {
         }
     }
 
-    // --- [CORREÇÃO AQUI] ---
+  // --- [ATUALIZADO] ---
     async update(req, res, next) {
         try {
             const cleanString = (value) => {
@@ -88,24 +88,19 @@ class SchoolController {
             let rawBody = { ...req.body };
             let updateData = {};
 
-            // Limpa aspas
+            // Limpa aspas e transfere propriedades
             Object.keys(rawBody).forEach(key => {
                 updateData[key] = cleanString(rawBody[key]);
             });
 
-            // Verifica campos achatados
+            // Tratamento de Endereço (Mantido sua lógica original)
             if (updateData['address[street]'] || updateData['address[cep]'] || updateData['address[zipCode]'] || updateData['address[neighborhood]']) {
-                
-                // 1. Bairro: Pega 'neighborhood' (novo) ou 'district' (antigo)
                 const bairroValue = updateData['address[neighborhood]'] || updateData['address[district]'];
-                
-                // 2. CEP: Pega 'cep' (novo) ou 'zipCode' (antigo)
                 const cepValue = updateData['address[cep]'] || updateData['address[zipCode]'];
 
                 updateData.address = {
-                    // --- Mapeamento Correto para o Schema ---
-                    cep: cleanString(cepValue),           // Salva em 'cep'
-                    neighborhood: cleanString(bairroValue), // Salva em 'neighborhood'
+                    cep: cleanString(cepValue),
+                    neighborhood: cleanString(bairroValue),
                     street: cleanString(updateData['address[street]']),
                     number: cleanString(updateData['address[number]']),
                     city: cleanString(updateData['address[city]']),
@@ -113,14 +108,34 @@ class SchoolController {
                 };
 
                 // Limpa lixo do objeto principal
-                delete updateData['address[cep]'];
-                delete updateData['address[zipCode]'];
-                delete updateData['address[street]'];
-                delete updateData['address[number]'];
-                delete updateData['address[neighborhood]'];
-                delete updateData['address[district]'];
-                delete updateData['address[city]'];
-                delete updateData['address[state]'];
+                delete updateData['address[cep]']; delete updateData['address[zipCode]'];
+                delete updateData['address[street]']; delete updateData['address[number]'];
+                delete updateData['address[neighborhood]']; delete updateData['address[district]'];
+                delete updateData['address[city]']; delete updateData['address[state]'];
+            }
+
+            // --- [NOVO] Tratamento do Mercado Pago ---
+            // Verifica se veio flatten (ex: mercadoPagoConfig[prodAccessToken]) ou objeto direto
+            const mpAccessToken = updateData['mercadoPagoConfig[prodAccessToken]'] || (updateData.mercadoPagoConfig && updateData.mercadoPagoConfig.prodAccessToken);
+            const mpPublicKey = updateData['mercadoPagoConfig[prodPublicKey]'] || (updateData.mercadoPagoConfig && updateData.mercadoPagoConfig.prodPublicKey);
+            const mpClientId = updateData['mercadoPagoConfig[prodClientId]'] || (updateData.mercadoPagoConfig && updateData.mercadoPagoConfig.prodClientId);
+            const mpClientSecret = updateData['mercadoPagoConfig[prodClientSecret]'] || (updateData.mercadoPagoConfig && updateData.mercadoPagoConfig.prodClientSecret);
+
+            // Se pelo menos o Access Token for enviado, atualizamos a config
+            if (mpAccessToken) {
+                updateData.mercadoPagoConfig = {
+                    prodAccessToken: cleanString(mpAccessToken),
+                    prodPublicKey: cleanString(mpPublicKey),
+                    prodClientId: cleanString(mpClientId),
+                    prodClientSecret: cleanString(mpClientSecret),
+                    isConfigured: true
+                };
+
+                // Remove chaves flatten se existirem para não sujar o objeto raiz
+                delete updateData['mercadoPagoConfig[prodAccessToken]'];
+                delete updateData['mercadoPagoConfig[prodPublicKey]'];
+                delete updateData['mercadoPagoConfig[prodClientId]'];
+                delete updateData['mercadoPagoConfig[prodClientSecret]'];
             }
 
             const school = await SchoolService.updateSchool(req.params.id, updateData, req.file);

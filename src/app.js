@@ -21,6 +21,7 @@ const assistantRoutes = require('./api/routes/assistant.routes.js');
 const negotiationRoutes = require('./api/routes/negotiation.routes.js'); 
 const whatsappRoutes = require('./api/routes/whatsapp.routes');
 const schoolRoutes = require('./api/routes/school.routes.js');
+const dashboardRoutes = require('./api/routes/dashboard.routes');
 
 // ===================================================================
 // [NOVAS IMPORTAÇÕES] Módulo de Avaliações e Auth Aluno
@@ -75,7 +76,7 @@ app.use('/api/webhook', webhookRoutes);
 app.use('/api/assistant', assistantRoutes); 
 app.use('/api/negotiations', negotiationRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
-
+app.use('/api/dashboard', dashboardRoutes);
 // ===================================================================
 // [NOVAS ROTAS REGISTRADAS] Módulo de Avaliações
 // ===================================================================

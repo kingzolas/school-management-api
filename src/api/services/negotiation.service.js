@@ -2,34 +2,47 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const NegotiationModel = require('../models/negotiation.model');
 const InvoiceModel = require('../models/invoice.model');
+const SchoolModel = require('../models/school.model'); // Necessário para buscar credenciais
 
 // --- MERCADO PAGO CONFIG ---
 const { MercadoPagoConfig, Payment } = require('mercadopago');
 require('dotenv').config();
 
 const isProduction = process.env.NODE_ENV === 'production';
-const MP_ACCESS_TOKEN = isProduction ? process.env.MP_ACCESS_TOKEN_PROD : process.env.MP_ACCESS_TOKEN_TEST;
 const NOTIFICATION_BASE_URL = isProduction ? process.env.PROD_URL : process.env.NGROK_URL;
 
-let client, paymentClient;
-if (MP_ACCESS_TOKEN) {
-    client = new MercadoPagoConfig({ accessToken: MP_ACCESS_TOKEN });
-    paymentClient = new Payment(client);
-} else {
-    console.warn("⚠️ MP_ACCESS_TOKEN não definido. Pagamentos falharão.");
-}
-
 class NegotiationService {
+
+    /**
+     * [HELPER PRIVADO]
+     * Busca as credenciais da escola e retorna uma instância configurada do Mercado Pago
+     */
+    async _getMpClient(schoolId) {
+        const school = await SchoolModel.findById(schoolId).select('+mercadoPagoConfig.prodAccessToken');
+        
+        if (!school) {
+            throw new Error('Escola não encontrada para processar pagamento.');
+        }
+
+        if (!school.mercadoPagoConfig || !school.mercadoPagoConfig.prodAccessToken) {
+            throw new Error('As credenciais do Mercado Pago não estão configuradas para esta escola.');
+        }
+
+        const client = new MercadoPagoConfig({
+            accessToken: school.mercadoPagoConfig.prodAccessToken,
+            options: { timeout: 5000 }
+        });
+
+        const paymentClient = new Payment(client);
+        
+        return { client, paymentClient };
+    }
 
     /**
      * Cria a negociação, aplicando school_id e createdByUserId.
      */
     async createNegotiation(data, schoolId, createdByUserId) {
         const { studentId, invoiceIds, rules } = data;
-
-        // [SUGESTÃO] Adicionar validação se o StudentModel tem school_id
-        // const student = await StudentModel.findOne({ _id: studentId, school_id: schoolId });
-        // if (!student) throw new Error("Aluno não encontrado nesta escola.");
 
         const invoices = await InvoiceModel.find({ _id: { $in: invoiceIds } });
         
@@ -54,8 +67,8 @@ class NegotiationService {
             totalOriginalDebt: totalDebt,
             expiresAt,
             status: 'PENDING',
-            school_id: schoolId,          // [NOVO]
-            createdByUserId: createdByUserId // [NOVO]
+            school_id: schoolId,          
+            createdByUserId: createdByUserId 
         });
 
         await negotiation.save();
@@ -66,7 +79,7 @@ class NegotiationService {
      * Lista histórico, garantindo que o gestor só veja negociações de sua escola.
      */
     async listByStudent(studentId, schoolId) {
-        return await NegotiationModel.find({ studentId, school_id: schoolId }) // [AJUSTADO] Filtro school_id
+        return await NegotiationModel.find({ studentId, school_id: schoolId })
             .populate('invoices')
             .sort({ createdAt: -1 });
     }
@@ -143,6 +156,10 @@ class NegotiationService {
         if (!negotiation) throw new Error("Negociação não encontrada.");
         if (negotiation.status === 'PAID') throw new Error("Negociação já está paga.");
         
+        // [MODIFICAÇÃO MULTI-TENANT]
+        // Usa o school_id da negociação para buscar a credencial correta
+        const { paymentClient } = await this._getMpClient(negotiation.school_id);
+
         const student = negotiation.studentId;
         
         let payerEntity = student; 
