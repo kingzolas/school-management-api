@@ -16,6 +16,12 @@ function initWebSocket(httpServer) {
     // --- A MÁGICA ACONTECE AQUI ---
     // Ele fica "ouvindo" os eventos de negócio da nossa aplicação
 
+// --- [NOVO] Solicitações de Matrícula (Web) ---
+    appEmitter.on('registration:created', (request) => {
+        console.log('Evento Recebido: registration:created');
+        broadcast({ type: 'NEW_REGISTRATION_REQUEST', payload: request });
+    });
+
     // Alunos
     appEmitter.on('student:created', (student) => {
         console.log('Ouvindo evento: student:created');

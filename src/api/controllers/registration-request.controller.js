@@ -3,6 +3,8 @@ const service = require('../services/registration-request.service');
 exports.createRequest = async (req, res) => {
     try {
         const result = await service.createPublicRequest(req.body);
+        // [NOVO] Emite o evento para o WebSocket
+        appEmitter.emit('registration:created', result);
         return res.status(201).json({ 
             message: 'Solicitação enviada com sucesso! Aguarde a aprovação.',
             requestId: result._id 
