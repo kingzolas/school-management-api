@@ -7,9 +7,11 @@ class AssessmentAttemptService {
     /**
      * Inicia uma tentativa (Aluno abriu a prova)
      */
+    /**
+     * Inicia uma tentativa (Aluno abriu a prova)
+     */
     async startAttempt(studentId, assessmentId, schoolId) {
-        // [CORREÇÃO] Valida se o ID é um formato válido do MongoDB (24 chars hex)
-        // Isso evita o CastError e o crash 500 se o link estiver quebrado
+        // Valida ID
         if (!mongoose.isValidObjectId(assessmentId)) {
             throw new Error('Link da atividade inválido (ID incorreto).');
         }
@@ -22,12 +24,35 @@ class AssessmentAttemptService {
 
         if (!assessment) throw new Error('Atividade indisponível ou não encontrada.');
 
-        // Verifica se já existe tentativa (se não permitir retry)
-        if (!assessment.settings.allowRetry) {
-            const existing = await AssessmentAttempt.findOne({ student_id: studentId, assessment_id: assessmentId });
-            if (existing) throw new Error('Você já realizou esta atividade.');
+        // 1. REGRA DE RETOMADA (RESUME):
+        // Verifica se já existe uma tentativa EM ANDAMENTO para este aluno.
+        // Se existir, retornamos ela para que ele possa continuar de onde parou (mesmo após F5).
+        const attemptInProgress = await AssessmentAttempt.findOne({
+            student_id: studentId,
+            assessment_id: assessmentId,
+            status: 'IN_PROGRESS'
+        });
+
+        if (attemptInProgress) {
+            // Retorna a tentativa existente sem criar uma nova
+            return { attemptId: attemptInProgress._id, assessment };
         }
 
+        // 2. REGRA DE BLOQUEIO (RETRY):
+        // Se não tem nenhuma em andamento, verificamos se ele já FINALIZOU alguma.
+        if (!assessment.settings.allowRetry) {
+            const attemptCompleted = await AssessmentAttempt.findOne({
+                student_id: studentId,
+                assessment_id: assessmentId,
+                status: 'COMPLETED'
+            });
+            
+            if (attemptCompleted) {
+                throw new Error('Você já realizou esta atividade.');
+            }
+        }
+
+        // 3. CRIAÇÃO (NEW):
         // Cria o registro de "Em progresso"
         const attempt = new AssessmentAttempt({
             school_id: schoolId,
