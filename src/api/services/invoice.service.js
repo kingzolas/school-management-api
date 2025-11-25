@@ -18,23 +18,18 @@ if (!NOTIFICATION_BASE_URL) console.error('URL de notificação não definida.')
 
 // ==============================================================================
 // TEMPLATES DE MENSAGENS (ANTI-BANIMENTO)
-// O sistema escolherá um destes aleatoriamente a cada envio.
 // ==============================================================================
 
 const TEMPLATES_CRIACAO = [
-    "Olá {tutor}! Tudo bem? 😊\nEstamos enviando a fatura referente a: *{descricao}*.\n📅 Vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nPara facilitar, o código Pix Copia e Cola segue na mensagem abaixo:",
-    
-    "Oi {tutor}, como vai?\nA mensalidade (*{descricao}*) já está disponível para pagamento.\nValor: R$ {valor} - Vence em: {vencimento}.\n\nUse o código abaixo no seu banco:",
-    
+    "Olá {nome}! Tudo bem? 😊\nEstamos enviando a fatura referente a: *{descricao}*.\n📅 Vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nPara facilitar, o código Pix Copia e Cola segue na mensagem abaixo:",
+    "Oi {nome}, como vai?\nA mensalidade (*{descricao}*) já está disponível para pagamento.\nValor: R$ {valor} - Vence em: {vencimento}.\n\nUse o código abaixo no seu banco:",
     "Academy Hub Informa: Fatura disponível.\n📝 Referência: {descricao}\n💲 Total: R$ {valor}\n🗓️ Vencimento: {vencimento}.\n\nSegue o Pix Copia e Cola:"
 ];
 
 const TEMPLATES_LEMBRETE = [
-    "Bom dia {tutor}! Lembrando que a mensalidade de *{aluno}* vence hoje ({vencimento}).\nValor: R$ {valor}.\nEvite juros realizando o pagamento pelo Pix abaixo:",
-    
-    "Olá {tutor}, hoje é o dia do vencimento da fatura do(a) *{aluno}*.\nReferente a: {descricao}\nTotal: R$ {valor}.\n\nSegue o código para pagamento rápido:",
-    
-    "Oi! Passando para lembrar do pagamento referente a *{descricao}* que vence hoje.\nAluno: {aluno}\n\nCopie o código abaixo para pagar no app do seu banco:"
+    "Bom dia {nome}! Lembrando que a mensalidade vence hoje ({vencimento}).\nValor: R$ {valor}.\nEvite juros realizando o pagamento pelo Pix abaixo:",
+    "Olá {nome}, hoje é o dia do vencimento da fatura.\nReferente a: {descricao}\nTotal: R$ {valor}.\n\nSegue o código para pagamento rápido:",
+    "Oi! Passando para lembrar do pagamento referente a *{descricao}* que vence hoje.\n\nCopie o código abaixo para pagar no app do seu banco:"
 ];
 
 // ==============================================================================
@@ -68,27 +63,63 @@ class InvoiceService {
  
   /**
   * Cria fatura, gera PIX no MP e salva com school_id
+  * Lógica adaptada para Alunos Pagadores (Maiores de idade) ou Tutores
   */
   async createInvoice(invoiceData, schoolId) {
-    const { studentId, tutorId, value, dueDate, description } = invoiceData;
+    const { studentId, value, dueDate, description, tutorId } = invoiceData;
 
-    // 1. Validações de Segurança
-    const student = await Student.findOne({ _id: studentId, school_id: schoolId });
+    // 1. Validações de Segurança e Identificação do Aluno
+    const student = await Student.findOne({ _id: studentId, school_id: schoolId })
+        .populate('financialTutorId');
+
     if (!student) throw new Error('Aluno não encontrado ou não pertence a esta escola.');
 
-    const tutor = await Tutor.findOne({ _id: tutorId, school_id: schoolId });
-    if (!tutor) throw new Error('Tutor não encontrado ou não pertence a esta escola.');
+    // 2. Determinação de quem paga (Payer Strategy)
+    let payerName, payerCpf, payerEmail, payerPhone;
+    let linkedTutorId = null;
 
-    if (!tutor.cpf || tutor.cpf.length < 11) throw new Error('Tutor sem CPF válido.');
-    
-    // Verifica se o tutor tem e-mail (em produção)
-    if (!tutor.email && isProduction) throw new Error('Tutor sem e-mail válido.');
+    if (student.financialResp === 'STUDENT') {
+        // --- PAGADOR: O PRÓPRIO ALUNO (MAIOR DE IDADE) ---
+        if (!student.cpf) throw new Error('Aluno definido como responsável financeiro, mas não possui CPF cadastrado.');
+        
+        payerName = student.fullName;
+        payerCpf = student.cpf;
+        payerEmail = student.email;
+        payerPhone = student.phoneNumber;
+        linkedTutorId = null; // Fatura não vinculada a tutor, pois o aluno paga
 
-    // Prepara Instância do MP específica da Escola
+    } else {
+        // --- PAGADOR: O TUTOR ---
+        let targetTutor = null;
+
+        // Se o body da requisição forçar um tutorId, usamos ele (com validação)
+        if (tutorId) {
+            targetTutor = await Tutor.findOne({ _id: tutorId, school_id: schoolId });
+        } 
+        // Se não, usamos o tutor financeiro padrão do aluno
+        else if (student.financialTutorId) {
+            targetTutor = student.financialTutorId;
+        }
+
+        if (!targetTutor) throw new Error('Nenhum tutor responsável encontrado para gerar a cobrança.');
+
+        if (!targetTutor.cpf || targetTutor.cpf.length < 11) throw new Error('Tutor responsável sem CPF válido.');
+        
+        payerName = targetTutor.fullName;
+        payerCpf = targetTutor.cpf;
+        payerEmail = targetTutor.email;
+        payerPhone = targetTutor.phoneNumber || targetTutor.telefone || targetTutor.celular;
+        linkedTutorId = targetTutor._id;
+    }
+
+    // Validações Finais do Pagador
+    if (!payerPhone && isProduction) console.warn(`Aviso: Pagador ${payerName} sem telefone cadastrado.`);
+
+    // 3. Configuração Mercado Pago
     const { paymentClient } = await this._getMpClient(schoolId);
 
     // Lógica de e-mail para Sandbox vs Produção
-    const payerEmail = (isProduction && tutor.email) ? tutor.email : "test_user_123@testuser.com";
+    const finalEmail = (isProduction && payerEmail) ? payerEmail : "test_user_123@testuser.com";
     const valorEmReais = parseFloat((value / 100).toFixed(2));
     
     const dataVencimento = new Date(dueDate);
@@ -104,19 +135,19 @@ class InvoiceService {
       notification_url: notificationUrl,
       date_of_expiration: dataVencimentoISO,
       payer: {
-        email: payerEmail,
-        first_name: tutor.fullName.split(' ')[0],
-        last_name: tutor.fullName.split(' ').slice(1).join(' ') || 'Sobrenome',
+        email: finalEmail,
+        first_name: payerName.split(' ')[0],
+        last_name: payerName.split(' ').slice(1).join(' ') || 'Sobrenome',
         identification: {
           type: 'CPF',
-          number: tutor.cpf.replace(/\D/g, ''),
+          number: payerCpf.replace(/\D/g, ''),
         },
       },
       metadata: { school_id: schoolId.toString() } 
     };
 
     try {
-      console.log(`[MP Service] Criando pagamento PIX para Escola ID: ${schoolId}...`);
+      console.log(`[MP Service] Criando pagamento PIX para Escola ID: ${schoolId}. Pagador: ${payerName}`);
       const paymentResponse = await paymentClient.create({ body: paymentBody });
       const payment = paymentResponse;
       const paymentId = payment.id.toString();
@@ -127,7 +158,7 @@ class InvoiceService {
 
       const newInvoice = new Invoice({
         student: studentId,
-        tutor: tutorId,
+        tutor: linkedTutorId, // Pode ser null se o aluno pagar
         school_id: schoolId, 
         description,
         value: value, 
@@ -144,8 +175,8 @@ class InvoiceService {
       await newInvoice.save();
 
       // --- DISPARO WHATSAPP ---
-      // Chama o novo método inteligente que escolhe a mensagem
-      this.notifyInvoiceSmart(schoolId, tutor, student, newInvoice, 'criacao')
+      // Passamos explicitamente os dados de contato do pagador
+      this.notifyInvoiceSmart(schoolId, payerName, payerPhone, student.fullName, newInvoice, 'criacao')
           .catch(err => console.error('⚠️ Falha ao enviar notificação WhatsApp:', err.message));
       // ------------------------
 
@@ -159,16 +190,12 @@ class InvoiceService {
 
   /**
    * [NOVO] Método Inteligente de Notificação
-   * - Verifica conexão
-   * - Formata valores e datas
-   * - Sorteia mensagem (Anti-ban)
-   * - Envia Pix separado
-   * * @param type 'criacao' | 'lembrete'
+   * Adaptado para receber diretamente Nome e Telefone do Pagador (seja Aluno ou Tutor)
    */
-  async notifyInvoiceSmart(schoolId, tutor, student, invoice, type = 'criacao') {
-      console.log(`[Zap] Iniciando envio inteligente (${type})...`);
+  async notifyInvoiceSmart(schoolId, payerName, payerPhone, studentName, invoice, type = 'criacao') {
+      console.log(`[Zap] Iniciando envio inteligente (${type}) para ${payerName}...`);
 
-      // 1. Verifica se a escola tem WhatsApp Conectado
+      // 1. Verifica conexão da escola
       const school = await School.findById(schoolId);
       
       if (!school || school.whatsapp?.status !== 'connected') {
@@ -176,29 +203,26 @@ class InvoiceService {
           return; 
       }
 
-      // 2. Identifica o telefone
-      const phone = tutor.phoneNumber || tutor.telefone || tutor.celular; 
-      if (!phone) {
-          console.warn(`[Zap] Tutor ${tutor._id} sem telefone.`);
+      // 2. Valida telefone
+      if (!payerPhone) {
+          console.warn(`[Zap] Pagador ${payerName} sem telefone.`);
           return;
       }
 
-      // 3. Formatação dos dados para a mensagem
+      // 3. Formatação
       const valorFormatado = (invoice.value / 100).toFixed(2).replace('.', ',');
-      
-      // Ajuste de Timezone para exibir a data correta no Brasil
       const dataFormatada = new Date(invoice.dueDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' });
-      
-      const primeiroNome = tutor.fullName.split(' ')[0];
+      const primeiroNome = payerName.split(' ')[0];
 
       // 4. Seleção Aleatória de Template (ANTI-BAN)
       const listaTemplates = type === 'lembrete' ? TEMPLATES_LEMBRETE : TEMPLATES_CRIACAO;
       const templateEscolhido = listaTemplates[Math.floor(Math.random() * listaTemplates.length)];
 
-      // 5. Montagem da Mensagem (Substituição de variáveis)
+      // 5. Montagem da Mensagem
+      // Nota: Substituímos '{tutor}' por '{nome}' nos templates para ser genérico
       const msgTexto = templateEscolhido
-          .replace('{tutor}', primeiroNome)
-          .replace('{aluno}', student.fullName)
+          .replace('{nome}', primeiroNome)
+          .replace('{aluno}', studentName)
           .replace('{descricao}', invoice.description)
           .replace('{valor}', valorFormatado)
           .replace('{vencimento}', dataFormatada);
@@ -206,17 +230,17 @@ class InvoiceService {
       // 6. Envio Sequencial
       try {
           // A) Envia o Texto Explicativo
-          await whatsappService.sendText(schoolId, phone, msgTexto);
+          await whatsappService.sendText(schoolId, payerPhone, msgTexto);
           
-          // B) Delay de segurança (1.5s) para garantir a ordem visual no celular do cliente
+          // B) Delay de segurança
           await new Promise(r => setTimeout(r, 1500));
 
           // C) Envia APENAS o código Pix (Copia e Cola)
           if (invoice.mp_pix_copia_e_cola) {
-              await whatsappService.sendText(schoolId, phone, invoice.mp_pix_copia_e_cola);
+              await whatsappService.sendText(schoolId, payerPhone, invoice.mp_pix_copia_e_cola);
           }
           
-          console.log(`[Zap] Mensagens enviadas com sucesso para ${phone}`);
+          console.log(`[Zap] Mensagens enviadas com sucesso para ${payerPhone}`);
       } catch (error) {
           console.error(`[Zap] Erro ao enviar mensagem:`, error.message);
       }
@@ -224,7 +248,7 @@ class InvoiceService {
 
   /**
    * [NOVO] Método para Cobrança Automática (Cron Job)
-   * Busca faturas vencendo HOJE e dispara os lembretes.
+   * Adaptado para detectar dinamicamente se cobra o Aluno ou Tutor
    */
   async processDailyReminders() {
       console.log('⏰ [Service] Processando lembretes de vencimento...');
@@ -236,6 +260,7 @@ class InvoiceService {
       amanha.setDate(amanha.getDate() + 1);
 
       // Busca faturas PENDENTES que vencem HOJE
+      // Popula student e tutor (se houver) para decidir quem notificar
       const faturasVencendo = await Invoice.find({
           status: 'pending',
           dueDate: { $gte: hoje, $lt: amanha }
@@ -244,17 +269,36 @@ class InvoiceService {
       console.log(`🔎 Encontradas ${faturasVencendo.length} faturas vencendo hoje.`);
 
       for (const fatura of faturasVencendo) {
-          // Dispara notificação do tipo 'lembrete'
-          await this.notifyInvoiceSmart(
-              fatura.school_id, 
-              fatura.tutor, 
-              fatura.student, 
-              fatura, 
-              'lembrete'
-          );
-          
-          // Pequeno delay entre um aluno e outro para não sobrecarregar a API
-          await new Promise(r => setTimeout(r, 2000));
+          // Lógica de quem recebe o aviso
+          let targetName, targetPhone;
+
+          // Se tem tutor vinculado na fatura, é ele
+          if (fatura.tutor) {
+              targetName = fatura.tutor.fullName;
+              targetPhone = fatura.tutor.phoneNumber || fatura.tutor.telefone;
+          } 
+          // Se não tem tutor, verifica se é o aluno
+          else if (fatura.student) {
+              targetName = fatura.student.fullName;
+              targetPhone = fatura.student.phoneNumber;
+          }
+
+          if (targetName && targetPhone) {
+              // Dispara notificação do tipo 'lembrete'
+              await this.notifyInvoiceSmart(
+                  fatura.school_id, 
+                  targetName, 
+                  targetPhone, 
+                  fatura.student.fullName, 
+                  fatura, 
+                  'lembrete'
+              );
+              
+              // Pequeno delay entre um envio e outro
+              await new Promise(r => setTimeout(r, 2000));
+          } else {
+              console.warn(`[Cron] Fatura ${fatura._id} sem destinatário válido para notificação.`);
+          }
       }
   }
 
@@ -271,7 +315,6 @@ class InvoiceService {
     // 2. Tenta cancelar no Mercado Pago
     if (invoice.mp_payment_id) {
       try {
-        // Busca instância correta da escola
         const { paymentClient } = await this._getMpClient(schoolId);
         await paymentClient.cancel({ id: invoice.mp_payment_id });
       } catch (error) {
@@ -287,8 +330,7 @@ class InvoiceService {
   }
 
   /**
-  * Webhook Handler - Não recebe schoolId, pois o ID do MP é global na URL (a menos que use query param).
-  * Aqui buscamos a fatura primeiro para descobrir a escola.
+  * Webhook Handler
   */
   async handlePaymentWebhook(paymentId) {
     // 1. Busca a fatura no banco local
@@ -301,7 +343,6 @@ class InvoiceService {
     // 2. Se encontrou, é dele. Continua o processo...
     let paymentDetails;
     try {
-      // Passamos o school_id da fatura encontrada para validar a credencial correta
       paymentDetails = await this.getMpPaymentStatus(paymentId, invoice.school_id);
     } catch (error) {
       return { processed: true, invoice: invoice, mpStatus: 'error_fetching' };
@@ -323,10 +364,8 @@ class InvoiceService {
       await invoice.save();
     }
     
-    // Retorna o payload completo + a flag 'processed: true'
     return { 
       processed: true,
-      // Passa o school_id do documento para a consulta segura
       invoice: await this.getInvoiceById(invoice.id, invoice.school_id), 
       mpStatus 
     };
@@ -334,7 +373,6 @@ class InvoiceService {
 
   // --- Helpers ---
 
-  // Método atualizado para receber schoolId e buscar o client correto
   async getMpPaymentStatus(paymentId, schoolId) {
     try {
       const { paymentClient } = await this._getMpClient(schoolId);

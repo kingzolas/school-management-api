@@ -3,7 +3,7 @@ const cors = require('cors');
 
 // --- Rotas Legadas/Existentes ---
 const userRoutes = require('./api/routes/user.routes');
-const authRoutes = require('./api/routes/auth.routes'); // Auth Administrativo (Staff)
+const authRoutes = require('./api/routes/auth.routes'); 
 const tutorRoutes = require('./api/routes/tutor.routes');
 const studentRoutes = require('./api/routes/student.routes');
 const classRoutes = require('./api/routes/class.routes');
@@ -24,16 +24,17 @@ const schoolRoutes = require('./api/routes/school.routes.js');
 const dashboardRoutes = require('./api/routes/dashboard.routes');
 
 // ===================================================================
-// [NOVAS IMPORTAÇÕES] Módulo de Avaliações e Auth Aluno
+// [NOVAS IMPORTAÇÕES]
 // ===================================================================
 const authStudentRoutes = require('./api/routes/authStudent.routes.js');
 const assessmentRoutes = require('./api/routes/assessment.routes.js');
 const assessmentAttemptRoutes = require('./api/routes/assessmentAttempt.routes.js');
+const registrationRequestRoutes = require('./api/routes/registration-request.routes.js'); // [ADICIONADO]
 // ===================================================================
 
 const app = express();
 
-// Configuração CORS (Pode precisar ajustar para aceitar seu App Flutter)
+// Configuração CORS
 app.use(cors()); 
 
 app.use(express.json());
@@ -51,7 +52,7 @@ app.get('/', (req, res) => {
 
 // Autenticação
 app.use('/api/auth', authRoutes);                 // Login Staff/Admin
-app.use('/api/auth/student', authStudentRoutes);  // [NOVO] Login Aluno
+app.use('/api/auth/student', authStudentRoutes);  // Login Aluno
 
 // Funcionalidades Principais
 app.use('/api/schools', schoolRoutes);
@@ -61,6 +62,7 @@ app.use('/api/tutors', tutorRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/enrollments', enrollmentRoutes);
 app.use('/api/subjects', subjectRoutes);
+app.use('/api/registration-requests', registrationRequestRoutes); // [NOVA ROTA REGISTRADA]
 
 // Calendário e Acadêmico
 app.use('/api/horarios', horarioRoutes);
@@ -77,11 +79,9 @@ app.use('/api/assistant', assistantRoutes);
 app.use('/api/negotiations', negotiationRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/dashboard', dashboardRoutes);
-// ===================================================================
-// [NOVAS ROTAS REGISTRADAS] Módulo de Avaliações
-// ===================================================================
-app.use('/api/assessments', assessmentRoutes); // Gestão das provas (Teacher)
-app.use('/api/attempts', assessmentAttemptRoutes); // Execução das provas (Student)
-// ===================================================================
+
+// Avaliações
+app.use('/api/assessments', assessmentRoutes); 
+app.use('/api/attempts', assessmentAttemptRoutes); 
 
 module.exports = app;

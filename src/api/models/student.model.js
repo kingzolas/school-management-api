@@ -2,25 +2,14 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 const addressSchema = require('./address.model');
 
-// --- SUB-SCHEMA PARA LOGIN (NOVO) ---
+// --- SUB-SCHEMAS (Mantidos inalterados) ---
 const studentAuthSchema = new Schema({
-    username: { 
-        type: String, 
-        sparse: true, 
-        trim: true 
-    },
-    passwordHash: { 
-        type: String, 
-        select: false // Segurança: não retorna a senha nas buscas normais
-    },
-    firstAccess: { 
-        type: Boolean, 
-        default: true 
-    },
+    username: { type: String, sparse: true, trim: true },
+    passwordHash: { type: String, select: false },
+    firstAccess: { type: Boolean, default: true },
     lastLogin: { type: Date }
 }, { _id: false });
 
-// --- SUB-SCHEMA PARA FICHA DE SAÚDE --- (Inalterado)
 const healthInfoSchema = new Schema({
     hasHealthProblem: { type: Boolean, default: false },
     healthProblemDetails: { type: String, default: '' },
@@ -38,20 +27,17 @@ const healthInfoSchema = new Schema({
     foodObservations: { type: String, default: '' },
 }, { _id: false });
 
-// --- SUB-SCHEMA PARA PESSOAS AUTORIZADAS --- (Inalterado)
 const authorizedPickupSchema = new Schema({
     fullName: { type: String, required: true },
     relationship: { type: String, required: true },
     phoneNumber: { type: String, required: true },
 }, { _id: false });
 
-// --- SUB-SCHEMA PARA NOTAS --- (Inalterado)
 const gradeSchema = new Schema({
     subjectName: { type: String, required: true, trim: true },
     gradeValue: { type: String, required: true, trim: true }
 }, { _id: false });
 
-// --- SUB-SCHEMA PARA REGISTRO ACADÊMICO --- (Inalterado)
 const academicRecordSchema = new Schema({
     gradeLevel: { type: String, required: true, trim: true },
     schoolYear: { type: Number, required: true },
@@ -63,136 +49,114 @@ const academicRecordSchema = new Schema({
     finalResult: { type: String, required: true, trim: true }
 });
 
+// --- SCHEMA PRINCIPAL ---
 
 const studentSchema = new Schema({
-    // [NOVO] Matrícula para Login
-    enrollmentNumber: {
-        type: String,
-        unique: true, 
-        trim: true
-        // Não colocamos 'required: true' aqui para não quebrar alunos antigos sem matrícula,
-        // mas o Service vai garantir que novos alunos tenham.
-    },
-    // [NOVO] Credenciais de Acesso
-    accessCredentials: {
-        type: studentAuthSchema,
-        default: () => ({})
-    },
+    enrollmentNumber: { type: String, unique: true, trim: true },
+    accessCredentials: { type: studentAuthSchema, default: () => ({}) },
 
-    fullName: {
-        type: String,
-        required: [true, 'O nome completo é obrigatório.'],
-        trim: true
-    },
-    birthDate: {
-        type: Date,
-        required: [true, 'A data de nascimento é obrigatória.']
-    },
-    gender: {
-        type: String,
-        required: true,
-        enum: ['Masculino', 'Feminino', 'Outro']
-    },
-    race: {
-        type: String,
-        required: true,
-        enum: ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Prefiro não dizer']
-    },
-    nationality: {
-        type: String,
-        required: true
-    },
-    profilePictureUrl: { 
-        type: String,
-        default: null
-    },
-    email: { 
-        type: String,
-        lowercase: true,
-        sparse: true, 
-        trim: true
-    },
-    phoneNumber: {
-        type: String
-    },
-    rg: { 
-        type: String,
-        sparse: true
-    },
-    cpf: {
-        type: String,
-        sparse: true
-    },
-    birthCertificateUrl: { 
-        type: String
-    },
-    address: { 
-        type: addressSchema,
-        required: true
-    },
+    fullName: { type: String, required: [true, 'O nome completo é obrigatório.'], trim: true },
+    birthDate: { type: Date, required: [true, 'A data de nascimento é obrigatória.'] },
+    gender: { type: String, required: true, enum: ['Masculino', 'Feminino', 'Outro'] },
+    race: { type: String, required: true, enum: ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Prefiro não dizer'] },
+    nationality: { type: String, required: true },
+    profilePictureUrl: { type: String, default: null },
+    
+    // Contatos do Aluno (Crucial para maiores de idade)
+    email: { type: String, lowercase: true, sparse: true, trim: true },
+    phoneNumber: { type: String },
+    
+    rg: { type: String, sparse: true },
+    cpf: { type: String, sparse: true }, // Obrigatório se financialResp = 'STUDENT'
+    
+    birthCertificateUrl: { type: String },
+    address: { type: addressSchema, required: true },
+
+    // [MODIFICADO] Tutores: Validação removida do Schema Type e passada para o Hook
     tutors: {
         type: [
             {
                 _id: false, 
-                tutorId: { 
-                    type: Schema.Types.ObjectId,
-                    ref: 'Tutor', 
-                    required: true
-                },
-                relationship: {
-                    type: String,
-                    required: [true, 'O parentesco é obrigatório.'],
-                    enum: ['Mãe', 'Pai', 'Avó/Avô', 'Tio/Tia', 'Outro']
-                }
+                tutorId: { type: Schema.Types.ObjectId, ref: 'Tutor' }, 
+                relationship: { type: String, enum: ['Mãe', 'Pai', 'Avó/Avô', 'Tio/Tia', 'Outro', 'Cônjuge'] }
             }
         ],
-        validate: [
-            (val) => val.length >= 1 && val.length <= 2, 
-            'É necessário cadastrar pelo menos 1 (um) e no máximo 2 (dois) tutores.'
-        ]
-    },
-    healthInfo: {
-        type: healthInfoSchema,
-        default: () => ({})
-    },
-    authorizedPickups: {
-        type: [authorizedPickupSchema],
         default: []
-    },
-    isActive: { 
-        type: Boolean,
-        default: true
-    },
-    classId: { 
-        type: Schema.Types.ObjectId,
-        ref: 'Class', 
-        default: null
-    },
-    
-    // --- LIGAÇÃO MULTI-TENANCY ---
-    school_id: {
-        type: Schema.Types.ObjectId,
-        ref: 'School', 
-        required: [true, 'A referência da escola (school_id) é obrigatória.'],
-        index: true 
     },
 
-    academicHistory: {
-        type: [academicRecordSchema],
-        default: []
-    }
+    // [NOVO] Definição de Responsabilidade Financeira
+    financialResp: {
+        type: String,
+        enum: ['STUDENT', 'TUTOR'],
+        default: 'TUTOR', // Mantém compatibilidade com o legado
+        required: true
+    },
+
+    // [NOVO] Se financialResp for TUTOR, qual deles é o pagador?
+    financialTutorId: {
+        type: Schema.Types.ObjectId,
+        ref: 'Tutor',
+        default: null
+    },
+
+    healthInfo: { type: healthInfoSchema, default: () => ({}) },
+    authorizedPickups: { type: [authorizedPickupSchema], default: [] },
+    isActive: { type: Boolean, default: true },
+    classId: { type: Schema.Types.ObjectId, ref: 'Class', default: null },
+    school_id: { type: Schema.Types.ObjectId, ref: 'School', required: [true, 'School ID obrigatório.'], index: true },
+    academicHistory: { type: [academicRecordSchema], default: [] }
 }, {
     timestamps: true 
 });
 
-// Hook (inalterado)
+// HOOKS DE VALIDAÇÃO INTELIGENTE
 studentSchema.pre('save', function(next) {
+    // Limpeza de campos vazios
     if (this.rg === '') { this.rg = null; }
     if (this.cpf === '') { this.cpf = null; }
     if (this.email === '') { this.email = null; }
+
+    // Cálculo da Idade
+    const today = new Date();
+    const birthDate = new Date(this.birthDate);
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const m = today.getMonth() - birthDate.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+        age--;
+    }
+
+    // Regra 1: Menores de 18 ANOS
+    if (age < 18) {
+        if (this.tutors.length === 0) {
+            return next(new Error('Alunos menores de idade precisam de pelo menos um tutor/responsável vinculado.'));
+        }
+        if (this.financialResp === 'STUDENT') {
+            return next(new Error('Alunos menores de idade não podem ser responsáveis financeiros. Selecione um Tutor.'));
+        }
+    }
+
+    // Regra 2: Definição automática do ID do Tutor Financeiro
+    if (this.financialResp === 'TUTOR') {
+        if (!this.financialTutorId) {
+            // Se não especificou qual tutor paga, pega o primeiro da lista
+            if (this.tutors.length > 0) {
+                this.financialTutorId = this.tutors[0].tutorId;
+            } else {
+                return next(new Error('Responsabilidade financeira definida como Tutor, mas não há tutores cadastrados.'));
+            }
+        }
+    } else {
+        // Se o responsável é o ALUNO, limpamos o ID do tutor financeiro para não gerar confusão
+        this.financialTutorId = null;
+    }
+
+    // Regra 3: Se o Aluno paga, ele precisa de CPF
+    if (this.financialResp === 'STUDENT' && !this.cpf) {
+         return next(new Error('Para ser o responsável financeiro, o aluno precisa ter o CPF cadastrado.'));
+    }
+
     next();
 });
 
 const Student = mongoose.model('Student', studentSchema);
-
 module.exports = Student;
