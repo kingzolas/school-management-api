@@ -1,8 +1,8 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
-// Não importamos os sub-schemas aqui para evitar validações rígidas (required: true) 
-// que podem quebrar o salvamento temporário. Guardamos como objetos simples.
+// Definimos a estrutura para validação, mas sem a rigidez total do Model principal
+// para evitar que erros de validação bloqueiem o salvamento do rascunho.
 
 const registrationRequestSchema = new Schema({
     school_id: {
@@ -17,46 +17,74 @@ const registrationRequestSchema = new Schema({
         default: 'PENDING',
         index: true
     },
-    // Define se o formulário preenchido foi de "Aluno Adulto" ou "Aluno Menor"
     registrationType: {
         type: String,
         enum: ['ADULT_STUDENT', 'MINOR_STUDENT'],
         required: true
     },
     
-    // Objeto flexível com dados do aluno
+    // --- DADOS COMPLETOS DO ALUNO ---
     studentData: {
-        fullName: String,
-        birthDate: Date,
-        cpf: String,
-        rg: String,
-        email: String,
-        phoneNumber: String,
+        fullName: { type: String, required: true },
+        birthDate: { type: Date, required: true },
         gender: String,
         race: String,
         nationality: String,
-        address: {
-            street: String,
-            number: String,
-            neighborhood: String,
-            city: String,
-            state: String,
-            zipCode: String,
-            complement: String
-        }
-    },
-
-    // Objeto flexível com dados do tutor (pode estar vazio se for ADULT_STUDENT)
-    tutorData: {
-        fullName: String,
+        phoneNumber: String,
+        email: String,
         cpf: String,
         rg: String,
+        
+        // Endereço Completo
+        address: {
+            street: String,
+            number: String,
+            neighborhood: String,
+            city: String,
+            state: String,
+            zipCode: String,
+            complement: String,
+            block: String,
+            lot: String
+        },
+
+        // Ficha de Saúde Completa
+        healthInfo: {
+            hasHealthProblem: { type: Boolean, default: false },
+            healthProblemDetails: { type: String, default: '' },
+            takesMedication: { type: Boolean, default: false },
+            medicationDetails: { type: String, default: '' },
+            hasDisability: { type: Boolean, default: false },
+            disabilityDetails: { type: String, default: '' },
+            hasAllergy: { type: Boolean, default: false },
+            allergyDetails: { type: String, default: '' },
+            hasMedicationAllergy: { type: Boolean, default: false },
+            medicationAllergyDetails: { type: String, default: '' },
+            hasVisionProblem: { type: Boolean, default: false },
+            visionProblemDetails: { type: String, default: '' },
+            feverMedication: { type: String, default: '' },
+            foodObservations: { type: String, default: '' },
+        },
+
+        // Pessoas Autorizadas (Array)
+        authorizedPickups: [{
+            fullName: String,
+            relationship: String,
+            phoneNumber: String
+        }]
+    },
+
+    // --- DADOS DO TUTOR (Responsável Financeiro) ---
+    tutorData: {
+        fullName: String,
         birthDate: Date,
-        email: String,
-        phoneNumber: String,
+        cpf: String,
+        rg: String,
         gender: String,
         nationality: String,
-        relationship: String, // 'Mãe', 'Pai', etc.
+        phoneNumber: String,
+        email: String,
+        relationship: String, // Parentesco com o aluno
         address: {
             street: String,
             number: String,
@@ -68,9 +96,8 @@ const registrationRequestSchema = new Schema({
         }
     },
 
-    // Auditoria e Controle
     rejectionReason: { type: String },
-    reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' }, // Quem aprovou/rejeitou
+    reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
 }, {
     timestamps: true
 });

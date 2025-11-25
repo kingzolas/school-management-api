@@ -1,4 +1,5 @@
 const service = require('../services/registration-request.service');
+const appEmitter = require('../../loaders/eventEmitter');
 
 exports.createRequest = async (req, res) => {
     try {
