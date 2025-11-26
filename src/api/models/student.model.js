@@ -52,7 +52,7 @@ const academicRecordSchema = new Schema({
 // --- SCHEMA PRINCIPAL ---
 
 const studentSchema = new Schema({
-    enrollmentNumber: { type: String, unique: true, trim: true },
+    enrollmentNumber: { type: String, unique: true, trim: true, sparse: true, },
     accessCredentials: { type: studentAuthSchema, default: () => ({}) },
 
     fullName: { type: String, required: [true, 'O nome completo é obrigatório.'], trim: true },

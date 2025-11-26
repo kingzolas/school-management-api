@@ -28,26 +28,32 @@ class RegistrationRequestService {
     }
 
     // --- [MODIFICADO] Removida a Session/Transaction para funcionar no Mongo Local ---
+    // ... dentro de RegistrationRequestService
+
     async approveRequest(requestId, schoolId, userId, finalStudentData, finalTutorData) {
         try {
-            // 1. Busca a solicitação (Sem session)
             const request = await RegistrationRequest.findOne({ _id: requestId, school_id: schoolId });
             
             if (!request) throw new Error('Solicitação não encontrada.');
             if (request.status !== 'PENDING') throw new Error('Esta solicitação já foi processada.');
 
-            // Usa os dados finais (editados pelo gestor) ou os originais da solicitação
             const sData = finalStudentData || request.studentData;
             const tData = finalTutorData || request.tutorData;
             
             let createdTutor = null;
             let createdStudent = null;
 
-            // --- CENÁRIO 1: ALUNO MENOR (Cria Tutor + Aluno) ---
+            // --- [CORREÇÃO] GERAR MATRÍCULA AUTOMÁTICA ---
+            // Gera algo como "2025" + 6 números aleatórios
+            const currentYear = new Date().getFullYear();
+            const randomPart = Math.floor(100000 + Math.random() * 900000);
+            const generatedEnrollment = `${currentYear}${randomPart}`;
+            // ---------------------------------------------
+
+            // --- CENÁRIO 1: ALUNO MENOR ---
             if (request.registrationType === 'MINOR_STUDENT') {
                 if (!tData || !tData.cpf) throw new Error('Dados do tutor incompletos.');
 
-                // Verifica existência do Tutor
                 let existingTutor = await Tutor.findOne({ cpf: tData.cpf, school_id: schoolId });
                 
                 if (existingTutor) {
@@ -56,18 +62,15 @@ class RegistrationRequestService {
                     createdTutor = await new Tutor({
                         ...tData,
                         school_id: schoolId
-                    }).save(); // Sem session
+                    }).save(); 
                 }
 
-                // Cria Aluno Vinculado
                 createdStudent = await new Student({
-                    ...sData, // Espalha fullName, birthDate, etc.
-                    
-                    // Mapeamento explícito
+                    ...sData, 
+                    enrollmentNumber: generatedEnrollment, // <--- ADICIONADO AQUI
                     healthInfo: sData.healthInfo, 
                     authorizedPickups: sData.authorizedPickups,
                     address: sData.address,
-
                     school_id: schoolId,
                     financialResp: 'TUTOR',
                     financialTutorId: createdTutor._id,
@@ -75,27 +78,26 @@ class RegistrationRequestService {
                         tutorId: createdTutor._id,
                         relationship: tData.relationship || 'Outro'
                     }]
-                }).save(); // Sem session
+                }).save();
             } 
             
             // --- CENÁRIO 2: ALUNO ADULTO ---
             else {
                 createdStudent = await new Student({
                     ...sData,
+                    enrollmentNumber: generatedEnrollment, // <--- ADICIONADO AQUI
                     healthInfo: sData.healthInfo,
                     authorizedPickups: sData.authorizedPickups,
                     address: sData.address,
-
                     school_id: schoolId,
                     financialResp: 'STUDENT',
                     tutors: [] 
-                }).save(); // Sem session
+                }).save();
             }
 
-            // Atualiza Status da Solicitação
             request.status = 'APPROVED';
             request.reviewedBy = userId;
-            await request.save(); // Sem session
+            await request.save();
 
             return { 
                 success: true, 
