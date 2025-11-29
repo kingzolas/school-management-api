@@ -60,7 +60,12 @@ const studentSchema = new Schema({
     gender: { type: String, required: true, enum: ['Masculino', 'Feminino', 'Outro'] },
     race: { type: String, required: true, enum: ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Prefiro não dizer'] },
     nationality: { type: String, required: true },
-    profilePictureUrl: { type: String, default: null },
+    
+    // [MODIFICADO] Estrutura para salvar a foto no banco (igual School)
+    profilePicture: {
+        data: Buffer,
+        contentType: String
+    },
     
     // Contatos do Aluno (Crucial para maiores de idade)
     email: { type: String, lowercase: true, sparse: true, trim: true },
@@ -72,7 +77,6 @@ const studentSchema = new Schema({
     birthCertificateUrl: { type: String },
     address: { type: addressSchema, required: true },
 
-    // [MODIFICADO] Tutores: Validação removida do Schema Type e passada para o Hook
     tutors: {
         type: [
             {
@@ -84,15 +88,13 @@ const studentSchema = new Schema({
         default: []
     },
 
-    // [NOVO] Definição de Responsabilidade Financeira
     financialResp: {
         type: String,
         enum: ['STUDENT', 'TUTOR'],
-        default: 'TUTOR', // Mantém compatibilidade com o legado
+        default: 'TUTOR', 
         required: true
     },
 
-    // [NOVO] Se financialResp for TUTOR, qual deles é o pagador?
     financialTutorId: {
         type: Schema.Types.ObjectId,
         ref: 'Tutor',
@@ -109,14 +111,12 @@ const studentSchema = new Schema({
     timestamps: true 
 });
 
-// HOOKS DE VALIDAÇÃO INTELIGENTE
+// HOOKS DE VALIDAÇÃO (Mantidos inalterados)
 studentSchema.pre('save', function(next) {
-    // Limpeza de campos vazios
     if (this.rg === '') { this.rg = null; }
     if (this.cpf === '') { this.cpf = null; }
     if (this.email === '') { this.email = null; }
 
-    // Cálculo da Idade
     const today = new Date();
     const birthDate = new Date(this.birthDate);
     let age = today.getFullYear() - birthDate.getFullYear();
@@ -125,7 +125,6 @@ studentSchema.pre('save', function(next) {
         age--;
     }
 
-    // Regra 1: Menores de 18 ANOS
     if (age < 18) {
         if (this.tutors.length === 0) {
             return next(new Error('Alunos menores de idade precisam de pelo menos um tutor/responsável vinculado.'));
@@ -135,10 +134,8 @@ studentSchema.pre('save', function(next) {
         }
     }
 
-    // Regra 2: Definição automática do ID do Tutor Financeiro
     if (this.financialResp === 'TUTOR') {
         if (!this.financialTutorId) {
-            // Se não especificou qual tutor paga, pega o primeiro da lista
             if (this.tutors.length > 0) {
                 this.financialTutorId = this.tutors[0].tutorId;
             } else {
@@ -146,11 +143,9 @@ studentSchema.pre('save', function(next) {
             }
         }
     } else {
-        // Se o responsável é o ALUNO, limpamos o ID do tutor financeiro para não gerar confusão
         this.financialTutorId = null;
     }
 
-    // Regra 3: Se o Aluno paga, ele precisa de CPF
     if (this.financialResp === 'STUDENT' && !this.cpf) {
          return next(new Error('Para ser o responsável financeiro, o aluno precisa ter o CPF cadastrado.'));
     }

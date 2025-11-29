@@ -11,7 +11,50 @@ const getSchoolId = (req) => {
     return req.user.school_id;
 };
 
+// [NOVO] Helper para parsear campos que vêm como String no Multipart
+const parseMultipartBody = (body) => {
+    const parsed = { ...body };
+    
+    // Lista de campos que são Objetos ou Arrays no seu Schema
+    const jsonFields = ['address', 'tutors', 'healthInfo', 'authorizedPickups', 'accessCredentials'];
+
+    jsonFields.forEach(field => {
+        if (parsed[field] && typeof parsed[field] === 'string') {
+            try {
+                parsed[field] = JSON.parse(parsed[field]);
+            } catch (e) {
+                console.error(`Erro ao fazer parse do campo ${field}:`, e.message);
+                // Se falhar o parse, mantém como está ou define undefined, dependendo da sua regra
+            }
+        }
+    });
+
+    // Converte booleanos que vêm como string "true"/"false"
+    if (parsed.isActive === 'true') parsed.isActive = true;
+    if (parsed.isActive === 'false') parsed.isActive = false;
+
+    return parsed;
+};
+
 class StudentController {
+
+    // [NOVO] Método para servir a foto
+    async getPhoto(req, res) {
+        try {
+            const schoolId = getSchoolId(req);
+            const { id } = req.params;
+            
+            const photo = await StudentService.getStudentPhoto(id, schoolId);
+            
+            res.set('Content-Type', photo.contentType);
+            res.send(photo.data);
+        } catch (error) {
+            if (error.message.includes('não encontrado') || error.message.includes('Foto não encontrada')) {
+                 return res.status(404).json({ message: 'Foto não encontrada.' });
+            }
+            res.status(500).json({ message: 'Erro ao buscar foto.', error: error.message });
+        }
+    }
 
     async updateTutorRelationship(req, res) {
         try {
@@ -25,7 +68,6 @@ class StudentController {
             
             console.log(`[API] PUT /students/${studentId}/tutors/${tutorId}`);
 
-            // [CORREÇÃO] Destrutura o retorno do service para pegar o link E o aluno
             const { updatedLink, student } = await StudentService.updateTutorRelationship(
                 studentId,
                 tutorId,
@@ -33,10 +75,8 @@ class StudentController {
                 schoolId
             );
             
-            // Agora a variável 'student' EXISTE e pode ser enviada no evento
             appEmitter.emit('student:updated', student);
             
-            // Responde ao Flutter apenas com o link (como esperado pelo front)
             res.status(200).json(updatedLink); 
 
         } catch (error) {
@@ -53,25 +93,23 @@ class StudentController {
  
     async create(req, res, next) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
             const creatorId = req.user.id; 
 
-            // (Debug inalterado)
-            console.log('--- [DEBUG API] DADOS RECEBIDOS (req.body) ---');
-            console.log(JSON.stringify(req.body, null, 2));
-            console.log('--- [DEBUG API] FIM DOS DADOS (req.body) ---');
-
-            const studentData = {
-                ...req.body,
+            console.log('--- [DEBUG API] CREATE STUDENT ---');
+            
+            // [MODIFICADO] Se vier arquivo (req.file), fazemos o parse dos campos JSON stringificados
+            let studentData = req.file ? parseMultipartBody(req.body) : req.body;
+            
+            studentData = {
+                ...studentData,
                 creator: creatorId 
             };
 
-            // [MODIFICADO] Passa o schoolId para o service
-            const newStudent = await StudentService.createStudent(studentData, schoolId);
-            console.log('✅ SUCESSO: Aluno processado pelo service e salvo no banco.');
+            // [MODIFICADO] Passa o req.file (foto) para o service
+            const newStudent = await StudentService.createStudent(studentData, schoolId, req.file);
+            console.log('✅ SUCESSO: Aluno criado.');
 
-            // Lógica de WebSocket (inalterada)
             const creatorDoc = await User.findById(creatorId);
             const creatorName = creatorDoc ? creatorDoc.fullName : 'Usuário';
 
@@ -84,14 +122,11 @@ class StudentController {
             };
 
             appEmitter.emit('student:created', payload); 
-            console.log(`📡 EVENTO EMITIDO: student:created para o aluno ${newStudent.fullName}`);
             
             res.status(201).json(newStudent);
 
         } catch (error) {
-            console.error('❌ ERRO: Ocorreu um problema no controller ao tentar criar o aluno.');
-            console.error('Mensagem do Erro:', error.message);
-            console.error('Stack do Erro:', error.stack); 
+            console.error('❌ ERRO CREATE:', error.message);
             if (error.message.includes('não autenticado')) {
                  return res.status(403).json({ message: error.message });
             }
@@ -101,9 +136,7 @@ class StudentController {
 
     async getAll(req, res) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
-            // [MODIFICADO] Passa o schoolId para o service
             const students = await StudentService.getAllStudents(schoolId);
             res.status(200).json(students);
         } catch (error) {
@@ -116,14 +149,10 @@ class StudentController {
 
     async getById(req, res) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
             const { id } = req.params;
             
-            // [MODIFICADO] Passa o schoolId para o service
             const student = await StudentService.getStudentById(id, schoolId);
-            
-            // O service já trata o erro 404
             res.status(200).json(student);
             
         } catch (error) {
@@ -139,14 +168,17 @@ class StudentController {
 
     async update(req, res) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
             const { id } = req.params;
 
-            // [MODIFICADO] Passa o schoolId para o service
-            const student = await StudentService.updateStudent(id, req.body, schoolId);
+            console.log(`--- [DEBUG API] UPDATE STUDENT ${id} ---`);
+
+            // [MODIFICADO] Parse do body se houver arquivo
+            const updateData = req.file ? parseMultipartBody(req.body) : req.body;
+
+            // [MODIFICADO] Passa o arquivo para o service
+            const student = await StudentService.updateStudent(id, updateData, schoolId, req.file);
             
-            // O service já trata o erro 404
             res.status(200).json(student);
 
         } catch (error) {
@@ -162,14 +194,11 @@ class StudentController {
 
     async delete(req, res) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
             const { id } = req.params;
             
-            // [MODIFICADO] Passa o schoolId para o service
             const student = await StudentService.deleteStudent(id, schoolId);
             
-            // O service já trata o erro 404
             res.status(200).json({ message: 'Aluno deletado com sucesso' });
             
         } catch (error) {
@@ -185,9 +214,7 @@ class StudentController {
 
     async getUpcomingBirthdays(req, res) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
-            // [MODIFICADO] Passa o schoolId para o service
             const students = await StudentService.getUpcomingBirthdays(schoolId);
             res.status(200).json(students);
         } catch (error) {
@@ -200,7 +227,6 @@ class StudentController {
 
     async addAcademicRecord(req, res, next) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
             const { studentId } = req.params;
             const recordData = req.body; 
@@ -209,9 +235,7 @@ class StudentController {
                 return res.status(400).json({ message: 'Campos obrigatórios (gradeLevel, schoolYear, finalResult) não fornecidos.' });
             }
 
-            // [MODIFICADO] Passa o schoolId para o service
             const updatedStudent = await StudentService.addHistoryRecord(studentId, recordData, schoolId);
-            
             res.status(201).json(updatedStudent.academicHistory); 
 
         } catch (error) {
@@ -227,14 +251,11 @@ class StudentController {
 
     async updateAcademicRecord(req, res, next) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
             const { studentId, recordId } = req.params;
             const updatedData = req.body;
 
-            // [MODIFICADO] Passa o schoolId para o service
             const updatedStudent = await StudentService.updateHistoryRecord(studentId, recordId, updatedData, schoolId);
-            
             res.status(200).json(updatedStudent.academicHistory);
 
         } catch (error) {
@@ -250,13 +271,10 @@ class StudentController {
 
     async deleteAcademicRecord(req, res, next) {
         try {
-            // [MODIFICADO] Pega o schoolId do usuário logado
             const schoolId = getSchoolId(req);
             const { studentId, recordId } = req.params;
 
-            // [MODIFICADO] Passa o schoolId para o service
             const updatedStudent = await StudentService.deleteHistoryRecord(studentId, recordId, schoolId);
-
             res.status(200).json(updatedStudent.academicHistory);
 
         } catch (error) {

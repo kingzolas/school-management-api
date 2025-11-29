@@ -8,13 +8,18 @@ class AssistantController {
    */
   async handleChat(req, res, next) {
     const startTime = Date.now();
+    
+    // Extração de dados do usuário autenticado
     const userId = req.user ? req.user.id : 'anônimo';
+    
+    // [AJUSTE 1] Extrair o schoolId do token (pode vir como school_id ou schoolId)
+    const schoolId = req.user ? (req.user.school_id || req.user.schoolId) : null;
 
     console.log(`\n🔵 [CONTROLLER] Nova requisição de Chat recebida.`);
     console.log(`👤 Usuário: ${userId}`);
+    console.log(`🏫 Escola ID: ${schoolId}`);
     
     // 1. Aumentar o timeout desta resposta específica para 60 segundos
-    // Isso evita que o servidor corte a conexão enquanto a IA pensa (fallbacks demoram ~15s)
     res.setTimeout(60000, () => {
         console.error('❌ [CONTROLLER] Timeout de conexão (60s) atingido antes da resposta da IA.');
     });
@@ -22,6 +27,7 @@ class AssistantController {
     try {
       const { message, history } = req.body;
 
+      // Validações básicas
       if (!message) {
         return res.status(400).json({ 
             success: false, 
@@ -29,15 +35,28 @@ class AssistantController {
         });
       }
 
+      // [AJUSTE 2] Validar se temos a escola
+      if (!schoolId) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'Identificação da escola não encontrada. Faça login novamente.' 
+        });
+      }
+
       console.log(`📝 Pergunta: "${message}"`);
       console.log(`⏳ Chamando AssistantService... (Aguardando IA)`);
 
-      // Chama o serviço (que agora tem a lógica de retry/fallback que criamos)
-      const responseText = await AssistantService.generateResponse(message, history, userId);
+      // [AJUSTE 3] Passar schoolId como 4º argumento
+      const responseText = await AssistantService.generateResponse(
+          message, 
+          history, 
+          userId, 
+          schoolId // <--- Fundamental para o contexto
+      );
 
       const duration = (Date.now() - startTime) / 1000;
       console.log(`✅ [CONTROLLER] Resposta recebida do Serviço em ${duration}s`);
-      console.log(`📤 Enviando para o Frontend: "${responseText.substring(0, 50)}..."`);
+      // console.log(`📤 Enviando para o Frontend: "${responseText.substring(0, 50)}..."`);
 
       // 2. Retorno Padronizado para o Flutter
       return res.status(200).json({
