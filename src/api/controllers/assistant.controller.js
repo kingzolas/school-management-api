@@ -4,73 +4,61 @@ const AssistantService = require('../services/assistant.service');
 class AssistantController {
 
   /**
-   * Recebe a mensagem do chat e processa com a IA
+   * Ponto de entrada para o "Olho de Deus"
+   * Recebe a pergunta, orquestra o serviço RAG e devolve a resposta.
    */
-  async handleChat(req, res, next) {
+  async handleQuery(req, res) {
     const startTime = Date.now();
     
-    // Extração de dados do usuário autenticado
-    const userId = req.user ? req.user.id : 'anônimo';
-    
-    // [AJUSTE 1] Extrair o schoolId do token (pode vir como school_id ou schoolId)
+    // 1. Extração Segura do Contexto (Multi-tenant)
+    const userId = req.user ? req.user.id : 'anonymous';
     const schoolId = req.user ? (req.user.school_id || req.user.schoolId) : null;
 
-    console.log(`\n🔵 [CONTROLLER] Nova requisição de Chat recebida.`);
-    console.log(`👤 Usuário: ${userId}`);
-    console.log(`🏫 Escola ID: ${schoolId}`);
-    
-    // 1. Aumentar o timeout desta resposta específica para 60 segundos
+    console.log(`\n🔵 [RAG AGENT] Nova requisição recebida.`);
+    console.log(`👤 User: ${userId} | 🏫 School: ${schoolId}`);
+
+    // 2. Timeout Estendido para Operações de RAG + LLM (60s)
+    // RAG e geração de código podem levar tempo.
     res.setTimeout(60000, () => {
-        console.error('❌ [CONTROLLER] Timeout de conexão (60s) atingido antes da resposta da IA.');
+        console.error('❌ [CONTROLLER] Timeout (60s) atingido.');
+        if (!res.headersSent) {
+            res.status(504).json({ success: false, message: 'O processamento da IA demorou muito.' });
+        }
     });
 
     try {
-      const { message, history } = req.body;
+      const { question, history } = req.body;
 
-      // Validações básicas
-      if (!message) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'O campo "message" é obrigatório.' 
-        });
+      // Validações
+      if (!question) {
+        return res.status(400).json({ success: false, message: 'A pergunta (question) é obrigatória.' });
       }
-
-      // [AJUSTE 2] Validar se temos a escola
       if (!schoolId) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'Identificação da escola não encontrada. Faça login novamente.' 
-        });
+        return res.status(403).json({ success: false, message: 'Acesso negado: School ID não identificado.' });
       }
 
-      console.log(`📝 Pergunta: "${message}"`);
-      console.log(`⏳ Chamando AssistantService... (Aguardando IA)`);
-
-      // [AJUSTE 3] Passar schoolId como 4º argumento
-      const responseText = await AssistantService.generateResponse(
-          message, 
+      // 3. Chamada ao Serviço RAG
+      console.log(`📝 Pergunta: "${question}"`);
+      const response = await AssistantService.processRequest(
+          question, 
           history, 
           userId, 
-          schoolId // <--- Fundamental para o contexto
+          schoolId
       );
 
-      const duration = (Date.now() - startTime) / 1000;
-      console.log(`✅ [CONTROLLER] Resposta recebida do Serviço em ${duration}s`);
-      // console.log(`📤 Enviando para o Frontend: "${responseText.substring(0, 50)}..."`);
+      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.log(`✅ [CONTROLLER] Resposta gerada em ${duration}s`);
 
-      // 2. Retorno Padronizado para o Flutter
       return res.status(200).json({
         success: true,
-        response: responseText // O Flutter deve ler este campo
+        data: response // Resposta final processada
       });
 
     } catch (error) {
-      console.error('❌ [CONTROLLER] Erro fatal no handleChat:', error);
-      
-      // Retorna erro JSON para o Flutter não ficar carregando infinitamente
+      console.error('❌ [CONTROLLER] Erro fatal:', error);
       return res.status(500).json({
         success: false,
-        message: 'Erro interno ao processar resposta da IA.',
+        message: 'Erro interno no processamento da IA.',
         error: error.message
       });
     }

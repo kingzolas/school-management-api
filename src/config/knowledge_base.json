@@ -1,0 +1,3382 @@
+{
+  "updatedAt": "2025-11-30T18:32:09.410Z",
+  "rawText": "=== BANCO DE DADOS (SCHEMA REAL ATUALIZADO) ===\nTABLE: Address\n- street (String) \n- type (String) \n- required (String) \n- trim (String) \n- neighborhood (String) \n- type (String) \n- required (String) \n- trim (String) \n- number (String) \n- type (String) \n- default (String) \n- trim (String) \n- block (String) -> Quadra\n- type (String) \n- default (String) \n- trim (String) \n- lot (String) -> Lote\n- type (String) \n- default (String) \n- trim (String) \n- cep (String) -> <<< CAMPO NOVO ADICIONADO\n- type (String) \n- default (String) \n- trim (String) \n- city (String) \n- type (String) \n- required (String) \n- trim (String) \n- state (String) \n- type (String) \n- required (String (Default)) \n- trim (String (Default)) \n\nTABLE: Assessment\n- category (String) \n- question (String) \n- options (String) \n- correctIndex (String) \n- explanation (String) \n- correct (String) \n- wrongs (String) \n- points (Number) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: AssessmentAttempt\n- questionIndex (Number) \n- selectedOptionIndex (Number) \n- isCorrect (Number) \n- timeSpentMs (Number) \n- switchedAppCount (Number) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: CargaHoraria\n- periodoId (Ref<Periodo>) \n- type (Ref<Periodo>) \n- ref (Ref<Periodo>) \n- required (String (Default)) \n- index (ObjectId) \n- classId (Ref<Class>) \n- type (Ref<Class>) \n- ref (Ref<Class>) \n- required (String (Default)) \n- index (ObjectId) \n- subjectId (Ref<Subject>) \n- type (Ref<Subject>) \n- ref (Ref<Subject>) \n- required (String (Default)) \n- index (Number) \n- horasNecessarias (Number) \n- type (Number) \n- required (String (Default)) \n- min (String (Default)) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Class\n- description (String) \n- startTime (String) -> \"HH:MM\"\n- endTime (String) -> \"HH:MM\"\n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: CourseLoad\n- periodoId (Ref<Periodo>) \n- type (Ref<Periodo>) \n- ref (Ref<Periodo>) \n- required (Ref<Class>) \n- classId (Ref<Class>) \n- type (Ref<Class>) \n- ref (Ref<Class>) \n- required (Ref<Subject>) \n- subjectId (Ref<Subject>) \n- type (Ref<Subject>) \n- ref (Ref<Subject>) \n- required (Ref<School>) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (String (Default)) \n- index (Number) \n- targetHours (Number) \n- type (Number) \n- required (String (Default)) \n- min (String (Default)) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Enrollment\n- student (Ref<Student>) \n- type (Ref<Student>) \n- ref (Ref<Student>) \n- required (Ref<Class>) \n- index (Ref<Class>) \n- class (Ref<Class>) \n- type (Ref<Class>) \n- ref (Ref<Class>) \n- required (Number) \n- index (Number) \n- academicYear (Number) \n- type (Number) \n- required (ObjectId) \n- index (Ref<School>) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (Date) \n- index (Date) \n- enrollmentDate (Number) \n- type (Number) \n- default (Number) \n- agreedFee (String) \n- type (String) \n- required (String) [Opções: Ativa, Inativa, Transferido, Concluído, Pendente]\n- status (String) [Opções: Ativa, Inativa, Transferido, Concluído, Pendente]\n- type (String) [Opções: Ativa, Inativa, Transferido, Concluído, Pendente]\n- required (String (Default)) [Opções: Ativa, Inativa, Transferido, Concluído, Pendente]\n- enum (String (Default)) [Opções: Ativa, Inativa, Transferido, Concluído, Pendente]\n- default (String (Default)) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Evento\n- title (String) \n- type (String) \n- required (String) \n- trim (String) [Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]\n- eventType (String) [Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]\n- type (String) [Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]\n- required (String) [Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]\n- enum (String) [Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]\n- default (String) \n- description (String) \n- type (String) \n- trim (ObjectId) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (String (Default)) \n- index (Date) \n- date (String) \n- type (String) \n- required (String) \n- index (String) \n- startTime (ObjectId) \n- endTime (Ref<Class>) \n- classId (Ref<Class>) \n- type (Ref<Class>) \n- ref (Ref<Class>) \n- index (Ref<Subject>) \n- subjectId (Ref<Subject>) \n- type (Ref<Subject>) \n- ref (Ref<Subject>) \n- teacherId (Ref<User>) \n- type (Ref<User>) \n- ref (Ref<User>) \n- isSchoolWide (Boolean) \n- type (Boolean) \n- default (String (Default)) \n- index (String (Default)) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Horario\n- termId (Ref<Periodo>) \n- type (Ref<Periodo>) \n- ref (Ref<Periodo>) \n- required (Ref<Class>) \n- index (Ref<Class>) \n- classId (Ref<Class>) \n- type (Ref<Class>) \n- ref (Ref<Class>) \n- required (ObjectId) \n- index (Ref<School>) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (String (Default)) \n- index (ObjectId) \n- subjectId (Ref<Subject>) \n- type (Ref<Subject>) \n- ref (Ref<Subject>) \n- required (Ref<User>) \n- teacherId (Ref<User>) \n- type (Ref<User>) \n- ref (Ref<User>) \n- required (String (Default)) \n- index (Number) \n- dayOfWeek (Number) \n- type (Number) \n- required (String) \n- min (String) \n- max (String) \n- startTime (String) \n- type (String) \n- required (String) \n- trim (String) \n- endTime (String) \n- type (String) \n- required (String (Default)) \n- trim (String) \n- room (String) \n- type (String) \n- trim (String (Default)) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Invoice\n- student (Ref<Student>) \n- type (Ref<Student>) \n- ref (Ref<Student>) \n- required (ObjectId) \n- index (Ref<Tutor>) \n- tutor (Ref<Tutor>) \n- type (Ref<Tutor>) \n- ref (Ref<Tutor>) \n- required (Ref<SchoolYear>) \n- schoolYear (Ref<SchoolYear>) \n- type (Ref<SchoolYear>) \n- ref (Ref<SchoolYear>) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (String) \n- index (String) \n- description (String) [Opções: pending, paid, overdue, canceled]\n- value (String) -> Em CENTAVOS [Opções: pending, paid, overdue, canceled]\n- dueDate (String) [Opções: pending, paid, overdue, canceled]\n- status (String) [Opções: pending, paid, overdue, canceled]\n- type (String) [Opções: pending, paid, overdue, canceled]\n- enum (Date) [Opções: pending, paid, overdue, canceled]\n- default (String) \n- index (String) [Opções: pix, boleto, credit_card, manual]\n- paidAt (String) [Opções: pix, boleto, credit_card, manual]\n- paymentMethod (String) [Opções: pix, boleto, credit_card, manual]\n- type (String) [Opções: pix, boleto, credit_card, manual]\n- enum (String) [Opções: pix, boleto, credit_card, manual]\n- gateway (String) \n- mp_payment_id (String) \n- mp_pix_copia_e_cola (String) \n- mp_pix_qr_base64 (String) \n- mp_ticket_url (String) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Negotiation\n- studentId (Ref<Student>) \n- invoices (Ref<Invoice>) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (Ref<User>) \n- index (Ref<User>) \n- createdByUserId (Ref<User>) \n- type (Ref<User>) \n- ref (Ref<User>) \n- required (String) \n- token (String) [Opções: percentage, fixed]\n- rules (String) [Opções: percentage, fixed]\n- allowPixDiscount (String) [Opções: percentage, fixed]\n- pixDiscountValue (String) [Opções: percentage, fixed]\n- pixDiscountType (String) [Opções: percentage, fixed]\n- allowInstallments (String) [Opções: student, school]\n- maxInstallments (String) [Opções: student, school]\n- interestPayer (String) [Opções: student, school]\n- totalOriginalDebt (String) [Opções: PENDING, PAID, EXPIRED, CANCELLED]\n- status (String) [Opções: PENDING, PAID, EXPIRED, CANCELLED]\n- type (String) [Opções: PENDING, PAID, EXPIRED, CANCELLED]\n- enum (String) [Opções: PENDING, PAID, EXPIRED, CANCELLED]\n- default (String) \n- expiresAt (String) \n- paymentExternalId (String) \n- createdAt (Date) \n\nTABLE: Periodo\n- anoLetivoId (Ref<SchoolYear>) \n- type (Ref<SchoolYear>) \n- ref (Ref<SchoolYear>) -> Certifique-se que o nome do model do Ano Letivo está certo\n- required (ObjectId) \n- index (Ref<School>) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (String) \n- index (String) \n- titulo (String) \n- type (String) \n- required (Date) -> Ex: \"1º Bimestre\"\n- dataInicio (Date) \n- type (Date) \n- required (Date) \n- dataFim (String) \n- type (String) \n- required (String) [Opções: Letivo, NaoLetivo]\n- tipo (String) [Opções: Letivo, NaoLetivo]\n- type (String) [Opções: Letivo, NaoLetivo]\n- required (String (Default)) [Opções: Letivo, NaoLetivo]\n- enum (String (Default)) [Opções: Letivo, NaoLetivo]\n- default (String (Default)) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Registration-request\n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (String) [Opções: PENDING, APPROVED, REJECTED]\n- index (String) [Opções: PENDING, APPROVED, REJECTED]\n- status (String) [Opções: PENDING, APPROVED, REJECTED]\n- type (String) [Opções: PENDING, APPROVED, REJECTED]\n- enum (String) [Opções: PENDING, APPROVED, REJECTED]\n- default (String) [Opções: ADULT_STUDENT, MINOR_STUDENT]\n- index (String) [Opções: ADULT_STUDENT, MINOR_STUDENT]\n- registrationType (String) [Opções: ADULT_STUDENT, MINOR_STUDENT]\n- type (String) [Opções: ADULT_STUDENT, MINOR_STUDENT]\n- enum (String (Default)) [Opções: ADULT_STUDENT, MINOR_STUDENT]\n- required (String) \n- studentData (String) \n- fullName (String) \n- birthDate (String) \n- gender (String) \n- race (String) \n- nationality (String) \n- phoneNumber (String) \n- email (String) \n- cpf (String) \n- rg (String) \n- address (String) \n- street (String) \n- number (String) \n- neighborhood (String) \n- city (String) \n- state (String) \n- zipCode (String) \n- complement (String) \n- block (String) \n- lot (String) \n- healthInfo (String) \n- hasHealthProblem (String) \n- healthProblemDetails (String) \n- takesMedication (String) \n- medicationDetails (String) \n- hasDisability (String) \n- disabilityDetails (String) \n- hasAllergy (String) \n- allergyDetails (String) \n- hasMedicationAllergy (String) \n- medicationAllergyDetails (String) \n- hasVisionProblem (String) \n- visionProblemDetails (String) \n- feverMedication (String) \n- foodObservations (String) \n- authorizedPickups (String) \n- fullName (String) \n- relationship (String) \n- phoneNumber (String) \n- tutorData (String) \n- fullName (String) \n- birthDate (String) \n- cpf (String) \n- rg (String) \n- gender (String) \n- nationality (String) \n- phoneNumber (String) \n- email (String) \n- relationship (String) -> Parentesco com o aluno\n- address (String) \n- street (String) \n- number (String) \n- neighborhood (String) \n- city (String) \n- state (String) \n- zipCode (String) \n- complement (Ref<User>) \n- rejectionReason (Ref<User>) \n- reviewedBy (Ref<User>) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: School\n- name (String) \n- logo (String) \n- legalName (String) \n- cnpj (String) \n- stateRegistration (String) \n- municipalRegistration (String) \n- authorizationAct (String) \n- address (String) [Opções: Ativa, Inativa, Bloqueada]\n- contactPhone (String) [Opções: Ativa, Inativa, Bloqueada]\n- contactEmail (String) [Opções: Ativa, Inativa, Bloqueada]\n- status (String) [Opções: Ativa, Inativa, Bloqueada]\n- whatsapp (String) [Opções: connected, disconnected, pairing]\n- instanceName (String) [Opções: connected, disconnected, pairing]\n- status (String) [Opções: connected, disconnected, pairing]\n- type (String) [Opções: connected, disconnected, pairing]\n- enum (Date) [Opções: connected, disconnected, pairing]\n- default (Date) \n- updatedAt (String) \n- mercadoPagoConfig (String) \n- prodClientId (String) \n- prodClientSecret (String) \n- prodPublicKey (String) -> Public Key geralmente não é crítica expor se necessário no front\n- prodAccessToken (String) -> CRÍTICO: select false para não vazar\n- isConfigured (Boolean) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Schoolyear\n- year (Number) \n- type (Number) \n- required (Date) \n- startDate (Date) \n- type (Date) \n- required (Date) \n- endDate (Date) \n- type (ObjectId) \n- required (Ref<School>) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (String (Default)) \n- index (String (Default)) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: StaffProfile\n- user (Ref<User>) -> Ligação com o User\n- type (Ref<User>) \n- ref (Ref<User>) \n- required (Date) \n- admissionDate (String) -> Data de Admissão [Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]\n- employmentType (String) -> Vínculo [Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]\n- type (String) [Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]\n- required (String) [Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]\n- enum (String) [Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]\n- mainRole (String) -> Cargo/Função\n- type (String) \n- required (String) \n- trim (String) \n- remunerationModel (String) -> Modelo de Remuneração [Opções: Salário Fixo Mensal, Pagamento por Hora/Aula]\n- type (String) [Opções: Salário Fixo Mensal, Pagamento por Hora/Aula]\n- required (Number) [Opções: Salário Fixo Mensal, Pagamento por Hora/Aula]\n- enum (Number) [Opções: Salário Fixo Mensal, Pagamento por Hora/Aula]\n- salaryAmount (Number) -> Valor do Salário (se Fixo)\n- type (Number) \n- min (Number) \n- required (Number) \n- hourlyRate (Number) -> Valor da Hora/Aula (se Horista)\n- type (Number) \n- min (Number) \n- required (String) \n- weeklyWorkload (String) -> Carga Horária\n- academicFormation (String) -> Ex: \"Graduado em Letras\" [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio]\n- enabledLevels (ObjectId) -> Níveis Habilitados [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio]\n- type (Ref<Subject>) [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio]\n- enum (Ref<Subject>) [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio]\n- enabledSubjects (Ref<Subject>) -> Disciplinas Habilitadas\n- type (Ref<Subject>) \n- ref (Ref<Subject>) -> Referência ao novo model de Disciplinas\n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Student\n- username (String) \n- passwordHash (String) \n- firstAccess (Boolean) \n- lastLogin (Date) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Subject\n- name (String) \n- type (String) \n- required (String) \n- trim (String) [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio, Geral]\n- level (String) [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio, Geral]\n- type (String) [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio, Geral]\n- enum (String (Default)) [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio, Geral]\n- default (ObjectId) \n- required (Ref<School>) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) \n- required (String (Default)) \n- index (String (Default)) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: Tutor\n- fullName (String) \n- type (String) \n- required (Date) \n- birthDate (String) \n- type (String) [Opções: Masculino, Feminino, Outro]\n- required (String) [Opções: Masculino, Feminino, Outro]\n- gender (String) [Opções: Masculino, Feminino, Outro]\n- type (String) [Opções: Masculino, Feminino, Outro]\n- enum (String) [Opções: Masculino, Feminino, Outro]\n- required (String) \n- nationality (String) \n- type (String) \n- required (String) \n- phoneNumber (String) \n- type (String) \n- rg (String) \n- type (String) \n- sparse (String) \n- cpf (String) \n- type (String) \n- sparse (String) \n- required (String) \n- email (String) \n- type (String) \n- lowercase (String (Default)) \n- sparse (String (Default)) \n- address (String (Default)) \n- type (String (Default)) \n- required (ObjectId) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) -> Referencia o modelo 'School'\n- required (String (Default)) \n- index (String (Default)) -> Melhora a performance de buscas por escola\n- students (Ref<Student>) \n- type (Ref<Student>) \n- ref (Ref<Student>) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\nTABLE: User\n- fullName (String) \n- type (String) \n- required (String) \n- trim (String) \n- profilePictureUrl (String) \n- cpf (String) \n- type (String) \n- required (Date) \n- unique (Date) \n- sparse (String) \n- trim (String) [Opções: Masculino, Feminino, Outro, Prefiro não dizer]\n- birthDate (String) [Opções: Masculino, Feminino, Outro, Prefiro não dizer]\n- gender (String) [Opções: Masculino, Feminino, Outro, Prefiro não dizer]\n- type (String) [Opções: Masculino, Feminino, Outro, Prefiro não dizer]\n- enum (String) [Opções: Masculino, Feminino, Outro, Prefiro não dizer]\n- phoneNumber (String) \n- phoneFixed (String) \n- address (String) \n- email (String) \n- type (String) \n- required (String (Default)) \n- unique (String (Default)) \n- lowercase (String) \n- trim (String) \n- match (String) \n- username (String) \n- type (String) \n- required (String (Default)) \n- unique (String (Default)) \n- lowercase (String (Default)) \n- trim (String) \n- minlength (String) \n- match (String) \n- password (String) \n- type (String) \n- required (String) \n- minlength (String) \n- select (String) [Opções: Professor, Coordenador, Admin, Staff]\n- roles (String) [Opções: Professor, Coordenador, Admin, Staff]\n- type (String) [Opções: Professor, Coordenador, Admin, Staff]\n- required (String) [Opções: Professor, Coordenador, Admin, Staff]\n- enum (String) [Opções: Professor, Coordenador, Admin, Staff]\n- status (String) [Opções: Ativo, Inativo]\n- type (String) [Opções: Ativo, Inativo]\n- enum (String (Default)) [Opções: Ativo, Inativo]\n- default (String (Default)) \n- required (ObjectId) \n- school_id (Ref<School>) \n- type (Ref<School>) \n- ref (Ref<School>) -> Referencia o novo modelo 'School'\n- required (String (Default)) \n- index (ObjectId) -> Melhora a performance de buscas por escola\n- staffProfiles (Ref<StaffProfile>) \n- type (Ref<StaffProfile>) \n- ref (Ref<StaffProfile>) \n- createdAt (Date) Auto-gerado\n- updatedAt (Date) Auto-gerado\n\n",
+  "structured": {
+    "models": [
+      {
+        "name": "Address",
+        "fields": [
+          {
+            "field": "street",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "neighborhood",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "number",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "default",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "block",
+            "type": "String",
+            "desc": "-> Quadra"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "default",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "lot",
+            "type": "String",
+            "desc": "-> Lote"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "default",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "cep",
+            "type": "String",
+            "desc": "-> <<< CAMPO NOVO ADICIONADO"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "default",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "city",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "state",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String (Default)",
+            "desc": ""
+          }
+        ]
+      },
+      {
+        "name": "Assessment",
+        "fields": [
+          {
+            "field": "category",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "question",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "options",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "correctIndex",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "explanation",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "correct",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "wrongs",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "points",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "AssessmentAttempt",
+        "fields": [
+          {
+            "field": "questionIndex",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "selectedOptionIndex",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "isCorrect",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "timeSpentMs",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "switchedAppCount",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "CargaHoraria",
+        "fields": [
+          {
+            "field": "periodoId",
+            "type": "Ref<Periodo>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Periodo>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Periodo>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "classId",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "subjectId",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "horasNecessarias",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "min",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Class",
+        "fields": [
+          {
+            "field": "description",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "startTime",
+            "type": "String",
+            "desc": "-> \"HH:MM\""
+          },
+          {
+            "field": "endTime",
+            "type": "String",
+            "desc": "-> \"HH:MM\""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "CourseLoad",
+        "fields": [
+          {
+            "field": "periodoId",
+            "type": "Ref<Periodo>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Periodo>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Periodo>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "classId",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "subjectId",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "targetHours",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "min",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Enrollment",
+        "fields": [
+          {
+            "field": "student",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "class",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "academicYear",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "enrollmentDate",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "default",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "agreedFee",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": "[Opções: Ativa, Inativa, Transferido, Concluído, Pendente]"
+          },
+          {
+            "field": "status",
+            "type": "String",
+            "desc": "[Opções: Ativa, Inativa, Transferido, Concluído, Pendente]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Ativa, Inativa, Transferido, Concluído, Pendente]"
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": "[Opções: Ativa, Inativa, Transferido, Concluído, Pendente]"
+          },
+          {
+            "field": "enum",
+            "type": "String (Default)",
+            "desc": "[Opções: Ativa, Inativa, Transferido, Concluído, Pendente]"
+          },
+          {
+            "field": "default",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Evento",
+        "fields": [
+          {
+            "field": "title",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": "[Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]"
+          },
+          {
+            "field": "eventType",
+            "type": "String",
+            "desc": "[Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]"
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": "[Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]"
+          },
+          {
+            "field": "enum",
+            "type": "String",
+            "desc": "[Opções: Prova, Simulado, Trabalho, Feriado, Evento Escolar, Outro]"
+          },
+          {
+            "field": "default",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "description",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "date",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "startTime",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "endTime",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "classId",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "subjectId",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "teacherId",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "isSchoolWide",
+            "type": "Boolean",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Boolean",
+            "desc": ""
+          },
+          {
+            "field": "default",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Horario",
+        "fields": [
+          {
+            "field": "termId",
+            "type": "Ref<Periodo>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Periodo>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Periodo>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "classId",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Class>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "subjectId",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "teacherId",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "dayOfWeek",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "min",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "max",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "startTime",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "endTime",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "room",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Invoice",
+        "fields": [
+          {
+            "field": "student",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Ref<Tutor>",
+            "desc": ""
+          },
+          {
+            "field": "tutor",
+            "type": "Ref<Tutor>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Tutor>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Tutor>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<SchoolYear>",
+            "desc": ""
+          },
+          {
+            "field": "schoolYear",
+            "type": "Ref<SchoolYear>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<SchoolYear>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<SchoolYear>",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "description",
+            "type": "String",
+            "desc": "[Opções: pending, paid, overdue, canceled]"
+          },
+          {
+            "field": "value",
+            "type": "String",
+            "desc": "-> Em CENTAVOS [Opções: pending, paid, overdue, canceled]"
+          },
+          {
+            "field": "dueDate",
+            "type": "String",
+            "desc": "[Opções: pending, paid, overdue, canceled]"
+          },
+          {
+            "field": "status",
+            "type": "String",
+            "desc": "[Opções: pending, paid, overdue, canceled]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: pending, paid, overdue, canceled]"
+          },
+          {
+            "field": "enum",
+            "type": "Date",
+            "desc": "[Opções: pending, paid, overdue, canceled]"
+          },
+          {
+            "field": "default",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "String",
+            "desc": "[Opções: pix, boleto, credit_card, manual]"
+          },
+          {
+            "field": "paidAt",
+            "type": "String",
+            "desc": "[Opções: pix, boleto, credit_card, manual]"
+          },
+          {
+            "field": "paymentMethod",
+            "type": "String",
+            "desc": "[Opções: pix, boleto, credit_card, manual]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: pix, boleto, credit_card, manual]"
+          },
+          {
+            "field": "enum",
+            "type": "String",
+            "desc": "[Opções: pix, boleto, credit_card, manual]"
+          },
+          {
+            "field": "gateway",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "mp_payment_id",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "mp_pix_copia_e_cola",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "mp_pix_qr_base64",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "mp_ticket_url",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Negotiation",
+        "fields": [
+          {
+            "field": "studentId",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "invoices",
+            "type": "Ref<Invoice>",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "createdByUserId",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "token",
+            "type": "String",
+            "desc": "[Opções: percentage, fixed]"
+          },
+          {
+            "field": "rules",
+            "type": "String",
+            "desc": "[Opções: percentage, fixed]"
+          },
+          {
+            "field": "allowPixDiscount",
+            "type": "String",
+            "desc": "[Opções: percentage, fixed]"
+          },
+          {
+            "field": "pixDiscountValue",
+            "type": "String",
+            "desc": "[Opções: percentage, fixed]"
+          },
+          {
+            "field": "pixDiscountType",
+            "type": "String",
+            "desc": "[Opções: percentage, fixed]"
+          },
+          {
+            "field": "allowInstallments",
+            "type": "String",
+            "desc": "[Opções: student, school]"
+          },
+          {
+            "field": "maxInstallments",
+            "type": "String",
+            "desc": "[Opções: student, school]"
+          },
+          {
+            "field": "interestPayer",
+            "type": "String",
+            "desc": "[Opções: student, school]"
+          },
+          {
+            "field": "totalOriginalDebt",
+            "type": "String",
+            "desc": "[Opções: PENDING, PAID, EXPIRED, CANCELLED]"
+          },
+          {
+            "field": "status",
+            "type": "String",
+            "desc": "[Opções: PENDING, PAID, EXPIRED, CANCELLED]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: PENDING, PAID, EXPIRED, CANCELLED]"
+          },
+          {
+            "field": "enum",
+            "type": "String",
+            "desc": "[Opções: PENDING, PAID, EXPIRED, CANCELLED]"
+          },
+          {
+            "field": "default",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "expiresAt",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "paymentExternalId",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": ""
+          }
+        ]
+      },
+      {
+        "name": "Periodo",
+        "fields": [
+          {
+            "field": "anoLetivoId",
+            "type": "Ref<SchoolYear>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<SchoolYear>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<SchoolYear>",
+            "desc": "-> Certifique-se que o nome do model do Ano Letivo está certo"
+          },
+          {
+            "field": "required",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "titulo",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Date",
+            "desc": "-> Ex: \"1º Bimestre\""
+          },
+          {
+            "field": "dataInicio",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "dataFim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": "[Opções: Letivo, NaoLetivo]"
+          },
+          {
+            "field": "tipo",
+            "type": "String",
+            "desc": "[Opções: Letivo, NaoLetivo]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Letivo, NaoLetivo]"
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": "[Opções: Letivo, NaoLetivo]"
+          },
+          {
+            "field": "enum",
+            "type": "String (Default)",
+            "desc": "[Opções: Letivo, NaoLetivo]"
+          },
+          {
+            "field": "default",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Registration-request",
+        "fields": [
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": "[Opções: PENDING, APPROVED, REJECTED]"
+          },
+          {
+            "field": "index",
+            "type": "String",
+            "desc": "[Opções: PENDING, APPROVED, REJECTED]"
+          },
+          {
+            "field": "status",
+            "type": "String",
+            "desc": "[Opções: PENDING, APPROVED, REJECTED]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: PENDING, APPROVED, REJECTED]"
+          },
+          {
+            "field": "enum",
+            "type": "String",
+            "desc": "[Opções: PENDING, APPROVED, REJECTED]"
+          },
+          {
+            "field": "default",
+            "type": "String",
+            "desc": "[Opções: ADULT_STUDENT, MINOR_STUDENT]"
+          },
+          {
+            "field": "index",
+            "type": "String",
+            "desc": "[Opções: ADULT_STUDENT, MINOR_STUDENT]"
+          },
+          {
+            "field": "registrationType",
+            "type": "String",
+            "desc": "[Opções: ADULT_STUDENT, MINOR_STUDENT]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: ADULT_STUDENT, MINOR_STUDENT]"
+          },
+          {
+            "field": "enum",
+            "type": "String (Default)",
+            "desc": "[Opções: ADULT_STUDENT, MINOR_STUDENT]"
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "studentData",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "fullName",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "birthDate",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "gender",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "race",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "nationality",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "phoneNumber",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "email",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "cpf",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "rg",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "address",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "street",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "number",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "neighborhood",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "city",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "state",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "zipCode",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "complement",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "block",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "lot",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "healthInfo",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "hasHealthProblem",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "healthProblemDetails",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "takesMedication",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "medicationDetails",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "hasDisability",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "disabilityDetails",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "hasAllergy",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "allergyDetails",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "hasMedicationAllergy",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "medicationAllergyDetails",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "hasVisionProblem",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "visionProblemDetails",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "feverMedication",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "foodObservations",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "authorizedPickups",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "fullName",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "relationship",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "phoneNumber",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "tutorData",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "fullName",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "birthDate",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "cpf",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "rg",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "gender",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "nationality",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "phoneNumber",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "email",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "relationship",
+            "type": "String",
+            "desc": "-> Parentesco com o aluno"
+          },
+          {
+            "field": "address",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "street",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "number",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "neighborhood",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "city",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "state",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "zipCode",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "complement",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "rejectionReason",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "reviewedBy",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "School",
+        "fields": [
+          {
+            "field": "name",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "logo",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "legalName",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "cnpj",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "stateRegistration",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "municipalRegistration",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "authorizationAct",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "address",
+            "type": "String",
+            "desc": "[Opções: Ativa, Inativa, Bloqueada]"
+          },
+          {
+            "field": "contactPhone",
+            "type": "String",
+            "desc": "[Opções: Ativa, Inativa, Bloqueada]"
+          },
+          {
+            "field": "contactEmail",
+            "type": "String",
+            "desc": "[Opções: Ativa, Inativa, Bloqueada]"
+          },
+          {
+            "field": "status",
+            "type": "String",
+            "desc": "[Opções: Ativa, Inativa, Bloqueada]"
+          },
+          {
+            "field": "whatsapp",
+            "type": "String",
+            "desc": "[Opções: connected, disconnected, pairing]"
+          },
+          {
+            "field": "instanceName",
+            "type": "String",
+            "desc": "[Opções: connected, disconnected, pairing]"
+          },
+          {
+            "field": "status",
+            "type": "String",
+            "desc": "[Opções: connected, disconnected, pairing]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: connected, disconnected, pairing]"
+          },
+          {
+            "field": "enum",
+            "type": "Date",
+            "desc": "[Opções: connected, disconnected, pairing]"
+          },
+          {
+            "field": "default",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "updatedAt",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "mercadoPagoConfig",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "prodClientId",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "prodClientSecret",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "prodPublicKey",
+            "type": "String",
+            "desc": "-> Public Key geralmente não é crítica expor se necessário no front"
+          },
+          {
+            "field": "prodAccessToken",
+            "type": "String",
+            "desc": "-> CRÍTICO: select false para não vazar"
+          },
+          {
+            "field": "isConfigured",
+            "type": "Boolean",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Schoolyear",
+        "fields": [
+          {
+            "field": "year",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "startDate",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "endDate",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "StaffProfile",
+        "fields": [
+          {
+            "field": "user",
+            "type": "Ref<User>",
+            "desc": "-> Ligação com o User"
+          },
+          {
+            "field": "type",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<User>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "admissionDate",
+            "type": "String",
+            "desc": "-> Data de Admissão [Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]"
+          },
+          {
+            "field": "employmentType",
+            "type": "String",
+            "desc": "-> Vínculo [Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]"
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": "[Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]"
+          },
+          {
+            "field": "enum",
+            "type": "String",
+            "desc": "[Opções: Efetivo (CLT), Prestador de Serviço (PJ), Temporário, Estagiário]"
+          },
+          {
+            "field": "mainRole",
+            "type": "String",
+            "desc": "-> Cargo/Função"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "remunerationModel",
+            "type": "String",
+            "desc": "-> Modelo de Remuneração [Opções: Salário Fixo Mensal, Pagamento por Hora/Aula]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Salário Fixo Mensal, Pagamento por Hora/Aula]"
+          },
+          {
+            "field": "required",
+            "type": "Number",
+            "desc": "[Opções: Salário Fixo Mensal, Pagamento por Hora/Aula]"
+          },
+          {
+            "field": "enum",
+            "type": "Number",
+            "desc": "[Opções: Salário Fixo Mensal, Pagamento por Hora/Aula]"
+          },
+          {
+            "field": "salaryAmount",
+            "type": "Number",
+            "desc": "-> Valor do Salário (se Fixo)"
+          },
+          {
+            "field": "type",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "min",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "hourlyRate",
+            "type": "Number",
+            "desc": "-> Valor da Hora/Aula (se Horista)"
+          },
+          {
+            "field": "type",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "min",
+            "type": "Number",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "weeklyWorkload",
+            "type": "String",
+            "desc": "-> Carga Horária"
+          },
+          {
+            "field": "academicFormation",
+            "type": "String",
+            "desc": "-> Ex: \"Graduado em Letras\" [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio]"
+          },
+          {
+            "field": "enabledLevels",
+            "type": "ObjectId",
+            "desc": "-> Níveis Habilitados [Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio]"
+          },
+          {
+            "field": "type",
+            "type": "Ref<Subject>",
+            "desc": "[Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio]"
+          },
+          {
+            "field": "enum",
+            "type": "Ref<Subject>",
+            "desc": "[Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio]"
+          },
+          {
+            "field": "enabledSubjects",
+            "type": "Ref<Subject>",
+            "desc": "-> Disciplinas Habilitadas"
+          },
+          {
+            "field": "type",
+            "type": "Ref<Subject>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Subject>",
+            "desc": "-> Referência ao novo model de Disciplinas"
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Student",
+        "fields": [
+          {
+            "field": "username",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "passwordHash",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "firstAccess",
+            "type": "Boolean",
+            "desc": ""
+          },
+          {
+            "field": "lastLogin",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Subject",
+        "fields": [
+          {
+            "field": "name",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": "[Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio, Geral]"
+          },
+          {
+            "field": "level",
+            "type": "String",
+            "desc": "[Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio, Geral]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio, Geral]"
+          },
+          {
+            "field": "enum",
+            "type": "String (Default)",
+            "desc": "[Opções: Educação Infantil, Ensino Fundamental I, Ensino Fundamental II, Ensino Médio, Geral]"
+          },
+          {
+            "field": "default",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "Tutor",
+        "fields": [
+          {
+            "field": "fullName",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "birthDate",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro]"
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro]"
+          },
+          {
+            "field": "gender",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro]"
+          },
+          {
+            "field": "enum",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro]"
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "nationality",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "phoneNumber",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "rg",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "sparse",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "cpf",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "sparse",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "email",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "lowercase",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "sparse",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "address",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": "-> Referencia o modelo 'School'"
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "String (Default)",
+            "desc": "-> Melhora a performance de buscas por escola"
+          },
+          {
+            "field": "students",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<Student>",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      },
+      {
+        "name": "User",
+        "fields": [
+          {
+            "field": "fullName",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "profilePictureUrl",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "cpf",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "unique",
+            "type": "Date",
+            "desc": ""
+          },
+          {
+            "field": "sparse",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro, Prefiro não dizer]"
+          },
+          {
+            "field": "birthDate",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro, Prefiro não dizer]"
+          },
+          {
+            "field": "gender",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro, Prefiro não dizer]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro, Prefiro não dizer]"
+          },
+          {
+            "field": "enum",
+            "type": "String",
+            "desc": "[Opções: Masculino, Feminino, Outro, Prefiro não dizer]"
+          },
+          {
+            "field": "phoneNumber",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "phoneFixed",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "address",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "email",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "unique",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "lowercase",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "match",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "username",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "unique",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "lowercase",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "trim",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "minlength",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "match",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "password",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "minlength",
+            "type": "String",
+            "desc": ""
+          },
+          {
+            "field": "select",
+            "type": "String",
+            "desc": "[Opções: Professor, Coordenador, Admin, Staff]"
+          },
+          {
+            "field": "roles",
+            "type": "String",
+            "desc": "[Opções: Professor, Coordenador, Admin, Staff]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Professor, Coordenador, Admin, Staff]"
+          },
+          {
+            "field": "required",
+            "type": "String",
+            "desc": "[Opções: Professor, Coordenador, Admin, Staff]"
+          },
+          {
+            "field": "enum",
+            "type": "String",
+            "desc": "[Opções: Professor, Coordenador, Admin, Staff]"
+          },
+          {
+            "field": "status",
+            "type": "String",
+            "desc": "[Opções: Ativo, Inativo]"
+          },
+          {
+            "field": "type",
+            "type": "String",
+            "desc": "[Opções: Ativo, Inativo]"
+          },
+          {
+            "field": "enum",
+            "type": "String (Default)",
+            "desc": "[Opções: Ativo, Inativo]"
+          },
+          {
+            "field": "default",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "required",
+            "type": "ObjectId",
+            "desc": ""
+          },
+          {
+            "field": "school_id",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<School>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<School>",
+            "desc": "-> Referencia o novo modelo 'School'"
+          },
+          {
+            "field": "required",
+            "type": "String (Default)",
+            "desc": ""
+          },
+          {
+            "field": "index",
+            "type": "ObjectId",
+            "desc": "-> Melhora a performance de buscas por escola"
+          },
+          {
+            "field": "staffProfiles",
+            "type": "Ref<StaffProfile>",
+            "desc": ""
+          },
+          {
+            "field": "type",
+            "type": "Ref<StaffProfile>",
+            "desc": ""
+          },
+          {
+            "field": "ref",
+            "type": "Ref<StaffProfile>",
+            "desc": ""
+          },
+          {
+            "field": "createdAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          },
+          {
+            "field": "updatedAt",
+            "type": "Date",
+            "desc": "Auto-gerado"
+          }
+        ]
+      }
+    ],
+    "services": [
+      {
+        "service": "assessment",
+        "methods": [
+          {
+            "method": "createDraftWithAI",
+            "description": "Cria um Rascunho (DRAFT) usando o Gemini"
+          },
+          {
+            "method": "updateAssessment",
+            "description": "Atualiza/Edita o rascunho (Professor fazendo curadoria)"
+          },
+          {
+            "method": "publishAssessment",
+            "description": "Publica a atividade (Libera para alunos)"
+          },
+          {
+            "method": "getByClass",
+            "description": "Lista atividades de uma turma [CORREÇÃO] Removido filtro 'status: PUBLISHED' para que o professor veja os RASCUNHOS"
+          },
+          {
+            "method": "getById",
+            "description": "Pega detalhes completos (Para o Professor ou para iniciar a prova)"
+          }
+        ]
+      },
+      {
+        "service": "assessmentAttempt",
+        "methods": [
+          {
+            "method": "startAttempt",
+            "description": "Inicia uma tentativa (Aluno abriu a prova) / /* Inicia uma tentativa (Aluno abriu a prova)"
+          },
+          {
+            "method": "submitAttempt",
+            "description": "Finaliza a prova (Aluno clicou em Enviar)"
+          },
+          {
+            "method": "getResultsByAssessment",
+            "description": "Dashboard: Pega resultados de uma prova específica"
+          }
+        ]
+      },
+      {
+        "service": "assistant",
+        "methods": [
+          {
+            "method": "retrieveRelevantContext",
+            "description": "Carrega o esquema do banco."
+          },
+          {
+            "method": "executeSafeQuery",
+            "description": "Executa o código em Sandbox Seguro"
+          },
+          {
+            "method": "processRequest",
+            "description": "Processa a requisição"
+          }
+        ]
+      },
+      {
+        "service": "class",
+        "methods": [
+          {
+            "method": "createClass",
+            "description": "[MODIFICADO] Cria uma nova turma, vinculada à escola."
+          },
+          {
+            "method": "getAllClasses",
+            "description": "[MODIFICADO] Busca todas as turmas, filtradas pela escola."
+          },
+          {
+            "method": "getClassById",
+            "description": "[MODIFICADO] Busca uma turma por ID, garantindo que pertença à escola."
+          },
+          {
+            "method": "updateClass",
+            "description": "[MODIFICADO] Atualiza os dados de uma turma, garantindo que pertença à escola."
+          },
+          {
+            "method": "deleteClass",
+            "description": "[MODIFICADO] Deleta uma turma, garantindo que pertença à escola."
+          }
+        ]
+      },
+      {
+        "service": "courseLoad",
+        "methods": [
+          {
+            "method": "_validateReferences",
+            "description": "Valida se todas as referências (Período, Turma, Disciplina) pertencem à escola."
+          },
+          {
+            "method": "find",
+            "description": "Busca as cargas horárias, filtrando obrigatoriamente pela escola."
+          },
+          {
+            "method": "batchSave",
+            "description": "Salva em lote (Cria ou Atualiza) a matriz curricular."
+          }
+        ]
+      },
+      {
+        "service": "enrollment",
+        "methods": [
+          {
+            "method": "createEnrollment",
+            "description": "Cria uma nova matrícula, validando a posse das referências."
+          },
+          {
+            "method": "getEnrollments",
+            "description": "Busca matrículas com base em filtros, LIMITADO PELA ESCOLA."
+          },
+          {
+            "method": "getEnrollmentById",
+            "description": "Busca uma matrícula pelo ID, LIMITADO PELA ESCOLA."
+          },
+          {
+            "method": "updateEnrollment",
+            "description": "Atualiza uma matrícula."
+          },
+          {
+            "method": "deleteEnrollment",
+            "description": "Deleta (cancela) uma matrícula."
+          }
+        ]
+      },
+      {
+        "service": "evento",
+        "methods": [
+          {
+            "method": "_validateReferences",
+            "description": "[NOVO] Valida se as referências (Turma/Disciplina) pertencem à escola."
+          },
+          {
+            "method": "createEvento",
+            "description": "Cria um novo evento (singular)."
+          },
+          {
+            "method": "createMultipleEventos",
+            "description": "Cria múltiplos eventos (em lote)."
+          },
+          {
+            "method": "getAllEventos",
+            "description": "Busca eventos com base em filtros complexos (para o calendário), LIMITADO PELA ESCOLA."
+          },
+          {
+            "method": "getEventoById",
+            "description": "Busca um evento específico por ID, limitado pela escola."
+          },
+          {
+            "method": "updateEvento",
+            "description": "Atualiza um evento."
+          },
+          {
+            "method": "deleteEvento",
+            "description": "Deleta um evento."
+          }
+        ]
+      },
+      {
+        "service": "geminiQuiz",
+        "methods": [
+          {
+            "method": "generateQuizJson",
+            "description": "Gera o JSON do Quiz com sistema de Fallback/Retry"
+          }
+        ]
+      },
+      {
+        "service": "horario",
+        "methods": [
+          {
+            "method": "_validateReferences",
+            "description": "Valida se todas as referências pertencem à escola do usuário E se o professor pode lecionar a disciplina."
+          },
+          {
+            "method": "_validateTeacherAbility",
+            "description": "Valida se um professor está habilitado para lecionar uma disciplina. (Mantido)"
+          },
+          {
+            "method": "createMultipleHorarios",
+            "description": "Cria múltiplos horários (em lote)."
+          },
+          {
+            "method": "createHorario",
+            "description": "Cria um novo horário (aula) para uma turma."
+          },
+          {
+            "method": "getHorarios",
+            "description": "Busca horários com base em filtros, limitados pela escola."
+          },
+          {
+            "method": "getHorarioById",
+            "description": "Busca um horário específico por ID, limitado pela escola."
+          },
+          {
+            "method": "updateHorario",
+            "description": "Atualiza um horário."
+          },
+          {
+            "method": "deleteHorario",
+            "description": "Deleta um horário."
+          }
+        ]
+      },
+      {
+        "service": "invoice",
+        "methods": [
+          {
+            "method": "_getMpClient",
+            "description": "[HELPER PRIVADO] Busca as credenciais da escola e retorna uma instância configurada do Mercado Pago"
+          },
+          {
+            "method": "createInvoice",
+            "description": "Cria fatura, gera PIX no MP e salva com school_id Lógica adaptada para Alunos Pagadores (Maiores de idade) ou Tutores"
+          },
+          {
+            "method": "notifyInvoiceSmart",
+            "description": "[NOVO] Método Inteligente de Notificação Adaptado para receber diretamente Nome e Telefone do Pagador (seja Aluno ou Tutor)"
+          },
+          {
+            "method": "processDailyReminders",
+            "description": "[NOVO] Método para Cobrança Automática (Cron Job) Adaptado para detectar dinamicamente se cobra o Aluno ou Tutor"
+          },
+          {
+            "method": "cancelInvoice",
+            "description": "Cancela uma fatura (MP e Local)"
+          },
+          {
+            "method": "handlePaymentWebhook",
+            "description": "Webhook Handler"
+          }
+        ]
+      },
+      {
+        "service": "negotiation",
+        "methods": [
+          {
+            "method": "_getMpClient",
+            "description": "[HELPER PRIVADO] Busca as credenciais da escola e retorna uma instância configurada do Mercado Pago"
+          },
+          {
+            "method": "createNegotiation",
+            "description": "Cria a negociação, aplicando school_id e createdByUserId."
+          },
+          {
+            "method": "listByStudent",
+            "description": "Lista histórico, garantindo que o gestor só veja negociações de sua escola."
+          }
+        ]
+      },
+      {
+        "service": "school",
+        "methods": [
+          {
+            "method": "createSchool",
+            "description": "Cria uma nova escola."
+          },
+          {
+            "method": "updateSchool",
+            "description": "Atualiza uma escola existente."
+          },
+          {
+            "method": "getAllSchools",
+            "description": "Busca todas as escolas (sem o buffer da logo, para performance)."
+          },
+          {
+            "method": "getSchoolById",
+            "description": "Busca uma escola por ID (sem o buffer da logo)."
+          },
+          {
+            "method": "getSchoolLogo",
+            "description": "Busca APENAS a logo de uma escola por ID."
+          },
+          {
+            "method": "inactivateSchool",
+            "description": "Inativa uma escola (Soft delete)."
+          }
+        ]
+      },
+      {
+        "service": "schoolyear",
+        "methods": [
+          {
+            "method": "create",
+            "description": "Cria um novo ano letivo vinculado à escola."
+          },
+          {
+            "method": "find",
+            "description": "Busca anos letivos apenas da escola solicitante."
+          },
+          {
+            "method": "findById",
+            "description": "Busca por ID garantindo que pertença à escola."
+          },
+          {
+            "method": "update",
+            "description": "Atualiza verificando duplicidade dentro da escola."
+          },
+          {
+            "method": "delete",
+            "description": "Deleta garantindo a escola."
+          }
+        ]
+      },
+      {
+        "service": "student",
+        "methods": [
+          {
+            "method": "createStudent",
+            "description": "Cria um novo aluno, GERA MATRÍCULA e salva FOTO (se enviada)."
+          },
+          {
+            "method": "getAllStudents",
+            "description": "Busca todos os alunos SEM o binário da foto (Performance)."
+          },
+          {
+            "method": "getStudentById",
+            "description": "Busca um aluno por ID SEM o binário da foto."
+          },
+          {
+            "method": "getStudentPhoto",
+            "description": "Método específico para buscar APENAS a foto (Lazy Loading)."
+          },
+          {
+            "method": "updateStudent",
+            "description": "Atualiza aluno e permite atualizar a foto."
+          }
+        ]
+      },
+      {
+        "service": "subject",
+        "methods": [
+          {
+            "method": "createSubject",
+            "description": "Cria uma nova disciplina vinculada a uma escola."
+          },
+          {
+            "method": "getAllSubjects",
+            "description": "Busca todas as disciplinas de uma escola específica com filtros opcionais."
+          },
+          {
+            "method": "getSubjectById",
+            "description": "Busca uma disciplina por ID e Escola (segurança extra)."
+          },
+          {
+            "method": "updateSubject",
+            "description": "Atualiza uma disciplina."
+          },
+          {
+            "method": "deleteSubject",
+            "description": "Deleta uma disciplina."
+          },
+          {
+            "method": "createMultipleSubjects",
+            "description": "Cria múltiplas disciplinas (em lote) para uma escola específica."
+          }
+        ]
+      },
+      {
+        "service": "tutor",
+        "methods": [
+          {
+            "method": "getAllTutors",
+            "description": "[MODIFICADO] Busca todos os tutores FILTRADOS POR ESCOLA."
+          },
+          {
+            "method": "getTutorById",
+            "description": "[MODIFICADO] Busca um tutor por ID, garantindo que ele pertença à escola."
+          },
+          {
+            "method": "updateTutor",
+            "description": "[MODIFICADO] Atualiza um tutor, garantindo que ele pertença à escola."
+          },
+          {
+            "method": "findTutorByCpf",
+            "description": "[MODIFICADO] Busca um tutor por CPF, garantindo que ele pertença à escola."
+          }
+        ]
+      },
+      {
+        "service": "user",
+        "methods": [
+          {
+            "method": "createStaff",
+            "description": "Cria um novo Funcionário (User + StaffProfile). Injeta 'schoolId' nos registros para garantir o vínculo."
+          },
+          {
+            "method": "createUser",
+            "description": "Cria um usuário simples (sem perfil de staff)."
+          },
+          {
+            "method": "getAllUsers",
+            "description": "Busca todos os usuários APENAS da escola informada."
+          },
+          {
+            "method": "getUserById",
+            "description": "Busca um usuário por ID, garantindo que pertença à escola."
+          },
+          {
+            "method": "updateStaff",
+            "description": "Atualiza um funcionário."
+          },
+          {
+            "method": "inactivateUser",
+            "description": "Inativa um usuário da escola."
+          }
+        ]
+      },
+      {
+        "service": "whatsapp",
+        "methods": [
+          {
+            "method": "connectSchool",
+            "description": "Cria ou recupera uma instância para a escola."
+          },
+          {
+            "method": "getConnectionStatus",
+            "description": "Verifica status da conexão e recupera o QR Code se desconectado"
+          }
+        ]
+      }
+    ]
+  }
+}
