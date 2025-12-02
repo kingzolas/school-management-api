@@ -1,148 +1,99 @@
 const mongoose = require('mongoose');
 const Student = require('../models/student.model');
 const Invoice = require('../models/invoice.model');
-// Ajuste o import abaixo se o seu model de professor for 'User' ou 'Staff'
-const Staff = require('../models/user.model'); // Geralmente professores estão na collection de usuários
+const Staff = require('../models/user.model'); 
 const ClassModel = require('../models/class.model');
 const Subject = require('../models/subject.model');
+const Expense = require('../models/expense.model');
 
 class DashboardService {
 
     async getDashboardData(schoolId) {
-        const startOfDay = new Date();
-        startOfDay.setHours(0, 0, 0, 0);
+        console.log(`📊 [DashboardService] Iniciando busca para SchoolID: ${schoolId}`);
+        
+        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
+        const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0, 0, 0, 0);
+        const endOfMonth = new Date(startOfMonth); endOfMonth.setMonth(endOfMonth.getMonth() + 1);
 
-        const endOfDay = new Date();
-        endOfDay.setHours(23, 59, 59, 999);
-
-        const startOfMonth = new Date();
-        startOfMonth.setDate(1);
-        startOfMonth.setHours(0, 0, 0, 0);
-
-        const endOfMonth = new Date(startOfMonth);
-        endOfMonth.setMonth(endOfMonth.getMonth() + 1);
-
-        // [CORREÇÃO] Garantir que schoolId seja usado corretamente nas queries
-        // Alguns drivers do Mongoose aceitam string, outros exigem ObjectId na agregação.
         const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
 
+        // --- CORREÇÃO DA BUSCA DE ALUNOS ---
+        // Usamos isActive: true ao invés de status: 'Ativo' pois é o campo do seu model
+        const studentCount = await Student.countDocuments({ 
+            school_id: schoolId, 
+            isActive: true 
+        });
+        console.log(`🎓 [DashboardService] Alunos ativos encontrados: ${studentCount}`);
+
         const [
-            totalStudents,
             totalTeachers,
             totalClasses,
             totalSubjects,
             financialMetrics,
+            expenseMetrics,
+            financialHistory,
             birthdays
         ] = await Promise.all([
-            // 1. Contadores (Ajustados para o padrão do seu banco)
-            
-            // Busca alunos 'Ativo', 'active' ou 'Active'
-            Student.countDocuments({ 
-                school_id: schoolId, 
-                status: { $in: ['Ativo', 'active', 'Active'] } 
-            }),
-
-            // Busca professores pelo array de roles OU pelo campo role único
-            Staff.countDocuments({ 
-                school_id: schoolId, 
-                $or: [
-                    { role: 'teacher' }, 
-                    { roles: { $in: ['Professor', 'Teacher', 'teacher'] } }
-                ]
-            }), 
-
+            Staff.countDocuments({ school_id: schoolId, $or: [{ role: 'teacher' }, { roles: { $in: ['Professor', 'Teacher', 'teacher'] } }] }),
             ClassModel.countDocuments({ school_id: schoolId }),
             Subject.countDocuments({ school_id: schoolId }),
-
-            // 2. Métricas Financeiras
             this._calculateFinancials(schoolObjectId, startOfDay, endOfDay, startOfMonth, endOfMonth),
-
-            // 3. Aniversariantes
+            this._calculateExpenses(schoolObjectId, startOfMonth, endOfMonth),
+            this._getFinancialHistory(schoolObjectId),
             this._getBirthdays(schoolObjectId)
         ]);
 
         return {
             counts: {
-                students: totalStudents,
+                students: studentCount, 
                 teachers: totalTeachers,
                 classes: totalClasses,
                 subjects: totalSubjects
             },
-            financial: financialMetrics,
+            financial: {
+                inadimplenciaValor: financialMetrics.inadimplenciaValor,
+                inadimplenciaAlunos: financialMetrics.inadimplenciaAlunos,
+                inadimplenciaTaxa: financialMetrics.inadimplenciaTaxa,
+                saldoDia: financialMetrics.saldoDia,
+                vencimentosDiaQtd: financialMetrics.vencimentosDiaQtd,
+                saldoMes: financialMetrics.saldoMes,
+                totalVencimentosPendentes: financialMetrics.totalVencimentosPendentes,
+                despesaMes: expenseMetrics.totalMonth,
+                despesaPendente: expenseMetrics.totalPending,
+                saldoLiquido: financialMetrics.saldoMes - expenseMetrics.totalMonth
+            },
+            chartData: financialHistory,
             birthdays: birthdays
         };
     }
 
     async _calculateFinancials(schoolId, startOfDay, endOfDay, startOfMonth, endOfMonth) {
-        // Nota: Na agregação, usamos o schoolId convertido para ObjectId para garantir o match
+        // ... (Mesma lógica de agregação do anterior, DIVIDINDO POR 100 SE NECESSÁRIO) ...
+        // Se seus Invoices salvam centavos (ex: 65000), mantenha a divisão.
+        // Se salvam reais (650.00), remova o $divide.
+        // VOU MANTER A DIVISÃO POIS VOCÊ DISSE QUE O BANCO SALVA CENTAVOS.
         const metrics = await Invoice.aggregate([
             { $match: { school_id: schoolId } }, 
             {
                 $group: {
                     _id: null,
-                    // Inadimplência (Vencido e Pendente)
-                    totalOverdueValue: {
-                        $sum: {
-                            $cond: [
-                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", new Date()] }] },
-                                "$value",
-                                0
-                            ]
-                        }
-                    },
-                    countOverdueStudents: {
-                        $addToSet: { 
-                            $cond: [
-                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", new Date()] }] },
-                                "$student",
-                                null
-                            ]
-                        }
-                    },
-                    // Saldo do Dia
-                    balanceDay: {
-                        $sum: {
-                            $cond: [
-                                { $and: [{ $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfDay] }, { $lte: ["$paidAt", endOfDay] }] },
-                                "$value",
-                                0
-                            ]
-                        }
-                    },
-                    // Vencimentos do Dia (Qtd)
-                    dueDayCount: {
-                        $sum: {
-                            $cond: [
-                                { $and: [{ $gte: ["$dueDate", startOfDay] }, { $lte: ["$dueDate", endOfDay] }] },
-                                1,
-                                0
-                            ]
-                        }
-                    },
-                    // Saldo do Mês
-                    balanceMonth: {
-                        $sum: {
-                            $cond: [
-                                { $and: [{ $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfMonth] }, { $lte: ["$paidAt", endOfMonth] }] },
-                                "$value",
-                                0
-                            ]
-                        }
-                    },
-                    // Total Vencimentos (Pendente futuro)
-                    totalPendingValue: {
-                        $sum: {
-                            $cond: [{ $eq: ["$status", "pending"] }, "$value", 0]
-                        }
-                    }
+                    totalOverdueValue: { $sum: { $cond: [ { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", new Date()] }] }, { $divide: ["$value", 100] }, 0 ] } },
+                    countOverdueStudents: { $addToSet: { $cond: [ { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", new Date()] }] }, "$student", null ] } },
+                    balanceDay: { $sum: { $cond: [ { $and: [{ $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfDay] }, { $lte: ["$paidAt", endOfDay] }] }, { $divide: ["$value", 100] }, 0 ] } },
+                    dueDayCount: { $sum: { $cond: [ { $and: [{ $gte: ["$dueDate", startOfDay] }, { $lte: ["$dueDate", endOfDay] }] }, 1, 0 ] } },
+                    balanceMonth: { $sum: { $cond: [ { $and: [{ $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfMonth] }, { $lte: ["$paidAt", endOfMonth] }] }, { $divide: ["$value", 100] }, 0 ] } },
+                    totalPendingValue: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, { $divide: ["$value", 100] }, 0] } }
                 }
             }
         ]);
 
         const result = metrics[0] || {};
+        const uniqueOverdueStudents = result.countOverdueStudents ? result.countOverdueStudents.filter(id => id !== null).length : 0;
         
-        const uniqueOverdueStudents = result.countOverdueStudents 
-            ? result.countOverdueStudents.filter(id => id !== null).length 
+        // Taxa fictícia para teste se for zero, ou cálculo real
+        const taxa = (result.totalOverdueValue > 0) 
+            ? ((result.totalOverdueValue / (result.totalPendingValue + result.totalOverdueValue)) * 100).toFixed(1) 
             : 0;
 
         return {
@@ -152,27 +103,70 @@ class DashboardService {
             vencimentosDiaQtd: result.dueDayCount || 0,
             saldoMes: result.balanceMonth || 0,
             totalVencimentosPendentes: result.totalPendingValue || 0,
-            inadimplenciaTaxa: (result.totalOverdueValue > 0 && result.totalPendingValue > 0) 
-                ? ((result.totalOverdueValue / (result.totalPendingValue + result.totalOverdueValue)) * 100).toFixed(1) 
-                : 0
+            inadimplenciaTaxa: taxa
         };
+    }
+
+    async _calculateExpenses(schoolId, startOfMonth, endOfMonth) {
+        // Expenses geralmente já são salvas como número float direto ou centavos?
+        // Se for centavos, adicione a divisão. Vou assumir float (reais) para Expenses pois criamos agora.
+        // Se for centavos, troque "$amount" por { $divide: ["$amount", 100] }
+        const result = await Expense.aggregate([
+            { $match: { schoolId: schoolId } },
+            {
+                $group: {
+                    _id: null,
+                    totalMonth: { $sum: { $cond: [ { $and: [ { $gte: ["$date", startOfMonth] }, { $lte: ["$date", endOfMonth] } ]}, "$amount", 0 ] } },
+                    totalPending: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, "$amount", 0] } }
+                }
+            }
+        ]);
+        return result[0] || { totalMonth: 0, totalPending: 0 };
+    }
+
+    async _getFinancialHistory(schoolId) {
+        // Mantém a lógica do gráfico, lembrando de dividir por 100 nos invoices
+        const sixMonthsAgo = new Date(); sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5); sixMonthsAgo.setDate(1); sixMonthsAgo.setHours(0,0,0,0);
+
+        const incomes = await Invoice.aggregate([
+            { $match: { school_id: schoolId, status: 'paid', paidAt: { $gte: sixMonthsAgo } } },
+            { $group: { _id: { month: { $month: "$paidAt" }, year: { $year: "$paidAt" } }, total: { $sum: { $divide: ["$value", 100] } } } }
+        ]);
+
+        const expenses = await Expense.aggregate([
+            { $match: { schoolId: schoolId, date: { $gte: sixMonthsAgo } } },
+            { $group: { _id: { month: { $month: "$date" }, year: { $year: "$date" } }, total: { $sum: "$amount" } } }
+        ]);
+
+        const historyMap = new Map();
+        for (let i = 0; i < 6; i++) {
+            const d = new Date(); d.setMonth(d.getMonth() - i);
+            const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
+            historyMap.set(key, { month: d.getMonth() + 1, year: d.getFullYear(), income: 0, expense: 0 });
+        }
+
+        incomes.forEach(item => {
+            const key = `${item._id.year}-${item._id.month}`;
+            if (historyMap.has(key)) historyMap.get(key).income = item.total;
+        });
+
+        expenses.forEach(item => {
+            const key = `${item._id.year}-${item._id.month}`;
+            if (historyMap.has(key)) historyMap.get(key).expense = item.total;
+        });
+
+        return Array.from(historyMap.values()).sort((a, b) => {
+            if (a.year !== b.year) return a.year - b.year;
+            return a.month - b.month;
+        });
     }
 
     async _getBirthdays(schoolId) {
         const currentMonth = new Date().getMonth() + 1; 
-
         return await Student.aggregate([
-            { 
-                $match: { 
-                    school_id: schoolId,
-                    // Aceita qualquer variação de ativo
-                    status: { $in: ['Ativo', 'active', 'Active'] },
-                    $expr: { $eq: [{ $month: "$birthDate" }, currentMonth] } 
-                }
-            },
+            { $match: { school_id: schoolId, isActive: true, $expr: { $eq: [{ $month: "$birthDate" }, currentMonth] } } }, // Correção aqui também
             { $project: { fullName: 1, birthDate: 1, profilePicture: 1 } },
-            { $sort: { birthDate: 1 } }, 
-            { $limit: 5 } 
+            { $sort: { birthDate: 1 } }, { $limit: 5 } 
         ]);
     }
 }

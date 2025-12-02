@@ -22,7 +22,7 @@ const negotiationRoutes = require('./api/routes/negotiation.routes.js');
 const whatsappRoutes = require('./api/routes/whatsapp.routes');
 const schoolRoutes = require('./api/routes/school.routes.js');
 const dashboardRoutes = require('./api/routes/dashboard.routes');
-
+const expenseRoutes = require('./api/routes/expense.routes.js');
 // ===================================================================
 // [NOVAS IMPORTAÇÕES]
 // ===================================================================
@@ -83,5 +83,6 @@ app.use('/api/dashboard', dashboardRoutes);
 // Avaliações
 app.use('/api/assessments', assessmentRoutes); 
 app.use('/api/attempts', assessmentAttemptRoutes); 
+app.use('/api/expenses', expenseRoutes);
 
 module.exports = app;
