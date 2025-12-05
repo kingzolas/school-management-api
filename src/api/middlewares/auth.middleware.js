@@ -35,6 +35,18 @@ const verifyToken = (req, res, next) => {
 
         next();
     });
+
+    // Adiciona uma função helper direto no request
+req.emitEvent = (eventName, data) => {
+    const payload = (typeof data === 'object') ? data : { id: data };
+    
+    // Garante que o school_id exista
+    if (!payload.school_id && req.user.school_id) {
+        payload.school_id = req.user.school_id;
+    }
+    
+    appEmitter.emit(eventName, payload);
+};
 };
 
 module.exports = {

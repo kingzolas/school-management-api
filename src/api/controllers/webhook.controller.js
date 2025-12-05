@@ -22,9 +22,9 @@ class WebhookController {
         // Extrai texto simples
         let textMessage = data.message?.conversation || data.message?.extendedTextMessage?.text || '';
         
-        if (textMessage) {
-          console.log(`📩 [WhatsApp] Msg de ${pushName} (${phone}): ${textMessage}`);
-        }
+        // if (textMessage) {
+        //   console.log(`📩 [WhatsApp] Msg de ${pushName} (${phone}): ${textMessage}`);
+        // }
       }
     } catch (error) {
       console.error('❌ Erro no Webhook WhatsApp:', error.message);
