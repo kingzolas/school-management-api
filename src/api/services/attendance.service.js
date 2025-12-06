@@ -39,7 +39,7 @@ exports.getDailyList = async (schoolId, classId, dateString) => {
     schoolId, // Aqui mantemos schoolId pois o model de Attendance foi criado por nós assim
     classId,
     date: { $gte: startOfDay, $lte: endOfDay }
-  }).populate('records.studentId', 'name photoUrl');
+  }).populate('records.studentId', 'fullName photoUrl');
 
   if (existingAttendance) {
     return { type: 'saved', data: existingAttendance };
