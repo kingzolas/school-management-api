@@ -27,6 +27,17 @@ exports.saveAttendance = async (req, res) => {
   }
 };
 
+exports.getHistory = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const result = await attendanceService.getClassHistory(req.user.schoolId, classId);
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Erro ao buscar histórico:', error);
+    return res.status(500).json({ message: 'Erro ao buscar histórico.' });
+  }
+};
+
 exports.getAttendanceSheet = async (req, res) => {
   try {
     const schoolId = req.user.schoolId;

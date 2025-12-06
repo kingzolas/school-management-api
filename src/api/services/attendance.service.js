@@ -72,6 +72,44 @@ exports.getDailyList = async (schoolId, classId, dateString) => {
   return { type: 'proposed', data: proposedList };
 };
 
+exports.getClassHistory = async (schoolId, classId) => {
+  // Usamos aggregate para contar os status sem trazer o objeto inteiro do aluno (performance)
+  return await Attendance.aggregate([
+    { 
+      $match: { 
+        schoolId: new mongoose.Types.ObjectId(schoolId),
+        classId: new mongoose.Types.ObjectId(classId) 
+      } 
+    },
+    { $sort: { date: -1 } }, // Do mais recente para o mais antigo
+    {
+      $project: {
+        date: 1,
+        updatedAt: 1,
+        totalStudents: { $size: "$records" },
+        presentCount: {
+          $size: {
+            $filter: {
+              input: "$records",
+              as: "rec",
+              cond: { $eq: ["$$rec.status", "PRESENT"] }
+            }
+          }
+        },
+        absentCount: {
+          $size: {
+            $filter: {
+              input: "$records",
+              as: "rec",
+              cond: { $eq: ["$$rec.status", "ABSENT"] }
+            }
+          }
+        }
+      }
+    }
+  ]);
+};
+
 exports.getHistoryByStudent = async (schoolId, studentId) => {
     return await Attendance.find({
         schoolId,

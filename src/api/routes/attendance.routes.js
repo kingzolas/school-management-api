@@ -12,5 +12,6 @@ router.get('/class/:classId', attendanceController.getAttendanceSheet);
 
 // POST: Salva ou Atualiza a chamada
 router.post('/', attendanceController.saveAttendance);
+router.get('/history/:classId', attendanceController.getHistory);
 
 module.exports = router;
