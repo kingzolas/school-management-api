@@ -1,6 +1,8 @@
 const Attendance = require('../models/attendance.model');
 const Enrollment = require('../models/enrollment.model'); 
 const Student = require('../models/student.model'); 
+// [CORREÇÃO] Adicione esta linha no topo!
+const mongoose = require('mongoose');
 
 exports.createOrUpdate = async (data) => {
   // Ajuste de datas para pegar o dia inteiro (00:00 a 23:59)
