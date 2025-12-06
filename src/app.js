@@ -23,13 +23,15 @@ const whatsappRoutes = require('./api/routes/whatsapp.routes');
 const schoolRoutes = require('./api/routes/school.routes.js');
 const dashboardRoutes = require('./api/routes/dashboard.routes');
 const expenseRoutes = require('./api/routes/expense.routes.js');
+
 // ===================================================================
 // [NOVAS IMPORTAÇÕES]
 // ===================================================================
 const authStudentRoutes = require('./api/routes/authStudent.routes.js');
 const assessmentRoutes = require('./api/routes/assessment.routes.js');
 const assessmentAttemptRoutes = require('./api/routes/assessmentAttempt.routes.js');
-const registrationRequestRoutes = require('./api/routes/registration-request.routes.js'); // [ADICIONADO]
+const registrationRequestRoutes = require('./api/routes/registration-request.routes.js');
+const attendanceRoutes = require('./api/routes/attendance.routes.js'); // [ADICIONADO - Frequência]
 // ===================================================================
 
 const app = express();
@@ -62,7 +64,8 @@ app.use('/api/tutors', tutorRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/enrollments', enrollmentRoutes);
 app.use('/api/subjects', subjectRoutes);
-app.use('/api/registration-requests', registrationRequestRoutes); // [NOVA ROTA REGISTRADA]
+app.use('/api/registration-requests', registrationRequestRoutes);
+app.use('/api/attendance', attendanceRoutes); // [ADICIONADO - Rota de Frequência]
 
 // Calendário e Acadêmico
 app.use('/api/horarios', horarioRoutes);

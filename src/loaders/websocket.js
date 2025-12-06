@@ -159,6 +159,11 @@ function registerAppListeners() {
         console.log('Evento: invoice:updated');
         broadcast({ type: 'UPDATED_INVOICE', payload: invoice }, invoice.school_id);
     });
+    // --- [NOVO] Chamada (Attendance) ---
+    appEmitter.on('attendance_updated', (payload) => {
+        console.log('Evento: attendance_updated');
+        broadcast({ type: 'ATTENDANCE_UPDATED', payload: payload }, payload.school_id);
+    });
 }
 
 /**
