@@ -53,7 +53,9 @@ exports.saveAttendance = async (req, res) => {
                 tokens: tokens // Envia para todos de uma vez (Multicast)
             };
 
-            const response = await admin.messaging().sendMulticast(message);
+            // [CORREÇÃO] Substituído sendMulticast por sendEachForMulticast
+            // sendMulticast foi removido nas versões v12+ do firebase-admin
+            const response = await admin.messaging().sendEachForMulticast(message);
             console.log(`✅ Push enviado: ${response.successCount} sucessos, ${response.failureCount} falhas.`);
         }
     } catch (pushError) {
