@@ -5,6 +5,10 @@ const bcrypt = require('bcryptjs');
 const addressSchema = require('./address.model');
 
 const userSchema = new Schema({
+    fcmToken: [{ 
+        type: String, 
+        trim: true 
+    }],
     // --- Seção 1 e 2: Info Pessoal e Contato ---
     fullName: {
         type: String,

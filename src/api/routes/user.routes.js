@@ -32,6 +32,10 @@ router.post(
     userController.create
 );
 
+// --- [NOVO] ATUALIZAÇÃO DO TOKEN FCM (NOTIFICAÇÕES) ---
+// O App Mobile chama isso ao logar
+router.post('/refresh-token', userController.updateFcmToken);
+
 // --- Rotas de Gerenciamento ---
 router.get('/', userController.getAll);
 router.get('/:id', userController.getById);

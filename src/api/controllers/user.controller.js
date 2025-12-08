@@ -190,6 +190,27 @@ class UserController {
             next(error);
         }
     }
+
+    async updateFcmToken(req, res, next) {
+        try {
+            const { fcmToken } = req.body;
+            const userId = req.user.id; // Vem do token JWT decodificado pelo middleware
+
+            if (!fcmToken) {
+                return res.status(400).json({ message: 'Token FCM é obrigatório.' });
+            }
+
+            // Usamos $addToSet para evitar duplicar o mesmo token no array
+            await User.findByIdAndUpdate(userId, {
+                $addToSet: { fcmToken: fcmToken }
+            });
+
+            return res.status(200).json({ message: 'Token de notificação atualizado com sucesso.' });
+        } catch (error) {
+            console.error('❌ ERRO [UserController.updateFcmToken]:', error.message);
+            return res.status(500).json({ message: 'Erro ao atualizar token de notificação.' });
+        }
+    }
 }
 
 module.exports = new UserController();

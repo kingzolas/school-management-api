@@ -1,11 +1,9 @@
 const Attendance = require('../models/attendance.model');
 const Enrollment = require('../models/enrollment.model'); 
 const Student = require('../models/student.model'); 
-// [CORREÇÃO] Adicione esta linha no topo!
 const mongoose = require('mongoose');
 
 exports.createOrUpdate = async (data) => {
-  // Ajuste de datas para pegar o dia inteiro (00:00 a 23:59)
   const startOfDay = new Date(data.date);
   startOfDay.setHours(0, 0, 0, 0);
   
@@ -29,16 +27,14 @@ exports.createOrUpdate = async (data) => {
 };
 
 exports.getDailyList = async (schoolId, classId, dateString) => {
-  // 1. Definição do Range de Data
   const targetDate = dateString ? new Date(dateString) : new Date();
   const startOfDay = new Date(targetDate);
   startOfDay.setHours(0, 0, 0, 0);
   const endOfDay = new Date(targetDate);
   endOfDay.setHours(23, 59, 59, 999);
 
-  // 2. Verifica se JÁ existe chamada salva no banco para hoje
   const existingAttendance = await Attendance.findOne({
-    schoolId, // Aqui mantemos schoolId pois o model de Attendance foi criado por nós assim
+    schoolId, 
     classId,
     date: { $gte: startOfDay, $lte: endOfDay }
   }).populate('records.studentId', 'fullName photoUrl');
@@ -47,25 +43,20 @@ exports.getDailyList = async (schoolId, classId, dateString) => {
     return { type: 'saved', data: existingAttendance };
   }
 
-  // 3. Se NÃO existe, montamos a lista "virgem" baseada nas matrículas
-  // [CORREÇÃO CRÍTICA AQUI] - Usando os nomes exatos do seu Banco de Dados
   const enrollments = await Enrollment.find({
-    school_id: schoolId,  // Nome exato no banco (snake_case)
-    class: classId,       // Nome exato no banco (sem 'Id')
-    status: 'Ativa'       // Nome exato no banco (Português)
-  }).populate('student', 'fullName photoUrl'); // O campo de ref é 'student'
+    school_id: schoolId, 
+    class: classId, 
+    status: 'Ativa'
+  }).populate('student', 'fullName photoUrl'); 
 
-  console.log(`[AttendanceService] Turma: ${classId}, Matrículas encontradas: ${enrollments.length}`);
-
-  // 4. Mapeia para o formato que o Front espera
   const proposedList = {
     schoolId,
     classId,
     date: targetDate,
     records: enrollments
-      .filter(enroll => enroll.student) // Segurança caso algum aluno tenha sido deletado
+      .filter(enroll => enroll.student) 
       .map(enroll => ({
-        studentId: enroll.student, // O objeto populado está em 'student'
+        studentId: enroll.student, 
         status: 'PRESENT',
         observation: ''
       }))
@@ -74,8 +65,10 @@ exports.getDailyList = async (schoolId, classId, dateString) => {
   return { type: 'proposed', data: proposedList };
 };
 
+// =================================================================
+// [CORREÇÃO APLICADA AQUI]
+// =================================================================
 exports.getClassHistory = async (schoolId, classId) => {
-  // Usamos aggregate para contar os status sem trazer o objeto inteiro do aluno (performance)
   return await Attendance.aggregate([
     { 
       $match: { 
@@ -83,11 +76,12 @@ exports.getClassHistory = async (schoolId, classId) => {
         classId: new mongoose.Types.ObjectId(classId) 
       } 
     },
-    { $sort: { date: -1 } }, // Do mais recente para o mais antigo
+    { $sort: { date: -1 } }, 
     {
       $project: {
         date: 1,
         updatedAt: 1,
+        // Mantemos os contadores pois são úteis para o card de resumo
         totalStudents: { $size: "$records" },
         presentCount: {
           $size: {
@@ -106,7 +100,10 @@ exports.getClassHistory = async (schoolId, classId) => {
               cond: { $eq: ["$$rec.status", "ABSENT"] }
             }
           }
-        }
+        },
+        // [IMPORTANTE] Adicionamos 'records: 1' para enviar a lista detalhada
+        // Sem isso, o frontend recebe o dia, mas não sabe QUEM faltou.
+        records: 1 
       }
     }
   ]);
