@@ -7,6 +7,20 @@ const getSchoolId = (req) => {
 
 class AssessmentAttemptController {
 
+    // Adicione este método à classe AssessmentAttemptController
+async listStudentAssessments(req, res, next) {
+    try {
+        const schoolId = getSchoolId(req);
+        const studentId = req.user.studentId;
+
+        // Chama o service (precisamos implementar lá também)
+        const assessments = await AssessmentAttemptService.listAvailableAssessments(studentId, schoolId);
+        res.status(200).json(assessments);
+    } catch (error) {
+        next(error);
+    }
+}
+
     // Aluno inicia a prova
     async start(req, res, next) {
         try {
