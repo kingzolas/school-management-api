@@ -164,6 +164,12 @@ function registerAppListeners() {
         console.log('Evento: attendance_updated');
         broadcast({ type: 'ATTENDANCE_UPDATED', payload: payload }, payload.school_id);
     });
+
+    appEmitter.on('assessment:published', (assessment) => {
+        console.log('📡 Evento: assessment:published');
+        // O Front vai receber type: 'NEW_ASSESSMENT'
+        broadcast({ type: 'NEW_ASSESSMENT', payload: assessment }, assessment.school_id);
+    });
 }
 
 /**

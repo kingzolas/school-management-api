@@ -1,5 +1,6 @@
 const Assessment = require('../models/assessment.model');
 const GeminiQuizService = require('./geminiQuiz.service');
+const appEmitter = require('../../loaders/eventEmitter');
 
 class AssessmentService {
 
@@ -54,7 +55,7 @@ class AssessmentService {
     /**
      * Publica a atividade (Libera para alunos)
      */
-    async publishAssessment(id, schoolId) {
+   async publishAssessment(id, schoolId) {
         const assessment = await Assessment.findOneAndUpdate(
             { _id: id, school_id: schoolId },
             { status: 'PUBLISHED' },
@@ -62,6 +63,10 @@ class AssessmentService {
         );
 
         if (!assessment) throw new Error('Atividade não encontrada.');
+
+        // 🔥 [NOVO] Emite o evento para o WebSocket pegar
+        appEmitter.emit('assessment:published', assessment);
+
         return assessment;
     }
 
