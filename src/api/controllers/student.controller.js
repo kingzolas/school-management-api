@@ -11,20 +11,29 @@ const getSchoolId = (req) => {
     return req.user.school_id;
 };
 
-// [NOVO] Helper para parsear campos que vêm como String no Multipart
+// [CORRIGIDO] Helper para parsear campos que vêm como String no Multipart
+// Agora ele é mais resiliente e lida com booleanos e strings vazias corretamente
 const parseMultipartBody = (body) => {
+    // Clona o body para não mutar o objeto original diretamente
     const parsed = { ...body };
     
-    // Lista de campos que são Objetos ou Arrays no seu Schema
+    // Lista de campos que são Objetos ou Arrays no seu Schema e precisam de JSON.parse se vierem como string
     const jsonFields = ['address', 'tutors', 'healthInfo', 'authorizedPickups', 'accessCredentials'];
 
     jsonFields.forEach(field => {
+        // Verifica se existe E se é uma string antes de tentar parsear
         if (parsed[field] && typeof parsed[field] === 'string') {
             try {
-                parsed[field] = JSON.parse(parsed[field]);
+                // Se for uma string "null" ou "undefined", removemos ou definimos null
+                if (parsed[field] === 'null' || parsed[field] === 'undefined') {
+                    parsed[field] = null;
+                } else {
+                    parsed[field] = JSON.parse(parsed[field]);
+                }
             } catch (e) {
                 console.error(`Erro ao fazer parse do campo ${field}:`, e.message);
-                // Se falhar o parse, mantém como está ou define undefined, dependendo da sua regra
+                // Opcional: Se der erro no parse, delete o campo para não quebrar o Mongoose com string inválida
+                // delete parsed[field]; 
             }
         }
     });
@@ -33,12 +42,14 @@ const parseMultipartBody = (body) => {
     if (parsed.isActive === 'true') parsed.isActive = true;
     if (parsed.isActive === 'false') parsed.isActive = false;
 
+    // Se vierem outros campos numéricos como string, o Mongoose geralmente lida bem, 
+    // mas arrays e sub-documentos precisam do parse acima.
+    
     return parsed;
 };
 
 class StudentController {
 
-    // [NOVO] Método para servir a foto
     async getPhoto(req, res) {
         try {
             const schoolId = getSchoolId(req);
@@ -98,15 +109,17 @@ class StudentController {
 
             console.log('--- [DEBUG API] CREATE STUDENT ---');
             
-            // [MODIFICADO] Se vier arquivo (req.file), fazemos o parse dos campos JSON stringificados
-            let studentData = req.file ? parseMultipartBody(req.body) : req.body;
+            // [CORREÇÃO AQUI] 
+            // Independente de ter arquivo (req.file) ou não, passamos pelo parseMultipartBody.
+            // Se for JSON puro, ele não faz nada. Se for Multipart (mesmo sem foto), ele converte as strings.
+            let studentData = parseMultipartBody(req.body);
             
             studentData = {
                 ...studentData,
                 creator: creatorId 
             };
 
-            // [MODIFICADO] Passa o req.file (foto) para o service
+            // Passa o req.file (se existir) para o service
             const newStudent = await StudentService.createStudent(studentData, schoolId, req.file);
             console.log('✅ SUCESSO: Aluno criado.');
 
@@ -173,10 +186,10 @@ class StudentController {
 
             console.log(`--- [DEBUG API] UPDATE STUDENT ${id} ---`);
 
-            // [MODIFICADO] Parse do body se houver arquivo
-            const updateData = req.file ? parseMultipartBody(req.body) : req.body;
+            // [CORREÇÃO AQUI] 
+            // Mesma lógica do create: sempre tentar parsear o body
+            const updateData = parseMultipartBody(req.body);
 
-            // [MODIFICADO] Passa o arquivo para o service
             const student = await StudentService.updateStudent(id, updateData, schoolId, req.file);
             
             res.status(200).json(student);

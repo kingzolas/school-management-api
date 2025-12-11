@@ -1,6 +1,46 @@
 // src/api/controllers/user.controller.js
 const UserService = require('../services/user.service');
-const User = require('../models/user.model'); // Necessário para o createFirstAdmin
+const User = require('../models/user.model');
+
+// --- HELPER PARA LIMPEZA E PARSE DE DADOS ---
+const parseAndCleanBody = (body) => {
+    const cleaned = { ...body };
+
+    // 1. Conversão de Strings vazias para NULL
+    // Isso evita o erro de validação (ex: Email inválido) quando o campo vem vazio "" do formulário
+    const fieldsToNullify = ['email', 'cpf', 'rg', 'enrollmentNumber', 'birthDate', 'phoneNumber'];
+    
+    fieldsToNullify.forEach(field => {
+        if (cleaned[field] === '' || cleaned[field] === 'null' || cleaned[field] === 'undefined') {
+            cleaned[field] = null;
+        }
+    });
+
+    // 2. Parse de campos JSON (String -> Objeto)
+    // Necessário quando usamos multipart/form-data
+    const jsonFields = ['address', 'healthInfo', 'roles', 'documents']; 
+
+    jsonFields.forEach(field => {
+        if (cleaned[field] && typeof cleaned[field] === 'string') {
+            try {
+                if (cleaned[field] === 'null' || cleaned[field] === 'undefined') {
+                    cleaned[field] = null;
+                } else {
+                    cleaned[field] = JSON.parse(cleaned[field]);
+                }
+            } catch (e) {
+                console.error(`Erro ao fazer parse do campo ${field}:`, e.message);
+                // Se der erro, mantemos o valor original ou removemos, dependendo da estratégia
+            }
+        }
+    });
+
+    // 3. Conversão de Booleanos (String -> Boolean)
+    if (cleaned.isActive === 'true') cleaned.isActive = true;
+    if (cleaned.isActive === 'false') cleaned.isActive = false;
+
+    return cleaned;
+};
 
 class UserController {
 
@@ -10,7 +50,9 @@ class UserController {
      */
     async createFirstAdmin(req, res, next) {
         try {
-            const { school_id, ...userData } = req.body;
+            // Limpa os dados antes de processar
+            const cleanData = parseAndCleanBody(req.body);
+            const { school_id, ...userData } = cleanData;
 
             if (!school_id) {
                 return res.status(400).json({ message: 'O ID da escola (school_id) é obrigatório.' });
@@ -58,8 +100,14 @@ class UserController {
                 return res.status(403).json({ message: 'Usuário não está associado a uma escola.' });
             }
 
-            // Passa o schoolId para o service
-            const newUser = await UserService.createStaff(req.body, schoolId);
+            // [CORREÇÃO] Aplicar a limpeza e parse nos dados
+            const userData = parseAndCleanBody(req.body);
+
+            // Passa os dados limpos e o arquivo (req.file) para o service
+            // Nota: Se seu UserService.createStaff não aceitar req.file como 3º argumento,
+            // você precisará ajustar o Service também, mas geralmente a lógica de foto fica lá.
+            const newUser = await UserService.createStaff(userData, schoolId, req.file);
+            
             res.status(201).json(newUser);
 
         } catch (error) {
@@ -86,7 +134,10 @@ class UserController {
                 return res.status(403).json({ message: 'Usuário não está associado a uma escola.' });
             }
 
-            const user = await UserService.createUser(req.body, schoolId);
+            // Também limpamos aqui por segurança
+            const userData = parseAndCleanBody(req.body);
+
+            const user = await UserService.createUser(userData, schoolId);
             res.status(201).json(user);
         } catch (error) {
             console.error('❌ ERRO [UserController.create]:', error.message);
@@ -154,7 +205,11 @@ class UserController {
                 return res.status(403).json({ message: 'Usuário não está associado a uma escola.' });
             }
 
-            const user = await UserService.updateStaff(userId, req.body, schoolId);
+            // [CORREÇÃO] Parse e limpeza antes do update
+            const userData = parseAndCleanBody(req.body);
+
+            // Passamos req.file caso esteja atualizando a foto
+            const user = await UserService.updateStaff(userId, userData, schoolId, req.file);
             res.status(200).json(user);
 
         } catch (error) {

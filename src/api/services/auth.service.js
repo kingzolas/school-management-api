@@ -28,33 +28,54 @@ class AuthService {
             throw new Error('Esta conta de usuário não está vinculada a nenhuma escola. Contate o suporte.');
         }
         
-        // =================================================================
-        // A CORREÇÃO ESTÁ AQUI
-        // =================================================================
-        // O payload que será colocado DENTRO do token
         const payload = {
-            // Converte os ObjectIds para Strings
-            id: user._id.toString(), // <-- CORRIGIDO
+            id: user._id.toString(),
             fullName: user.fullName,
             roles: user.roles,
-            school_id: user.school_id.toString() // <-- CORRIGIDO
+            school_id: user.school_id.toString()
         };
-        // =================================================================
 
         if (!JWT_SECRET) {
             console.error("ERRO CRÍTICO: JWT_SECRET não está definida nas variáveis de ambiente.");
             throw new Error('Erro interno do servidor ao gerar token.');
         }
         
-        console.log(`✅ [AUTH SERVICE] Gerando token para ${user.username} com o payload:`);
-        console.log(payload); // O print agora mostrará strings
+        console.log(`✅ [AUTH SERVICE] Gerando token para ${user.username}...`);
 
         const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
 
-        await user.populate('staffProfiles');
+        // Popula os perfis E, dentro deles, popula as disciplinas (enabledSubjects)
+await user.populate({
+    path: 'staffProfiles',
+    populate: { 
+        path: 'enabledSubjects',
+        model: 'Subject' // Garante que busca na collection correta
+    }
+});
 
         const userObject = user.toObject();
         delete userObject.password; 
+
+        // =================================================================
+        // [DEBUG] IDENTIFICAR TIPO DO ADDRESS
+        // =================================================================
+        console.log('--- [DEBUG BACKEND] DADOS DE RETORNO ---');
+        console.log(`User ID: ${userObject._id}`);
+        
+        // Verifica o Address
+        if (userObject.address) {
+            console.log('Address TYPE:', typeof userObject.address);
+            console.log('Address VALUE:', userObject.address);
+        } else {
+            console.log('Address: NULL ou UNDEFINED');
+        }
+
+        // Verifica o HealthInfo (se existir no seu user model)
+        if (userObject.healthInfo) {
+             console.log('HealthInfo TYPE:', typeof userObject.healthInfo);
+        }
+        console.log('----------------------------------------');
+        // =================================================================
 
         return { user: userObject, token };
     }

@@ -22,8 +22,9 @@ class UserService {
     /**
      * Cria um novo Funcionário (User + StaffProfile).
      * Injeta 'schoolId' nos registros para garantir o vínculo.
+     * [CORREÇÃO] Removemos transações ACID para compatibilidade com MongoDB Standalone (Local e Render).
      */
-    async createStaff(fullData, schoolId) {
+    async createStaff(fullData, schoolId, file) { // Adicionei 'file' caso precise tratar upload aqui
         // Separa os dados
         const userData = {};
         const profileData = {};
@@ -41,67 +42,44 @@ class UserService {
         profileData.school_id = schoolId; 
         // --------------------------------------
 
-        // Lógica com Transação (Recomendado para Produção)
-        if (process.env.NODE_ENV === 'production') {
-            const session = await mongoose.startSession();
-            session.startTransaction();
-            try {
-                // 1. Cria User
-                const newUserArr = await User.create([userData], { session });
-                const newUser = newUserArr[0];
+        // Lógica Unificada (Funciona em Local e Produção sem Replica Set)
+        let newUser;
 
-                // 2. Cria Profile linkado
-                profileData.user = newUser._id;
-                const newProfileArr = await StaffProfile.create([profileData], { session });
-                const newProfile = newProfileArr[0];
+        try {
+            // 1. Cria User
+            // Nota: Se você tiver lógica de upload de imagem (S3/Firebase), 
+            // ela geralmente ocorre antes ou aqui, atualizando userData.profilePictureUrl
+            
+            newUser = new User(userData);
+            await newUser.save();
+            
+            // 2. Cria Profile
+            profileData.user = newUser._id;
+            const newProfile = new StaffProfile(profileData);
+            await newProfile.save();
 
-                // 3. Atualiza User com Profile
-                newUser.staffProfiles.push(newProfile._id);
-                await newUser.save({ session });
+            // 3. Linka o Profile no User
+            newUser.staffProfiles.push(newProfile._id);
+            await newUser.save();
 
-                await session.commitTransaction();
-
-                // Retorna populado e seguro
-                const populatedUser = await this.getUserById(newUser._id, schoolId);
-                appEmitter.emit('user:created', populatedUser);
-                return populatedUser;
-
-            } catch (error) {
-                await session.abortTransaction();
-                throw error;
-            } finally {
-                session.endSession();
-            }
-
-        } else {
-            // Lógica Simples (Dev/Test - Sem Réplica Set do Mongo)
-            let newUser;
-            try {
-                // 1. Cria User
-                newUser = new User(userData);
-                await newUser.save();
-                
-                // 2. Cria Profile
-                profileData.user = newUser._id;
-                const newProfile = new StaffProfile(profileData);
-                await newProfile.save();
-
-                // 3. Linka
-                newUser.staffProfiles.push(newProfile._id);
-                await newUser.save();
-
-                const populatedUser = await this.getUserById(newUser._id, schoolId);
-                appEmitter.emit('user:created', populatedUser);
-                return populatedUser;
-                
-            } catch (error) {
-                // Rollback manual simples em caso de erro no perfil
-                if (newUser && newUser._id) {
-                    console.warn(`REVERSÃO: Falha ao criar StaffProfile. Removendo user ${newUser._id}...`);
+            // 4. Retorna populado
+            const populatedUser = await this.getUserById(newUser._id, schoolId);
+            appEmitter.emit('user:created', populatedUser);
+            return populatedUser;
+            
+        } catch (error) {
+            // ROLLBACK MANUAL
+            // Se algo der errado (ex: erro ao criar profile), apagamos o usuário recém-criado
+            // para não deixar "lixo" no banco.
+            if (newUser && newUser._id) {
+                console.warn(`[UserService] Reversão: Falha ao criar StaffProfile. Removendo user ${newUser._id}...`);
+                try {
                     await User.findByIdAndDelete(newUser._id);
+                } catch (deleteError) {
+                    console.error('[UserService] Erro crítico ao tentar reverter usuário:', deleteError);
                 }
-                throw error;
             }
+            throw error;
         }
     }
 
@@ -154,7 +132,7 @@ class UserService {
     /**
      * Atualiza um funcionário.
      */
-    async updateStaff(id, updateData, schoolId) {
+    async updateStaff(id, updateData, schoolId, file) { // Adicionei 'file' para manter padrão
         if (updateData.password) delete updateData.password;
         
         // 1. Busca e Valida Propriedade
@@ -181,8 +159,6 @@ class UserService {
         // 3. Atualiza StaffProfile (se existir)
         if (Object.keys(profileData).length > 0 && user.staffProfiles.length > 0) {
             const profileId = user.staffProfiles[0];
-            // Nota: StaffProfile é filho, assumimos segurança pelo pai (User), 
-            // mas poderíamos validar school_id no profile também.
             await StaffProfile.findByIdAndUpdate(profileId, profileData, { new: true, runValidators: true });
         }
 
