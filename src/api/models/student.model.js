@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 const addressSchema = require('./address.model');
 
+const auditLogPlugin = require('../../helpers/auditLog.plugin'); // Importe o plugin
+
 // --- SUB-SCHEMAS (Mantidos inalterados) ---
 const studentAuthSchema = new Schema({
     username: { type: String, sparse: true, trim: true },
@@ -152,6 +154,9 @@ studentSchema.pre('save', function(next) {
 
     next();
 });
+
+// ATIVE O PLUGIN AQUI
+studentSchema.plugin(auditLogPlugin, { entityName: 'Student' });
 
 const Student = mongoose.model('Student', studentSchema);
 module.exports = Student;

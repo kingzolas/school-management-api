@@ -11,20 +11,19 @@ const getSchoolId = (req) => {
     return req.user.school_id;
 };
 
-// [CORRIGIDO] Helper para parsear campos que vêm como String no Multipart
-// Agora ele é mais resiliente e lida com booleanos e strings vazias corretamente
+// Helper para parsear campos que vêm como String no Multipart
 const parseMultipartBody = (body) => {
-    // Clona o body para não mutar o objeto original diretamente
     const parsed = { ...body };
     
-    // Lista de campos que são Objetos ou Arrays no seu Schema e precisam de JSON.parse se vierem como string
+    // Removemos o campo 'reason' do objeto parsed para que ele não tente ser salvo dentro do documento do aluno
+    // O 'reason' é usado apenas para o Log de Auditoria
+    if (parsed.reason) delete parsed.reason;
+
     const jsonFields = ['address', 'tutors', 'healthInfo', 'authorizedPickups', 'accessCredentials'];
 
     jsonFields.forEach(field => {
-        // Verifica se existe E se é uma string antes de tentar parsear
         if (parsed[field] && typeof parsed[field] === 'string') {
             try {
-                // Se for uma string "null" ou "undefined", removemos ou definimos null
                 if (parsed[field] === 'null' || parsed[field] === 'undefined') {
                     parsed[field] = null;
                 } else {
@@ -32,18 +31,12 @@ const parseMultipartBody = (body) => {
                 }
             } catch (e) {
                 console.error(`Erro ao fazer parse do campo ${field}:`, e.message);
-                // Opcional: Se der erro no parse, delete o campo para não quebrar o Mongoose com string inválida
-                // delete parsed[field]; 
             }
         }
     });
 
-    // Converte booleanos que vêm como string "true"/"false"
     if (parsed.isActive === 'true') parsed.isActive = true;
     if (parsed.isActive === 'false') parsed.isActive = false;
-
-    // Se vierem outros campos numéricos como string, o Mongoose geralmente lida bem, 
-    // mas arrays e sub-documentos precisam do parse acima.
     
     return parsed;
 };
@@ -79,11 +72,13 @@ class StudentController {
             
             console.log(`[API] PUT /students/${studentId}/tutors/${tutorId}`);
 
+            // [AUDITORIA] Passamos req.user como último parâmetro
             const { updatedLink, student } = await StudentService.updateTutorRelationship(
                 studentId,
                 tutorId,
                 relationship,
-                schoolId
+                schoolId,
+                req.user 
             );
             
             appEmitter.emit('student:updated', student);
@@ -92,12 +87,8 @@ class StudentController {
 
         } catch (error) {
             console.error(`[API] Erro ao atualizar relacionamento: ${error.message}`);
-            if (error.message.includes('não encontrado')) {
-                 return res.status(404).json({ message: error.message });
-            }
-            if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
+            if (error.message.includes('não encontrado')) return res.status(404).json({ message: error.message });
+            if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
             res.status(500).json({ message: 'Erro interno ao atualizar relacionamento.', error: error.message });
         }
     }
@@ -109,9 +100,6 @@ class StudentController {
 
             console.log('--- [DEBUG API] CREATE STUDENT ---');
             
-            // [CORREÇÃO AQUI] 
-            // Independente de ter arquivo (req.file) ou não, passamos pelo parseMultipartBody.
-            // Se for JSON puro, ele não faz nada. Se for Multipart (mesmo sem foto), ele converte as strings.
             let studentData = parseMultipartBody(req.body);
             
             studentData = {
@@ -119,8 +107,8 @@ class StudentController {
                 creator: creatorId 
             };
 
-            // Passa o req.file (se existir) para o service
-            const newStudent = await StudentService.createStudent(studentData, schoolId, req.file);
+            // [AUDITORIA] Passamos req.user para vincular a criação ao usuário logado
+            const newStudent = await StudentService.createStudent(studentData, schoolId, req.file, req.user);
             console.log('✅ SUCESSO: Aluno criado.');
 
             const creatorDoc = await User.findById(creatorId);
@@ -140,9 +128,7 @@ class StudentController {
 
         } catch (error) {
             console.error('❌ ERRO CREATE:', error.message);
-            if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
+            if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
             next(error); 
         }
     }
@@ -153,9 +139,7 @@ class StudentController {
             const students = await StudentService.getAllStudents(schoolId);
             res.status(200).json(students);
         } catch (error) {
-            if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
+            if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
             res.status(500).json({ message: 'Erro ao buscar alunos', error: error.message });
         }
     }
@@ -169,12 +153,8 @@ class StudentController {
             res.status(200).json(student);
             
         } catch (error) {
-            if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
-            if (error.message.includes('não encontrado')) {
-                 return res.status(404).json({ message: error.message });
-            }
+            if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
+            if (error.message.includes('não encontrado')) return res.status(404).json({ message: error.message });
             res.status(500).json({ message: 'Erro ao buscar aluno', error: error.message });
         }
     }
@@ -186,21 +166,26 @@ class StudentController {
 
             console.log(`--- [DEBUG API] UPDATE STUDENT ${id} ---`);
 
-            // [CORREÇÃO AQUI] 
-            // Mesma lógica do create: sempre tentar parsear o body
+            // Extraímos o motivo da alteração para a auditoria
+            const reason = req.body.reason || null;
+
             const updateData = parseMultipartBody(req.body);
 
-            const student = await StudentService.updateStudent(id, updateData, schoolId, req.file);
+            // [AUDITORIA] Passamos user e reason para o Service
+            const student = await StudentService.updateStudent(
+                id, 
+                updateData, 
+                schoolId, 
+                req.file, 
+                req.user, // Actor
+                reason    // Justificativa
+            );
             
             res.status(200).json(student);
 
         } catch (error) {
-            if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
-             if (error.message.includes('não encontrado')) {
-                 return res.status(404).json({ message: error.message });
-            }
+            if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
+             if (error.message.includes('não encontrado')) return res.status(404).json({ message: error.message });
             res.status(400).json({ message: 'Erro ao atualizar aluno', error: error.message });
         }
     }
@@ -210,17 +195,17 @@ class StudentController {
             const schoolId = getSchoolId(req);
             const { id } = req.params;
             
-            const student = await StudentService.deleteStudent(id, schoolId);
+            // O motivo pode vir no body, mesmo num DELETE (dependendo do client), ou ser undefined
+            const reason = req.body.reason || 'Exclusão solicitada via sistema';
+
+            // [AUDITORIA] Passamos user e reason
+            const student = await StudentService.deleteStudent(id, schoolId, req.user, reason);
             
             res.status(200).json({ message: 'Aluno deletado com sucesso' });
             
         } catch (error) {
-            if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
-             if (error.message.includes('não encontrado')) {
-                 return res.status(404).json({ message: error.message });
-            }
+            if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
+             if (error.message.includes('não encontrado')) return res.status(404).json({ message: error.message });
             res.status(500).json({ message: 'Erro ao deletar aluno', error: error.message });
         }
     }
@@ -231,9 +216,7 @@ class StudentController {
             const students = await StudentService.getUpcomingBirthdays(schoolId);
             res.status(200).json(students);
         } catch (error) {
-            if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
+            if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
             res.status(500).json({ message: 'Erro ao buscar aniversariantes', error: error.message });
         }
     }
@@ -248,16 +231,13 @@ class StudentController {
                 return res.status(400).json({ message: 'Campos obrigatórios (gradeLevel, schoolYear, finalResult) não fornecidos.' });
             }
 
-            const updatedStudent = await StudentService.addHistoryRecord(studentId, recordData, schoolId);
+            // [AUDITORIA] Passamos req.user
+            const updatedStudent = await StudentService.addHistoryRecord(studentId, recordData, schoolId, req.user);
             res.status(201).json(updatedStudent.academicHistory); 
 
         } catch (error) {
-            if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
-             if (error.message.includes('não encontrado')) {
-                 return res.status(404).json({ message: error.message });
-            }
+            if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
+             if (error.message.includes('não encontrado')) return res.status(404).json({ message: error.message });
             next(error);
         }
     }
@@ -268,16 +248,13 @@ class StudentController {
             const { studentId, recordId } = req.params;
             const updatedData = req.body;
 
-            const updatedStudent = await StudentService.updateHistoryRecord(studentId, recordId, updatedData, schoolId);
+            // [AUDITORIA] Passamos req.user
+            const updatedStudent = await StudentService.updateHistoryRecord(studentId, recordId, updatedData, schoolId, req.user);
             res.status(200).json(updatedStudent.academicHistory);
 
         } catch (error) {
-            if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
-             if (error.message.includes('não encontrado')) {
-                 return res.status(404).json({ message: error.message });
-            }
+            if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
+             if (error.message.includes('não encontrado')) return res.status(404).json({ message: error.message });
             next(error);
         }
     }
@@ -287,16 +264,13 @@ class StudentController {
             const schoolId = getSchoolId(req);
             const { studentId, recordId } = req.params;
 
-            const updatedStudent = await StudentService.deleteHistoryRecord(studentId, recordId, schoolId);
+            // [AUDITORIA] Passamos req.user
+            const updatedStudent = await StudentService.deleteHistoryRecord(studentId, recordId, schoolId, req.user);
             res.status(200).json(updatedStudent.academicHistory);
 
         } catch (error) {
-             if (error.message.includes('não autenticado')) {
-                 return res.status(403).json({ message: error.message });
-            }
-             if (error.message.includes('não encontrado')) {
-                 return res.status(404).json({ message: error.message });
-            }
+             if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
+             if (error.message.includes('não encontrado')) return res.status(404).json({ message: error.message });
             next(error);
         }
     }
