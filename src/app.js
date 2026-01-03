@@ -34,6 +34,8 @@ const registrationRequestRoutes = require('./api/routes/registration-request.rou
 const attendanceRoutes = require('./api/routes/attendance.routes.js'); // [ADICIONADO - Frequência]
 // ===================================================================
 
+const analyticsRoutes = require('./api/routes/analytics.routes');
+
 const app = express();
 
 // Configuração CORS
@@ -87,5 +89,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/assessments', assessmentRoutes); 
 app.use('/api/attempts', assessmentAttemptRoutes); 
 app.use('/api/expenses', expenseRoutes);
+
+app.use('/api/analytics', analyticsRoutes);
 
 module.exports = app;
