@@ -32,6 +32,8 @@ const assessmentRoutes = require('./api/routes/assessment.routes.js');
 const assessmentAttemptRoutes = require('./api/routes/assessmentAttempt.routes.js');
 const registrationRequestRoutes = require('./api/routes/registration-request.routes.js');
 const attendanceRoutes = require('./api/routes/attendance.routes.js'); // [ADICIONADO - Frequência]
+const evaluationRoutes = require('./api/routes/evaluation.routes');
+const gradeRoutes = require('./api/routes/grade.routes');
 // ===================================================================
 
 const analyticsRoutes = require('./api/routes/analytics.routes');
@@ -91,5 +93,8 @@ app.use('/api/attempts', assessmentAttemptRoutes);
 app.use('/api/expenses', expenseRoutes);
 
 app.use('/api/analytics', analyticsRoutes);
+
+app.use('/api/evaluations', evaluationRoutes);
+app.use('/api/grades', gradeRoutes);
 
 module.exports = app;

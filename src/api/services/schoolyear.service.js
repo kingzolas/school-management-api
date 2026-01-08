@@ -91,8 +91,6 @@ class SchoolYearService {
      */
     async delete(id, schoolId) {
         try {
-            // Aqui você poderia adicionar validação se existem turmas vinculadas a esse ano antes de deletar
-            
             const schoolYear = await SchoolYear.findOneAndDelete({ _id: id, school_id: schoolId });
             
             if (!schoolYear) {
@@ -102,6 +100,62 @@ class SchoolYearService {
         } catch (error) {
             throw error;
         }
+    }
+
+    // =========================================================================
+    // NOVO MÉTODO ADICIONADO AQUI
+    // =========================================================================
+    
+    /**
+     * Encontra qual o Ano Letivo e o Bimestre (Term) ativo para uma data específica.
+     * @param {string} schoolId 
+     * @param {Date|string} dateInput 
+     */
+    async findTermByDate(schoolId, dateInput) {
+        const targetDate = new Date(dateInput);
+
+        // 1. Busca o Ano Letivo que engloba essa data
+        // Nota: Ajuste 'startDate' e 'endDate' conforme estão salvos no seu banco (camelCase ou snake_case)
+        // Estou assumindo camelCase (startDate/endDate) padrão do Mongoose, mas se for snake_case mude para start_date/end_date
+        const schoolYear = await SchoolYear.findOne({
+            school_id: schoolId,
+            startDate: { $lte: targetDate },
+            endDate: { $gte: targetDate },
+            // active: true // Descomente se quiser garantir que só pegue anos ativos
+        });
+
+        if (!schoolYear) {
+            // Fallback: Se não achar pela data exata, tenta pegar o ano corrente/ativo
+            const fallbackYear = await SchoolYear.findOne({ school_id: schoolId }).sort({ year: -1 });
+            
+            if (!fallbackYear) throw new Error('Nenhum ano letivo encontrado para esta escola.');
+            
+            return {
+                schoolYearId: fallbackYear._id,
+                termName: fallbackYear.terms && fallbackYear.terms.length > 0 
+                    ? fallbackYear.terms[0].name 
+                    : 'Único'
+            };
+        }
+
+        // 2. Busca o Termo (Bimestre) dentro do array 'terms'
+        // Assumindo que seu Schema de SchoolYear tem um array: terms: [{ name: String, startDate: Date, endDate: Date }]
+        let activeTerm = null;
+        
+        if (schoolYear.terms && Array.isArray(schoolYear.terms)) {
+            activeTerm = schoolYear.terms.find(term => {
+                const termStart = new Date(term.startDate);
+                const termEnd = new Date(term.endDate);
+                termEnd.setHours(23, 59, 59, 999); // Inclui o final do dia
+                
+                return targetDate >= termStart && targetDate <= termEnd;
+            });
+        }
+
+        return {
+            schoolYearId: schoolYear._id,
+            termName: activeTerm ? activeTerm.name : 'Extra/Recuperação'
+        };
     }
 }
 

@@ -92,6 +92,21 @@ class HorarioService {
         // 1. Valida todas as referências ANTES de inserir (a validação de professor é mais pesada)
         for (const aula of horariosWithSchool) {
              await this._validateReferences(aula, schoolId);
+             
+             // --- CORREÇÃO DE CONFLITO EM LOTE ---
+             // Antes de inserir, verifica se JÁ existe conflito NO MESMO PERÍODO
+             // (O insertMany com ordered: false pegaria pelo unique index, mas precisamos validar a lógica do termId)
+             const conflict = await Horario.findOne({
+                 school_id: schoolId,
+                 classId: aula.classId,
+                 termId: aula.termId, // Valida no mesmo termo!
+                 dayOfWeek: aula.dayOfWeek,
+                 startTime: aula.startTime
+             });
+             
+             if (conflict) {
+                 throw new Error(`Conflito: Já existe aula na ${aula.dayOfWeek} às ${aula.startTime} neste período.`);
+             }
         }
 
         // 2. Inserir no Banco
@@ -129,6 +144,21 @@ class HorarioService {
         // 1. Validações cruzadas de segurança e habilidade
         await this._validateReferences(dataToCreate, schoolId);
 
+        // --- CORREÇÃO MANUAL DE CONFLITO ---
+        // O índice único do banco pode não estar cobrindo o termId se foi criado antigo.
+        // Vamos forçar a verificação aqui.
+        const conflict = await Horario.findOne({
+            school_id: schoolId,
+            classId: dataToCreate.classId,
+            termId: dataToCreate.termId, // <--- O PULO DO GATO
+            dayOfWeek: dataToCreate.dayOfWeek,
+            startTime: dataToCreate.startTime
+        });
+
+        if (conflict) {
+             throw new Error('Conflito de horário: Já existe uma aula cadastrada para esta turma, neste dia e horário (neste período).');
+        }
+
         // 2. Salva no Banco
         try {
             const newHorario = new Horario(dataToCreate);
@@ -139,7 +169,8 @@ class HorarioService {
             
         } catch (error) {
             if (error.code === 11000) {
-                throw new Error(`Conflito de horário: Já existe uma aula cadastrada para esta turma, neste dia e horário.`);
+                // Se cair aqui, é porque o índice único do banco pegou algo que nossa query manual não viu
+                throw new Error(`Conflito de horário (Banco): Já existe uma aula cadastrada.`);
             }
             throw error;
         }
@@ -151,6 +182,12 @@ class HorarioService {
     async getHorarios(filter = {}, schoolId) {
         // Filtro obrigatório por escola
         const query = { ...filter, school_id: schoolId }; 
+        
+        // Se vier 'class' do front (alias), converte
+        if (query.class) {
+            query.classId = query.class;
+            delete query.class;
+        }
 
         return await Horario.find(query)
             .populate(defaultPopulation)
@@ -190,6 +227,27 @@ class HorarioService {
             };
 
             await this._validateReferences(combinedData, schoolId);
+        }
+
+        // Validação Manual de Conflito na Atualização
+        if (updateData.startTime || updateData.dayOfWeek) {
+             const checkTerm = updateData.termId || existingHorario.termId;
+             const checkClass = updateData.classId || existingHorario.classId;
+             const checkDay = updateData.dayOfWeek || existingHorario.dayOfWeek;
+             const checkTime = updateData.startTime || existingHorario.startTime;
+
+             const conflict = await Horario.findOne({
+                 school_id: schoolId,
+                 classId: checkClass,
+                 termId: checkTerm,
+                 dayOfWeek: checkDay,
+                 startTime: checkTime,
+                 _id: { $ne: id } // Exclui o próprio
+             });
+
+             if (conflict) {
+                 throw new Error('Conflito na atualização: Horário já ocupado neste período.');
+             }
         }
         
         // Garante que o school_id não pode ser alterado via updateData
