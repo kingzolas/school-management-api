@@ -1,31 +1,19 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
-// Definimos a estrutura para validação, mas sem a rigidez total do Model principal
-// para evitar que erros de validação bloqueiem o salvamento do rascunho.
-
 const registrationRequestSchema = new Schema({
-    school_id: {
-        type: Schema.Types.ObjectId,
-        ref: 'School',
-        required: true,
-        index: true
-    },
-    status: {
-        type: String,
-        enum: ['PENDING', 'APPROVED', 'REJECTED'],
-        default: 'PENDING',
-        index: true
-    },
-    registrationType: {
-        type: String,
-        enum: ['ADULT_STUDENT', 'MINOR_STUDENT'],
-        required: true
-    },
+    // ... campos padrão (school_id, status, type) ...
+    school_id: { type: Schema.Types.ObjectId, ref: 'School', required: true, index: true },
+    status: { type: String, enum: ['PENDING', 'APPROVED', 'REJECTED'], default: 'PENDING', index: true },
+    registrationType: { type: String, enum: ['ADULT_STUDENT', 'MINOR_STUDENT'], required: true },
     
     // --- DADOS COMPLETOS DO ALUNO ---
     studentData: {
         fullName: { type: String, required: true },
+        
+        // [NOVO] Série/Turma Pretendida (Informada pelo pai)
+        intendedGrade: { type: String, required: false }, 
+
         birthDate: { type: Date, required: true },
         gender: String,
         race: String,
@@ -48,7 +36,7 @@ const registrationRequestSchema = new Schema({
             lot: String
         },
 
-        // Ficha de Saúde Completa
+        // Ficha de Saúde (inalterada)
         healthInfo: {
             hasHealthProblem: { type: Boolean, default: false },
             healthProblemDetails: { type: String, default: '' },
@@ -65,8 +53,8 @@ const registrationRequestSchema = new Schema({
             feverMedication: { type: String, default: '' },
             foodObservations: { type: String, default: '' },
         },
-
-        // Pessoas Autorizadas (Array)
+        
+        // Pessoas Autorizadas
         authorizedPickups: [{
             fullName: String,
             relationship: String,
@@ -74,9 +62,13 @@ const registrationRequestSchema = new Schema({
         }]
     },
 
-    // --- DADOS DO TUTOR (Responsável Financeiro) ---
+    // --- DADOS DO TUTOR ---
     tutorData: {
         fullName: String,
+        
+        // [NOVO] Profissão do Tutor (opcional aqui também para refletir o schema do Tutor)
+        profession: { type: String },
+
         birthDate: Date,
         cpf: String,
         rg: String,
@@ -84,7 +76,7 @@ const registrationRequestSchema = new Schema({
         nationality: String,
         phoneNumber: String,
         email: String,
-        relationship: String, // Parentesco com o aluno
+        relationship: String,
         address: {
             street: String,
             number: String,

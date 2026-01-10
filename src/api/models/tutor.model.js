@@ -8,7 +8,12 @@ const tutorSchema = new Schema({
         type: String, 
         required: [true, 'O nome completo do tutor é obrigatório.'] 
     },
-    birthDate: { 
+    // [NOVO] Profissão (Opcional)
+    profession: {
+        type: String,
+        required: false,
+        trim: true
+    },    birthDate: { 
         type: Date, 
         required: [true, 'A data de nascimento do tutor é obrigatória.'] 
     },
@@ -66,6 +71,8 @@ tutorSchema.pre('save', function(next) {
     if (this.rg === '') { this.rg = null; }
     if (this.cpf === '') { this.cpf = null; } 
     if (this.email === '') { this.email = null; }
+    // Opcional: Se profissão vier vazia, garante null ou string vazia limpa
+    if (this.profession === '') { this.profession = null; }
     next();
 });
 
