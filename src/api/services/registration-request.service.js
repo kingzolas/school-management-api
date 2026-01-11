@@ -27,8 +27,30 @@ class RegistrationRequestService {
         }).sort({ createdAt: -1 });
     }
 
-    // --- [MODIFICADO] Removida a Session/Transaction para funcionar no Mongo Local ---
-    // ... dentro de RegistrationRequestService
+    // [NOVO] Método para editar os dados da solicitação
+    async updateRequestData(requestId, schoolId, studentData, tutorData) {
+        const request = await RegistrationRequest.findOne({ _id: requestId, school_id: schoolId });
+        
+        if (!request) throw new Error('Solicitação não encontrada.');
+        if (request.status !== 'PENDING') throw new Error('Apenas solicitações pendentes podem ser editadas.');
+
+        // Atualiza Student Data (Merge)
+        if (studentData) {
+            request.studentData = { ...request.studentData, ...studentData };
+        }
+
+        // Atualiza Tutor Data (Merge)
+        if (tutorData) {
+            // Se antes não tinha tutor (ex: adulto) e agora tem, ou vice-versa
+            request.tutorData = request.tutorData ? { ...request.tutorData, ...tutorData } : tutorData;
+        }
+
+        // Marca como modificado para garantir que o Mongoose salve objetos mistos
+        request.markModified('studentData');
+        if(tutorData) request.markModified('tutorData');
+
+        return await request.save();
+    }
 
     async approveRequest(requestId, schoolId, userId, finalStudentData, finalTutorData) {
         try {
@@ -43,12 +65,10 @@ class RegistrationRequestService {
             let createdTutor = null;
             let createdStudent = null;
 
-            // --- [CORREÇÃO] GERAR MATRÍCULA AUTOMÁTICA ---
-            // Gera algo como "2025" + 6 números aleatórios
+            // Gera Matrícula Automática
             const currentYear = new Date().getFullYear();
             const randomPart = Math.floor(100000 + Math.random() * 900000);
             const generatedEnrollment = `${currentYear}${randomPart}`;
-            // ---------------------------------------------
 
             // --- CENÁRIO 1: ALUNO MENOR ---
             if (request.registrationType === 'MINOR_STUDENT') {
@@ -67,7 +87,7 @@ class RegistrationRequestService {
 
                 createdStudent = await new Student({
                     ...sData, 
-                    enrollmentNumber: generatedEnrollment, // <--- ADICIONADO AQUI
+                    enrollmentNumber: generatedEnrollment,
                     healthInfo: sData.healthInfo, 
                     authorizedPickups: sData.authorizedPickups,
                     address: sData.address,
@@ -85,7 +105,7 @@ class RegistrationRequestService {
             else {
                 createdStudent = await new Student({
                     ...sData,
-                    enrollmentNumber: generatedEnrollment, // <--- ADICIONADO AQUI
+                    enrollmentNumber: generatedEnrollment,
                     healthInfo: sData.healthInfo,
                     authorizedPickups: sData.authorizedPickups,
                     address: sData.address,
