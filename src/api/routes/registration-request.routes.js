@@ -9,6 +9,11 @@ router.post('/public/submit', controller.createRequest);
 
 // --- ROTAS PRIVADAS (Dashboard do Gestor) ---
 router.get('/pending', verifyToken, controller.listPending);
+
+// [NOVO] Rota para salvar a edição dos dados (PUT)
+// Essa foi a linha que faltava para corrigir o erro FormatException
+router.put('/:requestId', verifyToken, controller.updateRequestData);
+
 router.post('/:requestId/approve', verifyToken, controller.approveRequest);
 router.post('/:requestId/reject', verifyToken, controller.rejectRequest);
 
