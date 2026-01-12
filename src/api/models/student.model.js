@@ -55,6 +55,10 @@ const academicRecordSchema = new Schema({
 
 const studentSchema = new Schema({
     enrollmentNumber: { type: String, unique: true, trim: true, sparse: true, },
+    
+    // [NOVO] Campo para persistir a série pretendida vinda da solicitação
+    intendedGrade: { type: String, trim: true },
+
     accessCredentials: { type: studentAuthSchema, default: () => ({}) },
 
     fullName: { type: String, required: [true, 'O nome completo é obrigatório.'], trim: true },
@@ -63,7 +67,7 @@ const studentSchema = new Schema({
     race: { type: String, required: true, enum: ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Prefiro não dizer'] },
     nationality: { type: String, required: true },
     
-    // [MODIFICADO] Estrutura para salvar a foto no banco (igual School)
+    // Estrutura para salvar a foto no banco (igual School)
     profilePicture: {
         data: Buffer,
         contentType: String
@@ -113,7 +117,7 @@ const studentSchema = new Schema({
     timestamps: true 
 });
 
-// HOOKS DE VALIDAÇÃO (Mantidos inalterados)
+// HOOKS DE VALIDAÇÃO
 studentSchema.pre('save', function(next) {
     if (this.rg === '') { this.rg = null; }
     if (this.cpf === '') { this.cpf = null; }
