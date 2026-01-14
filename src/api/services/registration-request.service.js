@@ -20,14 +20,15 @@ class RegistrationRequestService {
         return await newRequest.save();
     }
 
-    async listPendingRequests(schoolId) {
+    // [ALTERADO] Renomeado de listPendingRequests para listAllRequests
+    // Removemos o filtro de status. Retorna tudo da escola.
+    async listAllRequests(schoolId) {
         return await RegistrationRequest.find({ 
-            school_id: schoolId, 
-            status: 'PENDING' 
+            school_id: schoolId 
+            // status: 'PENDING' <--- REMOVIDO
         }).sort({ createdAt: -1 });
     }
 
-    // [NOVO] Método para editar os dados da solicitação
     async updateRequestData(requestId, schoolId, studentData, tutorData) {
         const request = await RegistrationRequest.findOne({ _id: requestId, school_id: schoolId });
         
@@ -41,11 +42,9 @@ class RegistrationRequestService {
 
         // Atualiza Tutor Data (Merge)
         if (tutorData) {
-            // Se antes não tinha tutor (ex: adulto) e agora tem, ou vice-versa
             request.tutorData = request.tutorData ? { ...request.tutorData, ...tutorData } : tutorData;
         }
 
-        // Marca como modificado para garantir que o Mongoose salve objetos mistos
         request.markModified('studentData');
         if(tutorData) request.markModified('tutorData');
 
@@ -57,7 +56,8 @@ class RegistrationRequestService {
             const request = await RegistrationRequest.findOne({ _id: requestId, school_id: schoolId });
             
             if (!request) throw new Error('Solicitação não encontrada.');
-            if (request.status !== 'PENDING') throw new Error('Esta solicitação já foi processada.');
+            // [OPCIONAL] Se quiser permitir re-aprovar rejeitados, remova a linha abaixo:
+            if (request.status === 'APPROVED') throw new Error('Esta solicitação já foi aprovada.');
 
             const sData = finalStudentData || request.studentData;
             const tData = finalTutorData || request.tutorData;
@@ -65,7 +65,6 @@ class RegistrationRequestService {
             let createdTutor = null;
             let createdStudent = null;
 
-            // Gera Matrícula Automática
             const currentYear = new Date().getFullYear();
             const randomPart = Math.floor(100000 + Math.random() * 900000);
             const generatedEnrollment = `${currentYear}${randomPart}`;

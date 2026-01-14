@@ -16,22 +16,23 @@ exports.createRequest = async (req, res) => {
     }
 };
 
-exports.listPending = async (req, res) => {
+// [ALTERADO] Busca TODAS as solicitações (Pendente, Aprovado, Rejeitado)
+exports.listAll = async (req, res) => {
     try {
         const { schoolId } = req.user;
-        const requests = await service.listPendingRequests(schoolId);
+        // Chama o método que busca tudo, sem filtro de status
+        const requests = await service.listAllRequests(schoolId);
         return res.json(requests);
     } catch (error) {
+        console.error('Erro listAll:', error);
         return res.status(500).json({ message: 'Erro ao buscar solicitações.' });
     }
 };
 
-// [NOVO] Função para salvar edição sem aprovar
 exports.updateRequestData = async (req, res) => {
     try {
         const { requestId } = req.params;
         const { schoolId } = req.user;
-        // Recebe os dados editados do Flutter
         const { studentData, tutorData } = req.body;
 
         const result = await service.updateRequestData(requestId, schoolId, studentData, tutorData);
@@ -46,7 +47,6 @@ exports.approveRequest = async (req, res) => {
     try {
         const { requestId } = req.params;
         const { schoolId, id: userId } = req.user;
-        // O body pode conter dados corrigidos pelo gestor antes de salvar (opcional aqui, pois já temos a rota de update)
         const { finalStudentData, finalTutorData } = req.body;
 
         const result = await service.approveRequest(requestId, schoolId, userId, finalStudentData, finalTutorData);
