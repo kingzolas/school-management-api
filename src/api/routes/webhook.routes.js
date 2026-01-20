@@ -2,20 +2,33 @@ const express = require('express');
 const router = express.Router();
 const webhookController = require('../controllers/webhook.controller');
 
-// Rota PÚBLICA para a Efí
+// Rota PÚBLICA para a Efí (Desativada/Legado)
 // POST /api/webhook/efi
-// router.post('/efi', webhookController.handleEfiWebhook); // Desativada
+// router.post('/efi', webhookController.handleEfiWebhook); 
 
+// --------------------------------------------------------------------------
 // Rota PÚBLICA para o MERCADO PAGO
 // POST /api/webhook/mp
+// --------------------------------------------------------------------------
 router.post(
   '/mp', 
   webhookController.handleMpWebhook
 );
 
+// --------------------------------------------------------------------------
+// [NOVO] Rota PÚBLICA para o BANCO CORA
+// POST /api/webhook/cora
+// Configure esta URL no painel de desenvolvedor da Cora
+// --------------------------------------------------------------------------
+router.post(
+  '/cora', 
+  (req, res) => webhookController.handleCoraWebhook(req, res)
+);
 
-// [NOVO] Rota PÚBLICA para o WHATSAPP (Evolution API)
-// Essa é a rota que a Evolution está tentando chamar e dando 404
+// --------------------------------------------------------------------------
+// Rota PÚBLICA para o WHATSAPP (Evolution API)
+// POST /api/webhook/whatsapp
+// --------------------------------------------------------------------------
 router.post('/whatsapp', webhookController.handleWhatsappWebhook);
-module.exports = router;
 
+module.exports = router;

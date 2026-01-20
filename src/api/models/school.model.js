@@ -2,8 +2,16 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 const addressSchema = require('./address.model'); 
 
+// --- CORREÇÃO AQUI ---
+// Removi o "select: false" para que o backend consiga ler as chaves
+// sem precisar alterar o comando de busca no InvoiceService.
+const CoraCredentialsSchema = new Schema({
+    clientId: { type: String, trim: true }, // Removido select: false
+    certificateContent: { type: String },   // Removido select: false
+    privateKeyContent: { type: String }     // Removido select: false
+}, { _id: false });
+
 const schoolSchema = new Schema({
-    // ... (Seus campos existentes) ...
     name: { type: String, required: true, trim: true },
     logo: { data: { type: Buffer, default: null }, contentType: { type: String, default: null } },
     legalName: { type: String, required: true, trim: true },
@@ -18,7 +26,6 @@ const schoolSchema = new Schema({
     
     status: { type: String, enum: ['Ativa', 'Inativa', 'Bloqueada'], default: 'Ativa', required: true },
 
-    // --- Configuração do WhatsApp (Evolution API) ---
     whatsapp: {
         instanceName: { type: String },
         status: { 
@@ -29,13 +36,28 @@ const schoolSchema = new Schema({
         updatedAt: { type: Date }
     },
 
-    // --- [NOVO] Configuração do Mercado Pago (Por Escola) ---
     mercadoPagoConfig: {
         prodClientId: { type: String, trim: true, select: false },
         prodClientSecret: { type: String, trim: true, select: false },
-        prodPublicKey: { type: String, trim: true }, // Public Key geralmente não é crítica expor se necessário no front
-        prodAccessToken: { type: String, trim: true, select: false }, // CRÍTICO: select false para não vazar
+        prodPublicKey: { type: String, trim: true },
+        prodAccessToken: { type: String, trim: true, select: false },
         isConfigured: { type: Boolean, default: false }
+    },
+
+    coraConfig: {
+        isSandbox: { type: Boolean, default: true }, 
+        
+        sandbox: { type: CoraCredentialsSchema, default: {} },
+        production: { type: CoraCredentialsSchema, default: {} },
+        
+        isConfigured: { type: Boolean, default: false }
+    },
+
+    preferredGateway: {
+        type: String,
+        enum: ['MERCADOPAGO', 'CORA'],
+        default: 'MERCADOPAGO',
+        required: true
     }
 
 }, { timestamps: true });

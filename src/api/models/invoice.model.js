@@ -9,7 +9,6 @@ const invoiceSchema = new Schema(
             required: true,
             index: true,
         },
-        // [MODIFICADO] Não é mais obrigatório, pois o aluno pode pagar
         tutor: {
             type: Schema.Types.ObjectId,
             ref: 'Tutor',
@@ -39,7 +38,27 @@ const invoiceSchema = new Schema(
             type: String,
             enum: ['pix', 'boleto', 'credit_card', 'manual'],
         },
-        gateway: { type: String, default: 'mercadopago' },
+        
+        // [MODIFICADO] Suporte a múltiplos gateways
+        gateway: { 
+            type: String, 
+            enum: ['mercadopago', 'cora', 'manual'], // Adicionado 'cora'
+            default: 'mercadopago' 
+        },
+
+        // --- Campos Genéricos (Padronização para Front-end) ---
+        // ID da transação no Gateway (seja MP ID ou Cora ID)
+        external_id: { type: String, index: true, sparse: true }, 
+        
+        // Dados para Boleto (Universal)
+        boleto_url: { type: String },       // Link do PDF do boleto
+        boleto_barcode: { type: String },   // Linha digitável / Código de barras
+
+        // Dados para PIX (Universal)
+        pix_code: { type: String },         // Código Copia e Cola
+        pix_qr_base64: { type: String },    // Imagem QR (se disponível)
+
+        // --- Campos Legados (Mantidos para histórico do Mercado Pago) ---
         mp_payment_id: { type: String, unique: true, sparse: true, index: true },
         mp_pix_copia_e_cola: { type: String },
         mp_pix_qr_base64: { type: String },

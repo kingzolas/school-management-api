@@ -1,16 +1,9 @@
-const SchoolService = require('../services/school.service');
-
-/**
- * IMPORTANTE: Para este controlador funcionar, você precisará
- * de um middleware de upload de arquivos (como o 'multer')
- * nas suas rotas de 'create' e 'update'.
- */
+const SchoolService = require('../services/school.service'); // Ajuste o caminho se necessário
 
 class SchoolController {
 
     async create(req, res, next) {
         try {
-            // Tratamento similar ao update, caso no futuro você crie escola com endereço via form-data
             let createData = { ...req.body };
             
             if (createData['address[street]']) {
@@ -75,12 +68,13 @@ class SchoolController {
         }
     }
 
-  // --- [ATUALIZADO] ---
+    // --- [UPDATE CORRIGIDO] ---
     async update(req, res, next) {
         try {
             const cleanString = (value) => {
                 if (typeof value === 'string') {
-                    return value.replace(/^"|"$/g, '').trim();
+                    const trimmed = value.replace(/^"|"$/g, '').trim();
+                    return trimmed === '' ? undefined : trimmed; // Retorna undefined se vazio para não apagar dados
                 }
                 return value;
             };
@@ -88,54 +82,99 @@ class SchoolController {
             let rawBody = { ...req.body };
             let updateData = {};
 
-            // Limpa aspas e transfere propriedades
+            // 1. Limpeza inicial
             Object.keys(rawBody).forEach(key => {
-                updateData[key] = cleanString(rawBody[key]);
+                const cleaned = cleanString(rawBody[key]);
+                if (cleaned !== undefined) {
+                    updateData[key] = cleaned;
+                }
             });
 
-            // Tratamento de Endereço (Mantido sua lógica original)
-            if (updateData['address[street]'] || updateData['address[cep]'] || updateData['address[zipCode]'] || updateData['address[neighborhood]']) {
-                const bairroValue = updateData['address[neighborhood]'] || updateData['address[district]'];
-                const cepValue = updateData['address[cep]'] || updateData['address[zipCode]'];
-
+            // 2. Tratamento de Endereço
+            if (updateData['address[street]']) {
                 updateData.address = {
-                    cep: cleanString(cepValue),
-                    neighborhood: cleanString(bairroValue),
-                    street: cleanString(updateData['address[street]']),
-                    number: cleanString(updateData['address[number]']),
-                    city: cleanString(updateData['address[city]']),
-                    state: cleanString(updateData['address[state]'])
+                    cep: updateData['address[cep]'] || updateData['address[zipCode]'],
+                    neighborhood: updateData['address[neighborhood]'] || updateData['address[district]'],
+                    street: updateData['address[street]'],
+                    number: updateData['address[number]'],
+                    city: updateData['address[city]'],
+                    state: updateData['address[state]']
                 };
-
-                // Limpa lixo do objeto principal
-                delete updateData['address[cep]']; delete updateData['address[zipCode]'];
-                delete updateData['address[street]']; delete updateData['address[number]'];
-                delete updateData['address[neighborhood]']; delete updateData['address[district]'];
-                delete updateData['address[city]']; delete updateData['address[state]'];
+                
+                // Remove chaves antigas do objeto raiz
+                const addrKeys = ['address[street]', 'address[number]', 'address[cep]', 'address[zipCode]', 
+                                  'address[neighborhood]', 'address[district]', 'address[city]', 'address[state]'];
+                addrKeys.forEach(k => delete updateData[k]);
             }
 
-            // --- [NOVO] Tratamento do Mercado Pago ---
-            // Verifica se veio flatten (ex: mercadoPagoConfig[prodAccessToken]) ou objeto direto
-            const mpAccessToken = updateData['mercadoPagoConfig[prodAccessToken]'] || (updateData.mercadoPagoConfig && updateData.mercadoPagoConfig.prodAccessToken);
-            const mpPublicKey = updateData['mercadoPagoConfig[prodPublicKey]'] || (updateData.mercadoPagoConfig && updateData.mercadoPagoConfig.prodPublicKey);
-            const mpClientId = updateData['mercadoPagoConfig[prodClientId]'] || (updateData.mercadoPagoConfig && updateData.mercadoPagoConfig.prodClientId);
-            const mpClientSecret = updateData['mercadoPagoConfig[prodClientSecret]'] || (updateData.mercadoPagoConfig && updateData.mercadoPagoConfig.prodClientSecret);
-
-            // Se pelo menos o Access Token for enviado, atualizamos a config
+            // 3. Tratamento Mercado Pago
+            const mpAccessToken = updateData['mercadoPagoConfig[prodAccessToken]'];
             if (mpAccessToken) {
                 updateData.mercadoPagoConfig = {
-                    prodAccessToken: cleanString(mpAccessToken),
-                    prodPublicKey: cleanString(mpPublicKey),
-                    prodClientId: cleanString(mpClientId),
-                    prodClientSecret: cleanString(mpClientSecret),
+                    prodAccessToken: mpAccessToken,
+                    prodPublicKey: updateData['mercadoPagoConfig[prodPublicKey]'],
+                    prodClientId: updateData['mercadoPagoConfig[prodClientId]'],
+                    prodClientSecret: updateData['mercadoPagoConfig[prodClientSecret]'],
                     isConfigured: true
                 };
+                // Remove chaves antigas
+                Object.keys(updateData).forEach(k => {
+                    if (k.startsWith('mercadoPagoConfig[')) delete updateData[k];
+                });
+            }
 
-                // Remove chaves flatten se existirem para não sujar o objeto raiz
-                delete updateData['mercadoPagoConfig[prodAccessToken]'];
-                delete updateData['mercadoPagoConfig[prodPublicKey]'];
-                delete updateData['mercadoPagoConfig[prodClientId]'];
-                delete updateData['mercadoPagoConfig[prodClientSecret]'];
+            // 4. Tratamento CORA (Sandbox e Produção separados)
+            // Prepara a estrutura, mas só preenche o que veio na requisição
+            let coraUpdate = {
+                hasUpdate: false,
+                isSandbox: undefined,
+                sandbox: {},
+                production: {}
+            };
+
+            // 4.1 Flag de Ambiente
+            if (rawBody['coraConfig[isSandbox]'] !== undefined) {
+                coraUpdate.isSandbox = String(rawBody['coraConfig[isSandbox]']) === 'true';
+                coraUpdate.hasUpdate = true;
+                delete updateData['coraConfig[isSandbox]'];
+            }
+
+            // 4.2 Dados SANDBOX
+            if (updateData['coraConfig[sandbox][clientId]']) {
+                coraUpdate.sandbox.clientId = updateData['coraConfig[sandbox][clientId]'];
+                coraUpdate.hasUpdate = true;
+            }
+            if (updateData['coraConfig[sandbox][certificateContent]']) {
+                coraUpdate.sandbox.certificateContent = updateData['coraConfig[sandbox][certificateContent]'];
+                coraUpdate.hasUpdate = true;
+            }
+            if (updateData['coraConfig[sandbox][privateKeyContent]']) {
+                coraUpdate.sandbox.privateKeyContent = updateData['coraConfig[sandbox][privateKeyContent]'];
+                coraUpdate.hasUpdate = true;
+            }
+
+            // 4.3 Dados PRODUÇÃO
+            if (updateData['coraConfig[production][clientId]']) {
+                coraUpdate.production.clientId = updateData['coraConfig[production][clientId]'];
+                coraUpdate.hasUpdate = true;
+            }
+            if (updateData['coraConfig[production][certificateContent]']) {
+                coraUpdate.production.certificateContent = updateData['coraConfig[production][certificateContent]'];
+                coraUpdate.hasUpdate = true;
+            }
+            if (updateData['coraConfig[production][privateKeyContent]']) {
+                coraUpdate.production.privateKeyContent = updateData['coraConfig[production][privateKeyContent]'];
+                coraUpdate.hasUpdate = true;
+            }
+
+            // Limpa as chaves planas da Cora do updateData para não sujar o root
+            Object.keys(updateData).forEach(k => {
+                if (k.startsWith('coraConfig[')) delete updateData[k];
+            });
+
+            // Anexa o objeto estruturado se houve mudança
+            if (coraUpdate.hasUpdate) {
+                updateData.coraConfigStructured = coraUpdate; 
             }
 
             const school = await SchoolService.updateSchool(req.params.id, updateData, req.file);
