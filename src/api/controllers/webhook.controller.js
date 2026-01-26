@@ -24,7 +24,7 @@ class WebhookController {
 
   /**
    * [MERCADO PAGO] Webhook
-   * Recebe notificação, extrai ID e processa
+   * Lógica mantida intacta conforme solicitado
    */
   async handleMpWebhook(req, res) {
     console.log('--- 🔔 WEBHOOK MERCADO PAGO RECEBIDO ---');
@@ -69,44 +69,50 @@ class WebhookController {
   /**
    * [NOVO] [CORA] Webhook
    * Endpoint: /api/webhook/cora
+   * Lógica ajustada para ler HEADERS conforme documentação e testes
    */
   async handleCoraWebhook(req, res) {
-    console.log('--- 🏦 WEBHOOK CORA RECEBIDO ---');
-    
-    // 1. Responder rápido
+    // 1. O retorno 200 OK é obrigatório e deve ser imediato para a Cora não reenviar
     res.status(200).send('OK');
 
-    // O Payload da Cora geralmente vem assim:
-    // { "id": "...", "type": "INVOICE.PAID", "data": { "id": "id-do-boleto", ... } }
-    const event = req.body;
+    console.log('--- 🏦 WEBHOOK CORA RECEBIDO ---');
 
-    if (!event || !event.type) return;
+    // AJUSTE CRUCIAL: A Cora envia o tipo e o ID no HEADER, não no Body.
+    // O Node.js converte headers para lowercase automaticamente.
+    const eventType = req.headers['webhook-event-type'];
+    const resourceId = req.headers['webhook-resource-id'];
 
-    // Mapeamento de Status da Cora para Status Interno Genérico
-    let statusRaw = null;
-    if (event.type === 'INVOICE.PAID' || event.type === 'BANK_SLIP.PAID') statusRaw = 'paid';
-    else if (event.type === 'INVOICE.CANCELED') statusRaw = 'cancelled';
-    
-    // ID do Recurso na Cora (Invoice ID)
-    const resourceId = event.data?.id || event.resource_id;
+    console.log(`📡 Headers Recebidos -> Evento: ${eventType} | ID: ${resourceId}`);
 
-    if (!resourceId) {
-        console.warn('⚠️ Webhook Cora sem ID do recurso.');
+    if (!eventType || !resourceId) {
+        console.warn('⚠️ Webhook Cora recebido sem headers obrigatórios.');
         return;
     }
 
-    console.log(`🏦 Processando evento Cora: ${event.type} para ID: ${resourceId}`);
+    // Mapeamento de Status da Cora para Status Interno Genérico
+    let statusRaw = null;
+
+    // Verificamos se o evento é de pagamento (liquidação)
+    if (eventType === 'invoice.paid' || eventType === 'bank_slip.liquidation') {
+        statusRaw = 'paid';
+    } else if (eventType === 'invoice.canceled' || eventType === 'invoice.cancelled') {
+        statusRaw = 'cancelled';
+    } else {
+        console.log(`ℹ️ Evento Cora ignorado (não é mudança de status relevante): ${eventType}`);
+        return;
+    }
 
     try {
         // Chama o service unificado
-        // Diferente do MP, a Cora já manda o status no webhook, então passamos statusRaw
+        // Passamos statusRaw porque a Cora já nos disse o que aconteceu
         const invResult = await InvoiceService.handlePaymentWebhook(resourceId, 'CORA', statusRaw);
         
         if (invResult.processed) {
             this._emitEvents(invResult.invoice, 'invoice');
-            console.log(`✅ Webhook Cora processado com sucesso.`);
+            console.log(`✅ Webhook Cora processado com sucesso. Fatura ${invResult.invoice._id} atualizada.`);
         } else {
-             console.warn(`⚠️ Webhook Cora ID ${resourceId} não encontrado no banco.`);
+             // Se não processou, pode ser que o ID não exista ou já estava pago
+             console.warn(`⚠️ Webhook Cora ID ${resourceId} não encontrado no banco ou não processado.`);
         }
 
     } catch (error) {

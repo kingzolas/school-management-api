@@ -2,23 +2,19 @@ const express = require('express');
 const router = express.Router();
 const webhookController = require('../controllers/webhook.controller');
 
-// Rota PÚBLICA para a Efí (Desativada/Legado)
-// POST /api/webhook/efi
-// router.post('/efi', webhookController.handleEfiWebhook); 
-
 // --------------------------------------------------------------------------
 // Rota PÚBLICA para o MERCADO PAGO
 // POST /api/webhook/mp
 // --------------------------------------------------------------------------
 router.post(
   '/mp', 
-  webhookController.handleMpWebhook
+  webhookController.handleMpWebhook.bind(webhookController)
 );
 
 // --------------------------------------------------------------------------
 // [NOVO] Rota PÚBLICA para o BANCO CORA
 // POST /api/webhook/cora
-// Configure esta URL no painel de desenvolvedor da Cora
+// A Cora envia os dados no Header, o controller fará a leitura correta.
 // --------------------------------------------------------------------------
 router.post(
   '/cora', 
@@ -29,6 +25,6 @@ router.post(
 // Rota PÚBLICA para o WHATSAPP (Evolution API)
 // POST /api/webhook/whatsapp
 // --------------------------------------------------------------------------
-router.post('/whatsapp', webhookController.handleWhatsappWebhook);
+router.post('/whatsapp', webhookController.handleWhatsappWebhook.bind(webhookController));
 
 module.exports = router;

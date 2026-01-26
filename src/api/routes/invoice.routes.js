@@ -1,48 +1,31 @@
-// src/api/routes/invoice.routes.js
 const express = require('express');
 const router = express.Router();
 const invoiceController = require('../controllers/invoice.controller');
 const { verifyToken } = require('../middlewares/auth.middleware');
 
-// Aplica verifyToken em todas as rotas (que são internas/gestoras)
 router.use(verifyToken);
 
-// Rota para criar uma nova fatura
+// --- ROTA DE IMPRESSÃO EM LOTE (NOVA) ---
+// Coloque antes das rotas /:id para evitar conflito
 router.post(
-  '/', 
-  invoiceController.create
+  '/batch-print',
+  invoiceController.batchPrint
 );
+
+// Rota para criar uma nova fatura
+router.post('/', invoiceController.create);
 
 // Rota para buscar TODAS as faturas
-router.get(
-  '/', 
-  invoiceController.getAll
-);
+router.get('/', invoiceController.getAll);
 
-// --- ROTA DE CONSULTA DO MERCADO PAGO ---
-router.get(
-  '/mp/:paymentId',
-  invoiceController.checkMpStatus
-);
+// Rota de consulta Mercado Pago
+router.get('/mp/:paymentId', invoiceController.checkMpStatus);
 
-// --- ROTAS ESPECÍFICAS ---
+// Rotas Específicas
+router.get('/student/:studentId', invoiceController.getByStudent);
+router.put('/:id/cancel', invoiceController.cancel);
 
-// Rota para buscar todas as faturas de UM ALUNO
-router.get(
-  '/student/:studentId', 
-  invoiceController.getByStudent
-);
-
-// Rota para cancelar uma fatura
-router.put(
-  '/:id/cancel', 
-  invoiceController.cancel
-);
-
-// Rota para buscar UMA fatura pelo ID do MongoDB
-router.get(
-  '/:id', 
-  invoiceController.getById
-);
+// Rota por ID (deixe por último)
+router.get('/:id', invoiceController.getById);
 
 module.exports = router;

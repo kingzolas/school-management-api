@@ -1,66 +1,93 @@
+// src/api/models/school.model.js
 const mongoose = require('mongoose');
-const Schema = mongoose.Schema;
-const addressSchema = require('./address.model'); 
 
-// --- CORREÇÃO AQUI ---
-// Removi o "select: false" para que o backend consiga ler as chaves
-// sem precisar alterar o comando de busca no InvoiceService.
-const CoraCredentialsSchema = new Schema({
-    clientId: { type: String, trim: true }, // Removido select: false
-    certificateContent: { type: String },   // Removido select: false
-    privateKeyContent: { type: String }     // Removido select: false
-}, { _id: false });
+const SchoolSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  legalName: { type: String },
+  cnpj: { type: String },
+  stateRegistration: { type: String },
+  municipalRegistration: { type: String },
+  contactPhone: { type: String },
+  contactEmail: { type: String },
+  
+  address: {
+    street: String,
+    number: String,
+    neighborhood: String,
+    city: String,
+    state: String,
+    zipCode: String
+  },
 
-const schoolSchema = new Schema({
-    name: { type: String, required: true, trim: true },
-    logo: { data: { type: Buffer, default: null }, contentType: { type: String, default: null } },
-    legalName: { type: String, required: true, trim: true },
-    cnpj: { type: String, required: true, unique: true, sparse: true, trim: true },
-    stateRegistration: { type: String, trim: true, default: null },
-    municipalRegistration: { type: String, trim: true, default: null },
-    authorizationAct: { type: String, trim: true, default: null },
+  logoUrl: { type: String }, 
+  
+  preferredGateway: { 
+    type: String, 
+    enum: ['MERCADOPAGO', 'CORA'], 
+    default: 'MERCADOPAGO' 
+  },
+
+  // Configurações do Mercado Pago
+  mercadoPagoConfig: {
+    prodAccessToken: { type: String, select: false }, // Protegido
+    prodPublicKey: { type: String },
+    prodClientId: { type: String, select: false },
+    prodClientSecret: { type: String, select: false },
+    isConfigured: { type: Boolean, default: false }
+  },
+
+  // Configurações do Banco Cora
+  coraConfig: {
+    isSandbox: { type: Boolean, default: false },
     
-    address: { type: addressSchema },
-    contactPhone: { type: String, trim: true },
-    contactEmail: { type: String, trim: true, lowercase: true },
-    
-    status: { type: String, enum: ['Ativa', 'Inativa', 'Bloqueada'], default: 'Ativa', required: true },
-
-    whatsapp: {
-        instanceName: { type: String },
-        status: { 
-            type: String, 
-            enum: ['connected', 'disconnected', 'pairing'], 
-            default: 'disconnected' 
-        },
-        updatedAt: { type: Date }
+    // [NOVO] Configurações Padrão de Cobrança
+    defaultInterest: {
+        percentage: { type: Number, default: 0 } // Juros Mensal
+    },
+    defaultFine: {
+        percentage: { type: Number, default: 0 } // Multa
+    },
+    defaultDiscount: { 
+        type: Number, default: 0 // Desconto em Reais
     },
 
-    mercadoPagoConfig: {
-        prodClientId: { type: String, trim: true, select: false },
-        prodClientSecret: { type: String, trim: true, select: false },
-        prodPublicKey: { type: String, trim: true },
-        prodAccessToken: { type: String, trim: true, select: false },
-        isConfigured: { type: Boolean, default: false }
+    sandbox: {
+      clientId: { type: String },
+      certificateContent: { type: String, select: false }, // Protegido
+      privateKeyContent: { type: String, select: false }   // Protegido
     },
-
-    coraConfig: {
-        isSandbox: { type: Boolean, default: true }, 
-        
-        sandbox: { type: CoraCredentialsSchema, default: {} },
-        production: { type: CoraCredentialsSchema, default: {} },
-        
-        isConfigured: { type: Boolean, default: false }
+    production: {
+      clientId: { type: String },
+      certificateContent: { type: String, select: false }, // Protegido
+      privateKeyContent: { type: String, select: false }   // Protegido
     },
+    isConfigured: { type: Boolean, default: false }
+  }
 
-    preferredGateway: {
-        type: String,
-        enum: ['MERCADOPAGO', 'CORA'],
-        default: 'MERCADOPAGO',
-        required: true
+}, {
+  timestamps: true
+});
+
+// Helper para não enviar segredos no JSON de resposta
+SchoolSchema.set('toJSON', {
+  transform: function (doc, ret) {
+    // Remove campos sensíveis se vierem por engano
+    if (ret.mercadoPagoConfig) {
+        delete ret.mercadoPagoConfig.prodAccessToken;
+        delete ret.mercadoPagoConfig.prodClientSecret;
     }
+    if (ret.coraConfig) {
+        if (ret.coraConfig.sandbox) {
+            delete ret.coraConfig.sandbox.certificateContent;
+            delete ret.coraConfig.sandbox.privateKeyContent;
+        }
+        if (ret.coraConfig.production) {
+            delete ret.coraConfig.production.certificateContent;
+            delete ret.coraConfig.production.privateKeyContent;
+        }
+    }
+    return ret;
+  }
+});
 
-}, { timestamps: true });
-
-const School = mongoose.model('School', schoolSchema);
-module.exports = School;
+module.exports = mongoose.model('School', SchoolSchema);

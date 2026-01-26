@@ -106,6 +106,35 @@ class InvoiceController {
       next(error);
     }
   }
+
+  async batchPrint(req, res, next) {
+    try {
+      const schoolId = req.user.school_id;
+      const { invoiceIds } = req.body; // Array de IDs enviado pelo front
+
+      if (!invoiceIds || !Array.isArray(invoiceIds) || invoiceIds.length === 0) {
+        return res.status(400).json({ message: 'Lista de faturas inválida.' });
+      }
+
+      // Chama o serviço (que já existe no seu código)
+      const pdfBytes = await InvoiceService.generateBatchPdf(invoiceIds, schoolId);
+
+      // Configura os headers para o navegador entender que é um PDF
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename=carne_pagamento.pdf');
+      
+      // Envia o Buffer transformado
+      res.send(Buffer.from(pdfBytes));
+
+    } catch (error) {
+      console.error('❌ ERRO no InvoiceController.batchPrint:', error.message);
+      // Se for erro de validação (ex: boletos sem URL), retorna 400
+      if (error.message.includes('Nenhuma fatura') || error.message.includes('acessíveis')) {
+         return res.status(400).json({ message: error.message });
+      }
+      next(error);
+    }
+  }
 }
 
 module.exports = new InvoiceController();
