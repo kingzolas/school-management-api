@@ -1,4 +1,4 @@
-const SchoolService = require('../services/school.service'); // Ajuste o caminho se necessário
+const SchoolService = require('../services/school.service');
 
 class SchoolController {
 
@@ -6,12 +6,13 @@ class SchoolController {
         try {
             let createData = { ...req.body };
             
+            // Tratamento estruturado para criação de nova escola
             if (createData['address[street]']) {
                 createData.address = {
-                    zipCode: createData['address[zipCode]'],
+                    zipCode: createData['address[zipCode]'] || createData['address[cep]'],
                     street: createData['address[street]'],
                     number: createData['address[number]'],
-                    district: createData['address[district]'],
+                    district: createData['address[district]'] || createData['address[neighborhood]'],
                     city: createData['address[city]'],
                     state: createData['address[state]']
                 };
@@ -68,114 +69,61 @@ class SchoolController {
         }
     }
 
-    // --- [UPDATE CORRIGIDO] ---
+    // --- [UPDATE REFORMULADO COM DOT NOTATION] ---
     async update(req, res, next) {
         try {
-            const cleanString = (value) => {
-                if (typeof value === 'string') {
-                    const trimmed = value.replace(/^"|"$/g, '').trim();
-                    return trimmed === '' ? undefined : trimmed; // Retorna undefined se vazio para não apagar dados
+            const rawBody = { ...req.body };
+            const updateData = {};
+
+            // Função interna para limpar aspas e remover strings vazias vindas do FormData
+            const cleanValue = (val) => {
+                if (typeof val === 'string') {
+                    const v = val.replace(/^"|"$/g, '').trim();
+                    return v === '' ? undefined : v;
                 }
-                return value;
+                return val;
             };
 
-            let rawBody = { ...req.body };
-            let updateData = {};
-
-            // 1. Limpeza inicial
+            // Mapeamento Dinâmico: Transforma chaves "Objeto[campo]" em "Objeto.campo"
             Object.keys(rawBody).forEach(key => {
-                const cleaned = cleanString(rawBody[key]);
-                if (cleaned !== undefined) {
-                    updateData[key] = cleaned;
+                const value = cleanValue(rawBody[key]);
+                if (value === undefined) return;
+
+                // 1. Tratamento de Endereço
+                if (key.startsWith('address[')) {
+                    const field = key.match(/\[(.*?)\]/)[1];
+                    // Normaliza CEP e Bairro para os nomes de campos usados no Model
+                    const dbField = (field === 'cep' || field === 'zipCode') ? 'zipCode' :
+                                   (field === 'neighborhood' || field === 'district') ? 'district' : field;
+                    updateData[`address.${dbField}`] = value;
+                } 
+                // 2. Tratamento Mercado Pago
+                else if (key.startsWith('mercadoPagoConfig[')) {
+                    const field = key.match(/\[(.*?)\]/)[1];
+                    updateData[`mercadoPagoConfig.${field}`] = value;
+                    updateData['mercadoPagoConfig.isConfigured'] = true;
+                }
+                // 3. Tratamento Cora (Com suporte a aninhamento duplo)
+                else if (key.startsWith('coraConfig[')) {
+                    // Captura todos os níveis dentro de colchetes, ex: [sandbox][clientId]
+                    const matches = key.match(/\[(.*?)\]/g).map(m => m.replace(/[\[\]]/g, ''));
+                    
+                    if (matches.length === 1) { // ex: coraConfig[isSandbox]
+                        const field = matches[0];
+                        // Converte string 'true' do FormData para booleano real
+                        updateData[`coraConfig.${field}`] = (value === 'true' || value === true);
+                    } else if (matches.length === 2) { // ex: coraConfig[sandbox][clientId]
+                        const sub = matches[0]; // sandbox | production | defaultFine
+                        const field = matches[1]; 
+                        updateData[`coraConfig.${sub}.${field}`] = value;
+                    }
+                    updateData['coraConfig.isConfigured'] = true;
+                }
+                // 4. Campos de Primeiro Nível (name, cnpj, preferredGateway, etc)
+                else {
+                    updateData[key] = value;
                 }
             });
-
-            // 2. Tratamento de Endereço
-            if (updateData['address[street]']) {
-                updateData.address = {
-                    cep: updateData['address[cep]'] || updateData['address[zipCode]'],
-                    neighborhood: updateData['address[neighborhood]'] || updateData['address[district]'],
-                    street: updateData['address[street]'],
-                    number: updateData['address[number]'],
-                    city: updateData['address[city]'],
-                    state: updateData['address[state]']
-                };
-                
-                // Remove chaves antigas do objeto raiz
-                const addrKeys = ['address[street]', 'address[number]', 'address[cep]', 'address[zipCode]', 
-                                  'address[neighborhood]', 'address[district]', 'address[city]', 'address[state]'];
-                addrKeys.forEach(k => delete updateData[k]);
-            }
-
-            // 3. Tratamento Mercado Pago
-            const mpAccessToken = updateData['mercadoPagoConfig[prodAccessToken]'];
-            if (mpAccessToken) {
-                updateData.mercadoPagoConfig = {
-                    prodAccessToken: mpAccessToken,
-                    prodPublicKey: updateData['mercadoPagoConfig[prodPublicKey]'],
-                    prodClientId: updateData['mercadoPagoConfig[prodClientId]'],
-                    prodClientSecret: updateData['mercadoPagoConfig[prodClientSecret]'],
-                    isConfigured: true
-                };
-                // Remove chaves antigas
-                Object.keys(updateData).forEach(k => {
-                    if (k.startsWith('mercadoPagoConfig[')) delete updateData[k];
-                });
-            }
-
-            // 4. Tratamento CORA (Sandbox e Produção separados)
-            // Prepara a estrutura, mas só preenche o que veio na requisição
-            let coraUpdate = {
-                hasUpdate: false,
-                isSandbox: undefined,
-                sandbox: {},
-                production: {}
-            };
-
-            // 4.1 Flag de Ambiente
-            if (rawBody['coraConfig[isSandbox]'] !== undefined) {
-                coraUpdate.isSandbox = String(rawBody['coraConfig[isSandbox]']) === 'true';
-                coraUpdate.hasUpdate = true;
-                delete updateData['coraConfig[isSandbox]'];
-            }
-
-            // 4.2 Dados SANDBOX
-            if (updateData['coraConfig[sandbox][clientId]']) {
-                coraUpdate.sandbox.clientId = updateData['coraConfig[sandbox][clientId]'];
-                coraUpdate.hasUpdate = true;
-            }
-            if (updateData['coraConfig[sandbox][certificateContent]']) {
-                coraUpdate.sandbox.certificateContent = updateData['coraConfig[sandbox][certificateContent]'];
-                coraUpdate.hasUpdate = true;
-            }
-            if (updateData['coraConfig[sandbox][privateKeyContent]']) {
-                coraUpdate.sandbox.privateKeyContent = updateData['coraConfig[sandbox][privateKeyContent]'];
-                coraUpdate.hasUpdate = true;
-            }
-
-            // 4.3 Dados PRODUÇÃO
-            if (updateData['coraConfig[production][clientId]']) {
-                coraUpdate.production.clientId = updateData['coraConfig[production][clientId]'];
-                coraUpdate.hasUpdate = true;
-            }
-            if (updateData['coraConfig[production][certificateContent]']) {
-                coraUpdate.production.certificateContent = updateData['coraConfig[production][certificateContent]'];
-                coraUpdate.hasUpdate = true;
-            }
-            if (updateData['coraConfig[production][privateKeyContent]']) {
-                coraUpdate.production.privateKeyContent = updateData['coraConfig[production][privateKeyContent]'];
-                coraUpdate.hasUpdate = true;
-            }
-
-            // Limpa as chaves planas da Cora do updateData para não sujar o root
-            Object.keys(updateData).forEach(k => {
-                if (k.startsWith('coraConfig[')) delete updateData[k];
-            });
-
-            // Anexa o objeto estruturado se houve mudança
-            if (coraUpdate.hasUpdate) {
-                updateData.coraConfigStructured = coraUpdate; 
-            }
 
             const school = await SchoolService.updateSchool(req.params.id, updateData, req.file);
             res.status(200).json(school);
@@ -183,7 +131,6 @@ class SchoolController {
         } catch (error) {
             console.error('❌ ERRO [SchoolController.update]:', error.message);
             if (error.message.includes('não encontrada')) return res.status(404).json({ message: error.message });
-            if (error.name === 'ValidationError') return res.status(400).json({ message: error.message, details: error.errors });
             next(error);
         }
     }

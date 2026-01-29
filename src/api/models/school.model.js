@@ -1,4 +1,3 @@
-// src/api/models/school.model.js
 const mongoose = require('mongoose');
 
 const SchoolSchema = new mongoose.Schema({
@@ -16,7 +15,13 @@ const SchoolSchema = new mongoose.Schema({
     neighborhood: String,
     city: String,
     state: String,
-    zipCode: String
+    zipCode: String // Nome padrão usado no banco
+  },
+
+  // Campo obrigatório para armazenar os bytes da imagem
+  logo: {
+    data: { type: Buffer, select: false }, 
+    contentType: { type: String }
   },
 
   logoUrl: { type: String }, 
@@ -27,39 +32,34 @@ const SchoolSchema = new mongoose.Schema({
     default: 'MERCADOPAGO' 
   },
 
-  // Configurações do Mercado Pago
   mercadoPagoConfig: {
-    prodAccessToken: { type: String, select: false }, // Protegido
+    prodAccessToken: { type: String, select: false },
     prodPublicKey: { type: String },
     prodClientId: { type: String, select: false },
     prodClientSecret: { type: String, select: false },
     isConfigured: { type: Boolean, default: false }
   },
 
-  // Configurações do Banco Cora
   coraConfig: {
     isSandbox: { type: Boolean, default: false },
-    
-    // [NOVO] Configurações Padrão de Cobrança
     defaultInterest: {
-        percentage: { type: Number, default: 0 } // Juros Mensal
+        percentage: { type: Number, default: 0 }
     },
     defaultFine: {
-        percentage: { type: Number, default: 0 } // Multa
+        percentage: { type: Number, default: 0 }
     },
     defaultDiscount: { 
-        type: Number, default: 0 // Desconto em Reais
+        type: Number, default: 0 
     },
-
     sandbox: {
       clientId: { type: String },
-      certificateContent: { type: String, select: false }, // Protegido
-      privateKeyContent: { type: String, select: false }   // Protegido
+      certificateContent: { type: String, select: false },
+      privateKeyContent: { type: String, select: false }
     },
     production: {
       clientId: { type: String },
-      certificateContent: { type: String, select: false }, // Protegido
-      privateKeyContent: { type: String, select: false }   // Protegido
+      certificateContent: { type: String, select: false },
+      privateKeyContent: { type: String, select: false }
     },
     isConfigured: { type: Boolean, default: false }
   }
@@ -68,10 +68,8 @@ const SchoolSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Helper para não enviar segredos no JSON de resposta
 SchoolSchema.set('toJSON', {
   transform: function (doc, ret) {
-    // Remove campos sensíveis se vierem por engano
     if (ret.mercadoPagoConfig) {
         delete ret.mercadoPagoConfig.prodAccessToken;
         delete ret.mercadoPagoConfig.prodClientSecret;

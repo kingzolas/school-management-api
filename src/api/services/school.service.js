@@ -24,79 +24,29 @@ class SchoolService {
     }
 
     async updateSchool(id, updateData, logoFile) {
-        // [CORREÇÃO CRÍTICA]: 
-        // Buscamos a escola INCLUINDO as chaves privadas ocultas.
-        // Isso é essencial para não perdermos os dados antigos durante o merge.
+        // [CORREÇÃO CRÍTICA]: Carregamos explicitamente os campos binários e sensíveis.
+        // Se não carregarmos o logo.data e os certificados agora, o Mongoose irá 
+        // sobrescrevê-los como nulos ao chamar o .save() no final do método.
         const school = await School.findById(id).select(
-            '+coraConfig.sandbox.clientId +coraConfig.sandbox.certificateContent +coraConfig.sandbox.privateKeyContent +coraConfig.production.clientId +coraConfig.production.certificateContent +coraConfig.production.privateKeyContent'
+            '+logo.data ' +
+            '+mercadoPagoConfig.prodAccessToken ' +
+            '+coraConfig.sandbox.certificateContent +coraConfig.sandbox.privateKeyContent ' +
+            '+coraConfig.production.certificateContent +coraConfig.production.privateKeyContent'
         );
 
         if (!school) {
             throw new Error('Escola não encontrada.');
         }
 
-        // --- LÓGICA DE MERGE PARA CORA (Sandbox vs Production) ---
-        // Recuperamos o objeto estruturado que criamos no Controller
-        if (updateData.coraConfigStructured) {
-            const cora = updateData.coraConfigStructured;
-            
-            // Garante inicialização dos objetos se não existirem
-            if (!school.coraConfig) school.coraConfig = { sandbox: {}, production: {} };
-            if (!school.coraConfig.sandbox) school.coraConfig.sandbox = {};
-            if (!school.coraConfig.production) school.coraConfig.production = {};
-
-            // 1. Atualiza Flag de Ambiente
-            if (cora.isSandbox !== undefined) {
-                school.coraConfig.isSandbox = cora.isSandbox;
+        // Aplicação de Update via Dot Notation (ex: updateData['address.city'] = 'São Paulo')
+        // O método .set() do Mongoose entende caminhos com pontos e atualiza apenas a sub-chave.
+        Object.keys(updateData).forEach(path => {
+            if (updateData[path] !== undefined && updateData[path] !== null) {
+                school.set(path, updateData[path]);
             }
+        });
 
-            // 2. Atualiza Sandbox (Merge Inteligente)
-            if (cora.sandbox) {
-                // Só atualiza o ID se ele veio no request
-                if (cora.sandbox.clientId) {
-                    school.coraConfig.sandbox.clientId = cora.sandbox.clientId;
-                }
-                
-                // Só atualiza o Certificado se ele veio (se veio vazio do front, mantém o do banco)
-                if (cora.sandbox.certificateContent) {
-                    school.coraConfig.sandbox.certificateContent = cora.sandbox.certificateContent;
-                }
-
-                // Só atualiza a Chave se ela veio
-                if (cora.sandbox.privateKeyContent) {
-                    school.coraConfig.sandbox.privateKeyContent = cora.sandbox.privateKeyContent;
-                }
-            }
-
-            // 3. Atualiza Production (Merge Inteligente)
-            if (cora.production) {
-                // Só atualiza o ID se ele veio no request
-                if (cora.production.clientId) {
-                    school.coraConfig.production.clientId = cora.production.clientId;
-                }
-
-                // Só atualiza o Certificado se ele veio
-                if (cora.production.certificateContent) {
-                    school.coraConfig.production.certificateContent = cora.production.certificateContent;
-                }
-
-                // Só atualiza a Chave se ela veio
-                if (cora.production.privateKeyContent) {
-                    school.coraConfig.production.privateKeyContent = cora.production.privateKeyContent;
-                }
-            }
-
-            school.coraConfig.isConfigured = true;
-            
-            // Remove o objeto temporário para não tentar salvar no Mongoose (pois não existe no Schema)
-            delete updateData.coraConfigStructured;
-        }
-
-        // Atualiza os demais campos (via Object.assign)
-        // Nota: Object.assign ignora campos undefined, mas sobrescreve com null/strings.
-        // Como tratamos o Cora acima manualmente, isso aqui vai tratar nome, endereço, etc.
-        Object.assign(school, updateData);
-
+        // Atualização da Logotipo (se um novo arquivo foi enviado)
         if (logoFile) {
             school.logo = {
                 data: logoFile.buffer,
@@ -104,8 +54,10 @@ class SchoolService {
             };
         }
 
+        // Persistência no Banco de Dados
         await school.save();
 
+        // Retorno do objeto limpo (sem o buffer da imagem por questões de performance)
         const schoolObject = school.toObject();
         if (schoolObject.logo) {
             delete schoolObject.logo.data;
@@ -115,6 +67,7 @@ class SchoolService {
     }
 
     async getAllSchools() {
+        // Retorna todas as escolas ocultando o buffer pesado da logo
         return await School.find().select('-logo.data');
     }
 
@@ -126,9 +79,8 @@ class SchoolService {
         return school;
     }
 
-    // --- [MÉTODO CRÍTICO] ---
-    // Usado pelo InvoiceService para gerar boletos
     async getSchoolWithCredentials(id) {
+        // Método utilizado pelo InvoiceService para emitir boletos com as chaves reais
         const school = await School.findById(id)
             .select('+mercadoPagoConfig.prodAccessToken +coraConfig.sandbox.clientId +coraConfig.sandbox.certificateContent +coraConfig.sandbox.privateKeyContent +coraConfig.production.clientId +coraConfig.production.certificateContent +coraConfig.production.privateKeyContent');
         
@@ -137,7 +89,8 @@ class SchoolService {
     }
 
     async getSchoolLogo(id) {
-        const school = await School.findById(id).select('logo');
+        // Seleciona explicitamente o campo binário que é oculto por padrão no Schema
+        const school = await School.findById(id).select('+logo.data');
         if (!school || !school.logo || !school.logo.data) {
             throw new Error('Logo não encontrada.');
         }

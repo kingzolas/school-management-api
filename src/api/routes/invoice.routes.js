@@ -5,11 +5,17 @@ const { verifyToken } = require('../middlewares/auth.middleware');
 
 router.use(verifyToken);
 
-// --- ROTA DE IMPRESSÃO EM LOTE (NOVA) ---
-// Coloque antes das rotas /:id para evitar conflito
+// --- ROTA DE IMPRESSÃO EM LOTE ---
 router.post(
   '/batch-print',
   invoiceController.batchPrint
+);
+
+// --- [NOVO] ROTA DE REENVIO DE WHATSAPP ---
+// Importante: Definida antes de /:id para não conflitar
+router.post(
+  '/:id/resend', 
+  invoiceController.resendWhatsapp
 );
 
 // Rota para criar uma nova fatura

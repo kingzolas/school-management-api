@@ -5,13 +5,11 @@ const appEmitter = require('../../loaders/eventEmitter');
 class InvoiceController {
   
   /**
-    * Cria uma nova fatura (Gestor)
-    */
+   * Cria uma nova fatura (Gestor)
+   */
   async create(req, res, next) {
     try {
-      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
-      
-      // [MODIFICADO] Passa o schoolId para o Service
+      const schoolId = req.user.school_id;
       const newInvoice = await InvoiceService.createInvoice(req.body, schoolId);
 
       appEmitter.emit('invoice:created', newInvoice);
@@ -24,12 +22,38 @@ class InvoiceController {
   }
 
   /**
-    * Busca todas as faturas (da escola do Gestor)
-    */
+   * [NOVO] Reenvia notificação via WhatsApp (Botão Manual)
+   */
+  async resendWhatsapp(req, res, next) {
+    try {
+      const schoolId = req.user.school_id;
+      const { id } = req.params;
+
+      // Chama o serviço. Se der erro lá, cai no catch abaixo.
+      await InvoiceService.resendNotification(id, schoolId);
+
+      // Se chegou aqui, é sucesso. O Flutter exibe o Toast positivo.
+      return res.status(200).json({ 
+        success: true, 
+        message: 'Mensagem enviada com sucesso!' 
+      });
+
+    } catch (error) {
+      console.error('❌ ERRO no InvoiceController.resendWhatsapp:', error.message);
+      // Retorna erro para o Flutter exibir o Pop-up de Falha
+      return res.status(400).json({ 
+        success: false, 
+        message: error.message || 'Falha ao enviar mensagem.'
+      });
+    }
+  }
+
+  /**
+   * Busca todas as faturas (da escola do Gestor)
+   */
   async getAll(req, res, next) {
     try {
-      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
-      // [MODIFICADO] Passa o schoolId para o Service
+      const schoolId = req.user.school_id;
       const invoices = await InvoiceService.getAllInvoices(req.query, schoolId); 
       res.status(200).json(invoices);
     } catch (error) {
@@ -39,13 +63,12 @@ class InvoiceController {
   }
 
   /**
-    * Busca faturas de um aluno específico (da escola do Gestor)
-    */
+   * Busca faturas de um aluno específico
+   */
   async getByStudent(req, res, next) {
     try {
-      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
+      const schoolId = req.user.school_id;
       const studentId = req.params.studentId;
-      // [MODIFICADO] Passa o schoolId para o Service
       const invoices = await InvoiceService.getInvoicesByStudent(studentId, schoolId); 
       res.status(200).json(invoices);
     } catch (error) {
@@ -55,12 +78,11 @@ class InvoiceController {
   }
 
   /**
-    * Busca uma fatura específica por ID (da escola do Gestor)
-    */
+   * Busca uma fatura específica por ID
+   */
   async getById(req, res, next) {
     try {
-      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
-      // [MODIFICADO] Passa o schoolId para o Service
+      const schoolId = req.user.school_id;
       const invoice = await InvoiceService.getInvoiceById(req.params.id, schoolId); 
       
       if (!invoice) {
@@ -74,14 +96,13 @@ class InvoiceController {
   }
 
   /**
-    * Cancela uma fatura (da escola do Gestor)
-    */
+   * Cancela uma fatura
+   */
   async cancel(req, res, next) {
     try {
-      const schoolId = req.user.school_id; // [NOVO] Pega o ID da escola
+      const schoolId = req.user.school_id;
       const { id } = req.params;
       
-      // [MODIFICADO] Passa o schoolId para o Service
       const canceledInvoice = await InvoiceService.cancelInvoice(id, schoolId);
 
       appEmitter.emit('invoice:updated', canceledInvoice);
@@ -94,8 +115,8 @@ class InvoiceController {
   }
 
   /**
-    * Consulta o status direto no Mercado Pago (Não precisa de schoolId)
-    */
+   * Consulta o status direto no Mercado Pago
+   */
   async checkMpStatus(req, res, next) {
     try {
       const { paymentId } = req.params;
@@ -110,25 +131,21 @@ class InvoiceController {
   async batchPrint(req, res, next) {
     try {
       const schoolId = req.user.school_id;
-      const { invoiceIds } = req.body; // Array de IDs enviado pelo front
+      const { invoiceIds } = req.body;
 
       if (!invoiceIds || !Array.isArray(invoiceIds) || invoiceIds.length === 0) {
         return res.status(400).json({ message: 'Lista de faturas inválida.' });
       }
 
-      // Chama o serviço (que já existe no seu código)
       const pdfBytes = await InvoiceService.generateBatchPdf(invoiceIds, schoolId);
 
-      // Configura os headers para o navegador entender que é um PDF
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', 'inline; filename=carne_pagamento.pdf');
       
-      // Envia o Buffer transformado
       res.send(Buffer.from(pdfBytes));
 
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.batchPrint:', error.message);
-      // Se for erro de validação (ex: boletos sem URL), retorna 400
       if (error.message.includes('Nenhuma fatura') || error.message.includes('acessíveis')) {
          return res.status(400).json({ message: error.message });
       }
