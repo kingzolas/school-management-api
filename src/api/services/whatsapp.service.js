@@ -1,140 +1,178 @@
+// src/api/services/whatsapp.service.js
 const axios = require('axios');
 const School = require('../models/school.model');
 
-const EVO_URL = process.env.EVOLUTION_API_URL; 
-const EVO_GLOBAL_KEY = process.env.EVOLUTION_API_KEY;
-
 class WhatsappService {
-    
     constructor() {
-        if (!EVO_URL || !EVO_GLOBAL_KEY) {
-            console.error('❌ [FATAL] Configurações da Evolution API ausentes no .env!');
-        }
-
-        this.api = axios.create({
-            baseURL: EVO_URL,
-            headers: {
-                'apikey': EVO_GLOBAL_KEY,
-                'Content-Type': 'application/json'
-            }
-        });
+        this.apiUrl = process.env.EVOLUTION_API_URL;
+        this.apiKey = process.env.EVOLUTION_API_KEY;
     }
 
-    /**
-     * Cria ou recupera uma instância para a escola.
-     */
     async connectSchool(schoolId) {
         const instanceName = `school_${schoolId}`;
+        const connectUrl = `${this.apiUrl}/instance/connect/${instanceName}`;
         
-        console.log(`🔌 [Zap] Tentando conectar instância: ${instanceName}`);
+        console.log(`🔌 [Zap] Iniciando processo de conexão para: ${instanceName}`);
 
         try {
-            const response = await this.api.post('/instance/create', {
-                instanceName: instanceName,
-                qrcode: true,
-                integration: "WHATSAPP-BAILEYS"
+            let currentStatus = 'disconnected';
+            try {
+                const statusData = await this.getConnectionStatus(instanceName);
+                currentStatus = statusData.status;
+            } catch (err) {
+                if (err.response?.status !== 404) console.warn("Erro ao checar status prévio:", err.message);
+            }
+
+            if (currentStatus === 'open') {
+                console.log(`✅ [Zap] Instância já estava conectada.`);
+                return { status: 'open', instanceName };
+            }
+
+            if (currentStatus !== 'disconnected') {
+                console.log(`🧹 [Zap] Limpando estado sujo (${currentStatus})...`);
+                try {
+                    await this.logoutSchool(schoolId);
+                    await new Promise(r => setTimeout(r, 3000));
+                } catch (e) { /* ignore */ }
+            }
+
+            console.log(`🚀 [Zap] Solicitando nova conexão...`);
+            const response = await axios.get(connectUrl, {
+                headers: { 'apikey': this.apiKey }
             });
 
-            console.log('✅ [Zap] Instância criada com sucesso!');
-            
             return {
-                instanceName,
-                qrcode: response.data.qrcode,
-                status: response.data.instance.status
+                status: 'connecting',
+                qrCode: response.data.base64 || response.data.qrcode?.base64 || response.data.qrcode, 
+                instanceName: instanceName
             };
+
         } catch (error) {
-            // --- CORREÇÃO AQUI ---
-            // Analisa o corpo do erro para ver se é "Instance already in use"
-            const errorData = error.response?.data;
-            // A mensagem pode vir em lugares diferentes dependendo da versão, checamos todos
-            const msgArray = errorData?.response?.message || []; 
-            const msgString = JSON.stringify(errorData || {});
-
-            const isAlreadyInUse = 
-                msgString.includes('already in use') || 
-                msgString.includes('already exists') ||
-                (Array.isArray(msgArray) && msgArray.some(m => m.includes('already in use')));
-
-            if (isAlreadyInUse) {
-                console.log('⚠️ [Zap] Instância já existe (Erro 403 falso). Recuperando status...');
-                return this.getConnectionStatus(instanceName);
+            if (error.response && error.response.status === 403) {
+                throw new Error("Sessão em limpeza. Aguarde 10 segundos e tente novamente.");
             }
-            
-            // Só lança erro de chave se NÃO for caso de instância duplicada
-            if (error.response?.status === 403) {
-                this.logAxiosError(error);
-                throw new Error(`ERRO DE CHAVE (403): Verifique se a EVOLUTION_API_KEY no .env está igual à AUTHENTICATION_API_KEY da Evolution.`);
-            }
-
-            this.logAxiosError(error);
-            throw new Error(`Falha ao criar instância WhatsApp: ${error.message}`);
+            throw new Error(`Falha ao conectar: ${error.message}`);
         }
     }
 
-    /**
-     * Verifica status da conexão e recupera o QR Code se desconectado
-     */
     async getConnectionStatus(instanceName) {
+        const url = `${this.apiUrl}/instance/connectionState/${instanceName}`;
         try {
-            // 1. Tenta pegar o status da conexão
-            const response = await this.api.get(`/instance/connectionState/${instanceName}`);
-            const state = response.data.instance?.state || 'close';
-
-            // 2. Se estiver desconectado ('close'), precisamos forçar a conexão para gerar novo QR Code
-            let qrcode = null;
-            if (state === 'close' || state === 'connecting') {
-                try {
-                    const connectRes = await this.api.get(`/instance/connect/${instanceName}`);
-                    qrcode = connectRes.data.base64 || connectRes.data.qrcode;
-                } catch (err) {
-                    console.warn(`[Zap] Falha ao buscar QR Code na reconexão: ${err.message}`);
-                }
-            }
-
-            return {
-                instanceName,
-                status: state,
-                qrcode: qrcode // Retorna o QR Code se precisar reconectar
-            };
-
+            const response = await axios.get(url, { headers: { 'apikey': this.apiKey } });
+            const state = response.data?.instance?.state || response.data?.state;
+            return { status: state, instanceName };
         } catch (error) {
-            console.error(`[Zap] Instância ${instanceName} não encontrada no status.`);
-            return { instanceName, status: 'not_found' };
+            if (error.response && error.response.status === 404) {
+                return { status: 'disconnected', instanceName };
+            }
+            return { status: 'disconnected', instanceName };
         }
     }
 
     async logoutSchool(schoolId) {
         const instanceName = `school_${schoolId}`;
+        const url = `${this.apiUrl}/instance/logout/${instanceName}`;
         try {
-            await this.api.delete(`/instance/logout/${instanceName}`);
-            await School.findByIdAndUpdate(schoolId, { 'whatsapp.status': 'disconnected' });
-            return true;
+            await axios.delete(url, { headers: { 'apikey': this.apiKey } });
         } catch (error) {
-            console.error('Erro ao deslogar:', error.message);
-            return false;
-        }
-    }
-
-    async sendText(schoolId, number, text) {
-        const instanceName = `school_${schoolId}`;
-        const cleanNumber = number.replace(/\D/g, ''); 
-        const formattedNumber = cleanNumber.length <= 11 ? `55${cleanNumber}` : cleanNumber;
-
-        try {
-            await this.api.post(`/message/sendText/${instanceName}`, {
-                number: formattedNumber,
-                text: text
+            if (error.response && error.response.status === 404) return;
+            console.warn(`Aviso no logout API: ${error.message}`);
+        } finally {
+            await School.findByIdAndUpdate(schoolId, { 
+                'whatsapp.status': 'disconnected',
+                'whatsapp.qrCode': null,
+                'whatsapp.instanceName': null
             });
-        } catch (error) {
-            console.error(`❌ [WhatsApp] Falha ao enviar msg: ${error.message}`);
         }
     }
 
-    logAxiosError(error) {
-        if (error.response) {
-            console.error('❌ DATA:', JSON.stringify(error.response.data, null, 2));
-        } else {
-            console.error('❌ Erro:', error.message);
+    async sendText(schoolId, phone, message) {
+        const instanceName = `school_${schoolId}`;
+        const url = `${this.apiUrl}/message/sendText/${instanceName}`;
+        
+        let number = (phone || '').replace(/\D/g, '');
+        if (!number.startsWith('55') && (number.length === 10 || number.length === 11)) {
+            number = '55' + number;
+        }
+
+        if (number.length < 12) {
+            console.error(`❌ [Zap] Número inválido detectado: ${phone}`);
+            throw new Error(`Número de telefone inválido (verifique o DDD): ${phone}`);
+        }
+
+        // Payload corrigido (Text Message na raiz)
+        const payload = {
+            number: number,
+            options: { delay: 1200, presence: 'composing' },
+            text: message 
+        };
+
+        try {
+            console.log(`📤 [Zap] Enviando para ${instanceName} | Num: ${number}`);
+            await axios.post(url, payload, {
+                headers: { 'apikey': this.apiKey }
+            });
+            console.log(`✅ [Zap] Mensagem enviada com sucesso!`);
+        } catch (error) {
+            const errorData = error.response ? JSON.stringify(error.response.data) : error.message;
+            console.error(`❌ [Zap] Erro Evolution Texto: ${errorData}`);
+            throw new Error(`Falha no envio WhatsApp: ${error.response?.data?.message || error.message}`);
+        }
+    }
+
+    // --- CORREÇÃO AQUI NO SENDFILE ---
+    async sendFile(schoolId, phone, fileUrl, fileName, caption) {
+        const instanceName = `school_${schoolId}`;
+        const url = `${this.apiUrl}/message/sendMedia/${instanceName}`;
+        
+        let number = (phone || '').replace(/\D/g, '');
+        if (!number.startsWith('55') && (number.length === 10 || number.length === 11)) {
+            number = '55' + number;
+        }
+
+        if (number.length < 12) {
+             throw new Error(`Número de telefone inválido (PDF): ${phone}`);
+        }
+
+        // [CORREÇÃO] Payload simplificado (sem 'mediaMessage')
+        const payload = {
+            number: number,
+            options: { delay: 1200, presence: 'composing' },
+            mediatype: 'document', // ou 'image', 'video'
+            caption: caption,
+            media: fileUrl,
+            fileName: fileName
+        };
+
+        try {
+            console.log(`📤 [Zap] Enviando PDF para ${number}`);
+            await axios.post(url, payload, {
+                headers: { 'apikey': this.apiKey }
+            });
+            console.log(`✅ [Zap] PDF enviado com sucesso!`);
+        } catch (error) {
+            const errorData = error.response ? JSON.stringify(error.response.data) : error.message;
+            console.error(`❌ [Zap] Erro Envio PDF: ${errorData}`);
+            throw new Error(`Falha no envio do PDF: ${error.response?.data?.message || error.message}`);
+        }
+    }
+
+    async ensureConnection(schoolId) {
+        try {
+            const instanceName = `school_${schoolId}`;
+            const statusData = await this.getConnectionStatus(instanceName);
+
+            if (statusData.status === 'open') {
+                console.log(`✅ [Auto-Heal] Instância ${instanceName} ONLINE! Atualizando banco...`);
+                await School.findByIdAndUpdate(schoolId, { 
+                    'whatsapp.status': 'connected',
+                    'whatsapp.qrCode': null 
+                });
+                return true;
+            }
+            return false;
+        } catch (error) {
+            return false;
         }
     }
 }

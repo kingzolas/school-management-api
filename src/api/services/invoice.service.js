@@ -10,17 +10,24 @@ const axios = require('axios');
 const https = require('https');
 const { PDFDocument } = require('pdf-lib');
 
-// Templates de mensagens para WhatsApp
-const TEMPLATES_CRIACAO = [
-    "Olá {nome}! Tudo bem? 😊\nEstamos enviando a fatura referente a: *{descricao}*.\n📅 Vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nPara facilitar, os dados de pagamento seguem abaixo:",
-    "Oi {nome}, como vai?\nA mensalidade (*{descricao}*) já está disponível.\nValor: R$ {valor} - Vence em: {vencimento}.\n\nUse os dados abaixo para quitar:",
-    "Academy Hub Informa: Fatura disponível.\n📝 Referência: {descricao}\n💲 Total: R$ {valor}\n🗓️ Vencimento: {vencimento}.\n\nSegue link/código para pagamento:"
+// --- TEMPLATES DE MENSAGENS (COM NOME DA ESCOLA) ---
+
+const TEMPLATES_FUTURO = [
+    "Olá {nome}! Tudo bem? 😊\nA *{escola}* está enviando a fatura referente a: *{descricao}*.\nEla vence apenas em {vencimento}, mas já estamos adiantando.\nValor: R$ {valor}.",
+    "Oi {nome}! A mensalidade de *{descricao}* da *{escola}* já está disponível.\nVencimento: {vencimento}.\nSegue abaixo para quando precisar:",
+    "{escola} Informa: Fatura disponível.\n📝 Referência: {descricao}\n💲 Total: R$ {valor}\n🗓️ Vencimento: {vencimento} (Ainda no prazo)."
 ];
 
-const TEMPLATES_LEMBRETE = [
-    "Bom dia {nome}! Lembrando que a mensalidade vence hoje ({vencimento}).\nValor: R$ {valor}.\nEvite juros realizando o pagamento pelo link abaixo:",
-    "Olá {nome}, hoje é o dia do vencimento da fatura.\nReferente a: {descricao}\nTotal: R$ {valor}.\n\nSegue o código/link para pagamento rápido:",
-    "Oi! Passando para lembrar do pagamento referente a *{descricao}* que vence hoje.\n\nCopie o código ou acesse o link abaixo:"
+const TEMPLATES_HOJE = [
+    "Bom dia {nome}! A *{escola}* lembra que a mensalidade vence *HOJE* ({vencimento}).\nValor: R$ {valor}.\nEvite juros realizando o pagamento pelo link abaixo:",
+    "Olá {nome}, hoje é o dia do vencimento da fatura da *{escola}*.\nReferente a: {descricao}\nTotal: R$ {valor}.\n\nSegue o código/link para pagamento rápido:",
+    "Oi! A *{escola}* passa para lembrar do pagamento referente a *{descricao}* que vence hoje.\n\nCopie o código ou acesse o link abaixo:"
+];
+
+const TEMPLATES_ATRASO = [
+    "Olá {nome}, a *{escola}* notou que a fatura de *{descricao}* (vencida em {vencimento}) está em aberto.\nPodemos ajudar? Segue o link atualizado:",
+    "Oi {nome}! A mensalidade de {descricao} na *{escola}* passou do vencimento ({vencimento}).\nValor original: R$ {valor}.\nSegue os dados para regularização:",
+    "Lembrete *{escola}*: Consta em aberto a fatura de *{descricao}*.\nPara evitar bloqueios ou mais juros, utilize o link abaixo:"
 ];
 
 class InvoiceService {
@@ -31,7 +38,7 @@ class InvoiceService {
   async createInvoice(invoiceData, schoolId) {
     const { studentId, value, dueDate, description, tutorId, gateway: chosenGateway } = invoiceData;
 
-    // 1. Busca configurações da Escola
+    // 1. Busca configurações
     const selectString = [
         '+mercadoPagoConfig.prodAccessToken',
         '+mercadoPagoConfig.prodClientId',
@@ -42,7 +49,8 @@ class InvoiceService {
         '+coraConfig.sandbox.privateKeyContent',
         'coraConfig.production.clientId',
         '+coraConfig.production.certificateContent',
-        '+coraConfig.production.privateKeyContent'
+        '+coraConfig.production.privateKeyContent',
+        'name' // [IMPORTANTE] Garantir que o nome da escola venha
     ].join(' ');
 
     const school = await School.findById(schoolId).select(selectString).lean(); 
@@ -55,13 +63,12 @@ class InvoiceService {
 
     if (!student) throw new Error('Aluno não encontrado ou não pertence a esta escola.');
 
-    // 3. Limpeza e Validação do Endereço
+    // 3. Limpeza Endereço
     const rawAddr = student.address || {};
     let cleanZip = (rawAddr.zipCode || rawAddr.cep || '').replace(/\D/g, '');
     
     if (cleanZip.length !== 8) {
-        console.warn('⚠️ [InvoiceService] CEP inválido ou ausente. Usando endereço de fallback (SP).');
-        cleanZip = '01310100'; 
+        cleanZip = '01310100'; // Fallback
     }
 
     const cleanAddress = {
@@ -73,7 +80,7 @@ class InvoiceService {
         zip_code: cleanZip 
     };
 
-    // 4. Determinação de quem paga
+    // 4. Pagador
     let payerName, payerCpf, payerEmail, payerPhone;
     let linkedTutorId = null;
 
@@ -102,8 +109,6 @@ class InvoiceService {
         linkedTutorId = targetTutor._id;
     }
 
-    if (!payerPhone) console.warn(`Aviso: Pagador ${payerName} sem telefone.`);
-
     // 5. Gateway e Payload
     const gateway = GatewayFactory.create(school, chosenGateway);
     const finalEmail = (payerEmail && payerEmail.includes('@')) 
@@ -129,10 +134,8 @@ class InvoiceService {
     try {
       console.log(`[InvoiceService] Gerando cobrança via ${gateway.constructor.name}...`);
       
-      // 6. Chamada ao Gateway
       const result = await gateway.createInvoice(paymentPayload);
 
-      // 7. Salva a Fatura
       const newInvoice = new Invoice({
         _id: tempId,
         student: studentId,
@@ -149,14 +152,14 @@ class InvoiceService {
         pix_code: result.pix_code,
         pix_qr_base64: result.pix_qr_base64,
         mp_payment_id: result.gateway === 'mercadopago' ? result.external_id : undefined,
-        mp_pix_copia_e_cola: result.pix_code,
+        mp_pix_copia_e_cola: result.pix_code, // Garante que salvou aqui também
         mp_ticket_url: result.boleto_url
       });
 
       await newInvoice.save();
 
-      // 8. Envia Notificação (Não bloqueante na criação)
-      this.notifyInvoiceSmart(schoolId, payerName, payerPhone, student.fullName, newInvoice, 'criacao')
+      // Notificação
+      this.notifyInvoiceSmart(schoolId, payerName, payerPhone, student.fullName, newInvoice)
           .catch(err => console.error('⚠️ Falha ao enviar notificação WhatsApp (Background):', err.message));
 
       return await this.getInvoiceById(newInvoice._id, schoolId);
@@ -170,19 +173,16 @@ class InvoiceService {
     }
   }
 
-  // --- [NOVO] MÉTODO DE REENVIO MANUAL ---
+  // --- REENVIO MANUAL ---
   async resendNotification(invoiceId, schoolId) {
-    // Busca fatura
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
         .populate('student')
         .populate('tutor');
 
     if (!invoice) throw new Error('Fatura não encontrada.');
 
-    // Define Destinatário
     let targetName, targetPhone;
 
-    // Lógica de Prioridade: Tutor > Aluno
     if (invoice.tutor) {
         targetName = invoice.tutor.fullName;
         targetPhone = invoice.tutor.phoneNumber || invoice.tutor.telefone || invoice.tutor.celular;
@@ -195,92 +195,130 @@ class InvoiceService {
         throw new Error('Responsável financeiro não possui telefone cadastrado.');
     }
 
-    // Tenta enviar. Se falhar, o throw Error vai subir para o Controller -> Frontend
     try {
         await this.notifyInvoiceSmart(
             schoolId, 
             targetName, 
             targetPhone, 
             invoice.student.fullName, 
-            invoice, 
-            'lembrete' // Força tom de lembrete
+            invoice
         );
         return true;
     } catch (e) {
         console.error("Erro no reenvio manual:", e);
-        throw new Error("Erro de comunicação com WhatsApp.");
+        throw new Error("Erro de comunicação com WhatsApp: " + e.message);
     }
   }
 
-  // --- LÓGICA DE NOTIFICAÇÃO INTELIGENTE (ATUALIZADA) ---
-  async notifyInvoiceSmart(schoolId, payerName, payerPhone, studentName, invoice, type = 'criacao') {
-      const school = await School.findById(schoolId).lean();
-      if (!school || school.whatsapp?.status !== 'connected') {
-          // Se não estiver conectado, lançamos erro se for reenvio manual
-          throw new Error("WhatsApp da escola desconectado.");
+  // --- LÓGICA DE NOTIFICAÇÃO INTELIGENTE ---
+  async notifyInvoiceSmart(schoolId, payerName, payerPhone, studentName, invoice) {
+      
+      // 1. Busca escola (Nome + Config Whatsapp)
+      const school = await School.findById(schoolId).select('name whatsapp').lean();
+      if (!school) throw new Error("Escola não encontrada.");
+
+      const nomeEscola = school.name || "Sua Escola";
+
+      // 1.1 Verificação de Conexão Híbrida
+      let isReadyToSend = false;
+      if (school.whatsapp && school.whatsapp.status === 'connected') {
+          isReadyToSend = true; 
+      } else {
+          console.warn(`⚠️ [Zap] Banco diz desconectado. Verificando status real...`);
+          const isReallyConnected = await whatsappService.ensureConnection(schoolId);
+          if (isReallyConnected) isReadyToSend = true;
       }
+
+      if (!isReadyToSend) {
+          throw new Error("WhatsApp desconectado. Por favor, leia o QR Code novamente.");
+      }
+
       if (!payerPhone) throw new Error("Telefone não informado.");
 
+      // 2. Definição do Template por Data
+      const hoje = new Date();
+      hoje.setHours(0, 0, 0, 0);
+      const vencimento = new Date(invoice.dueDate);
+      vencimento.setHours(0, 0, 0, 0);
+
+      const diffTime = vencimento.getTime() - hoje.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+
+      let listaTemplates;
+      if (diffDays > 0) listaTemplates = TEMPLATES_FUTURO;
+      else if (diffDays === 0) listaTemplates = TEMPLATES_HOJE;
+      else listaTemplates = TEMPLATES_ATRASO;
+
+      const templateEscolhido = listaTemplates[Math.floor(Math.random() * listaTemplates.length)];
+
+      // 3. Formatação
       const valorFormatado = (invoice.value / 100).toFixed(2).replace('.', ',');
       const dataFormatada = new Date(invoice.dueDate).toLocaleDateString('pt-BR', { timeZone: 'UTC' });
       const primeiroNome = payerName.split(' ')[0];
 
-      const listaTemplates = type === 'lembrete' ? TEMPLATES_LEMBRETE : TEMPLATES_CRIACAO;
-      const templateEscolhido = listaTemplates[Math.floor(Math.random() * listaTemplates.length)];
-
       const msgTexto = templateEscolhido
+          .replace('{escola}', nomeEscola) // [CORREÇÃO] Nome da Escola
           .replace('{nome}', primeiroNome)
           .replace('{descricao}', invoice.description)
           .replace('{valor}', valorFormatado)
           .replace('{vencimento}', dataFormatada);
 
-      // Envia a mensagem de introdução
-      await whatsappService.sendText(schoolId, payerPhone, msgTexto);
-      await new Promise(r => setTimeout(r, 1000));
+      try {
+          // Envia texto de introdução
+          await whatsappService.sendText(schoolId, payerPhone, msgTexto);
+          await new Promise(r => setTimeout(r, 1500)); // Delay um pouco maior para leitura
 
-      // --- [LÓGICA DIFERENCIADA: PIX vs BOLETO] ---
+          // --- LÓGICA DE GATEWAY ---
 
-      // CASO 1: BOLETO (CORA) -> Envia PDF
-      if (invoice.gateway === 'cora' && invoice.boleto_url) {
-          try {
-              // Certifique-se que seu whatsappService tem o método sendFile ou sendMediaUrl
-              // Se não tiver, implemente chamando o endpoint /message/sendMedia do Evolution
+          // A) CORA = BOLETO (PDF)
+          if (invoice.gateway === 'cora' && invoice.boleto_url) {
               if (whatsappService.sendFile) {
-                  await whatsappService.sendFile(
-                      schoolId,
-                      payerPhone,
-                      invoice.boleto_url,     // URL do PDF da Cora
-                      'Boleto_Escolar.pdf',   // Nome do arquivo
-                      '📄 Segue o boleto em PDF para pagamento.' // Legenda
-                  );
+                  try {
+                      await whatsappService.sendFile(
+                          schoolId, 
+                          payerPhone, 
+                          invoice.boleto_url, 
+                          'Boleto_Escolar.pdf', 
+                          `📄 Segue o boleto da ${nomeEscola}.`
+                      );
+                  } catch (e) {
+                      // Fallback
+                      await whatsappService.sendText(schoolId, payerPhone, `📄 Baixe o Boleto aqui: ${invoice.boleto_url}`);
+                  }
               } else {
-                  // Fallback se não tiver sendFile implementado: manda link
-                  await whatsappService.sendText(schoolId, payerPhone, `📄 Baixe o PDF do boleto aqui:\n${invoice.boleto_url}`);
+                  await whatsappService.sendText(schoolId, payerPhone, `📄 Baixe o Boleto aqui: ${invoice.boleto_url}`);
               }
               
-              // Manda linha digitável também, pois ajuda em Apps de banco
               if (invoice.boleto_barcode) {
                    await new Promise(r => setTimeout(r, 800));
                    await whatsappService.sendText(schoolId, payerPhone, "Ou copie a linha digitável abaixo:");
                    await whatsappService.sendText(schoolId, payerPhone, invoice.boleto_barcode);
               }
+          } 
+          
+          // B) MERCADO PAGO = PIX (COPIA E COLA)
+          // [CORREÇÃO] Verifica ambos os campos onde o código pode estar salvo
+          else if (invoice.gateway === 'mercadopago') {
+              
+              const pixCode = invoice.pix_code || invoice.mp_pix_copia_e_cola;
 
-          } catch (pdfError) {
-              console.error("Erro ao enviar PDF:", pdfError);
-              // Fallback: Manda link se falhar o envio do arquivo
-              await whatsappService.sendText(schoolId, payerPhone, `📄 Link do Boleto:\n${invoice.boleto_url}`);
+              if (pixCode) {
+                  console.log(`💠 [Zap] Enviando Pix Copia e Cola para ${payerName}`);
+                  await whatsappService.sendText(schoolId, payerPhone, "💠 Use o Pix Copia e Cola abaixo para pagar:");
+                  // Pequeno delay para garantir que o código venha em mensagem separada (facilita copiar)
+                  await new Promise(r => setTimeout(r, 500)); 
+                  await whatsappService.sendText(schoolId, payerPhone, pixCode);
+              } else if (invoice.boleto_url || invoice.mp_ticket_url) {
+                  // Fallback raríssimo: MP gerou link/ticket em vez de Pix
+                  const link = invoice.boleto_url || invoice.mp_ticket_url;
+                  await whatsappService.sendText(schoolId, payerPhone, `📄 Link para pagamento: ${link}`);
+              } else {
+                  console.warn(`⚠️ [Zap] Fatura MP ${invoice._id} sem código Pix e sem Link.`);
+              }
           }
-      } 
-      
-      // CASO 2: PIX (MERCADO PAGO) -> Envia Código Copia e Cola
-      else if (invoice.gateway === 'mercadopago' || invoice.pix_code) {
-          if (invoice.pix_code) {
-              await whatsappService.sendText(schoolId, payerPhone, "💠 Pix Copia e Cola:");
-              await whatsappService.sendText(schoolId, payerPhone, invoice.pix_code);
-          } else if (invoice.boleto_url) {
-              // Caso raro: MP gerou boleto (fallback)
-              await whatsappService.sendText(schoolId, payerPhone, `📄 Link da Fatura:\n${invoice.boleto_url}`);
-          }
+
+      } catch (sendError) {
+          console.error(`[Zap] Erro final de envio:`, sendError.message);
       }
   }
 
@@ -307,8 +345,7 @@ class InvoiceService {
               targetPhone = fatura.student.phoneNumber;
           }
           if (targetName && targetPhone) {
-              // No CRON, usamos catch para não parar o loop se um falhar
-              await this.notifyInvoiceSmart(fatura.school_id, targetName, targetPhone, fatura.student.fullName, fatura, 'lembrete')
+              await this.notifyInvoiceSmart(fatura.school_id, targetName, targetPhone, fatura.student.fullName, fatura)
                   .catch(e => console.error(`Erro ao notificar ${targetName}:`, e.message));
               await new Promise(r => setTimeout(r, 2000));
           }
@@ -320,10 +357,7 @@ class InvoiceService {
     if (!invoice) throw new Error('Fatura não encontrada');
     if (invoice.status === 'paid') throw new Error('Fatura já PAGA não pode ser cancelada.');
     
-    // Busca credenciais
-    const school = await School.findById(schoolId).lean(); // Simplificado pois GatewayFactory lida com selects se necessário, mas mantendo seu padrão:
-    // (Mantive sua lógica original de select aqui por segurança, resumida)
-    
+    const school = await School.findById(schoolId).lean();
     const gatewayName = invoice.gateway === 'cora' ? 'CORA' : 'MERCADOPAGO';
     
     try {
@@ -406,7 +440,6 @@ class InvoiceService {
     return await mergedPdf.save();
   }
 
-  // Sincronização passiva
   async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null) {
     const filter = {
         school_id: schoolId,
@@ -436,7 +469,6 @@ class InvoiceService {
     }));
   }
 
-  // --- Getters ---
   async getAllInvoices(filters = {}, schoolId) {
     try { await this.syncPendingInvoices(null, schoolId); } catch (e) {}
     const query = { school_id: schoolId }; 

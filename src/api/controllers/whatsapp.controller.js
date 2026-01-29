@@ -6,19 +6,28 @@ class WhatsappController {
     // GET /api/whatsapp/connect
     async connect(req, res, next) {
         try {
-            const schoolId = req.user.school_id; // Vem do Token JWT
+            const schoolId = req.user.school_id;
             
             const result = await whatsappService.connectSchool(schoolId);
             
-            // Se já estiver conectado ('open'), atualizamos o banco
+            // Se já estiver conectado ('open'), atualizamos o banco imediatamente
             if (result.status === 'open') {
                 await School.findByIdAndUpdate(schoolId, { 
                     'whatsapp.status': 'connected',
-                    'whatsapp.instanceName': result.instanceName
+                    'whatsapp.instanceName': result.instanceName,
+                    'whatsapp.qrCode': null
                 });
             }
 
-            return res.status(200).json(result);
+            // Normaliza o retorno para o front (garante que 'qrcode' exista se houver)
+            // A Evolution pode devolver 'base64' ou 'qrcode.base64', o Service já tratou, 
+            // mas aqui garantimos a chave JSON correta.
+            return res.status(200).json({
+                status: result.status,
+                instanceName: result.instanceName,
+                qrcode: result.qrCode // Front espera 'qrcode' (minúsculo ou camelCase, verifique seu front)
+            });
+
         } catch (error) {
             next(error);
         }
@@ -37,6 +46,17 @@ class WhatsappController {
             await School.findByIdAndUpdate(schoolId, { 'whatsapp.status': dbStatus });
 
             return res.status(200).json(statusData);
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    // [NOVO] Rota para o Front forçar sincronização
+    async syncStatus(req, res, next) {
+        try {
+            const schoolId = req.user.school_id;
+            const isConnected = await whatsappService.ensureConnection(schoolId);
+            return res.status(200).json({ status: isConnected ? 'connected' : 'disconnected' });
         } catch (error) {
             next(error);
         }
