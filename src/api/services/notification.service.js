@@ -206,9 +206,25 @@ class NotificationService {
         const school = await School.findById(log.school_id).select('name whatsapp').lean();
         const nomeEscola = school.name || "Escola";
 
-        if (!school.whatsapp || school.whatsapp.status !== 'connected') throw new Error("WhatsApp desconectado.");
+        // ==============================================================================
+        // 🛡️ CORREÇÃO (AUTO-HEAL): Verifica a API se o banco disser que está offline
+        // ==============================================================================
+        if (!school.whatsapp || school.whatsapp.status !== 'connected') {
+            console.log(`⚠️ [Zap] Banco diz 'disconnected'. Verificando status real na API...`);
+            
+            // Chama o ensureConnection que vai na Evolution checar o estado real
+            // Se estiver 'open' lá, ele já atualiza o banco automaticamente e retorna true
+            const isReallyConnected = await whatsappService.ensureConnection(log.school_id);
+            
+            if (!isReallyConnected) {
+                // Se a API confirmar que está offline, aí sim lançamos o erro
+                throw new Error("WhatsApp desconectado (Confirmado pela API).");
+            }
+            console.log(`✅ [Zap] Conexão recuperada! A API estava online. Prosseguindo envio...`);
+        }
+        // ==============================================================================
 
-        // 1. Template Inteligente
+        // 2. Template Inteligente
         const hoje = new Date(); hoje.setHours(0,0,0,0);
         const venc = new Date(invoice.dueDate); venc.setHours(0,0,0,0);
         const diff = (venc - hoje) / (1000 * 60 * 60 * 24);
@@ -237,14 +253,12 @@ class NotificationService {
 
                 console.log(`📎 [Zap] Enviando PDF: ${fileName}`);
                 
-                // --- CORREÇÃO APLICADA ABAIXO ---
-                // Removido o argumento "application/pdf" que causava o erro
                 await whatsappService.sendFile(
                     log.school_id, 
                     log.target_phone, 
                     invoice.boleto_url, 
-                    fileName,              // Nome do arquivo (agora na posição correta)
-                    "📄 Segue o seu boleto." // Caption (agora na posição correta)
+                    fileName,              
+                    "📄 Segue o seu boleto." 
                 );
             } catch (e) {
                 console.error("⚠️ Falha PDF:", e.message);
