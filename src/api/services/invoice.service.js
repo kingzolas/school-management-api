@@ -166,9 +166,18 @@ class InvoiceService {
 
     } catch (error) {
       console.error('❌ ERRO Create Invoice:', error.message);
-      if (error.message.includes('Erro Cora')) {
-          throw error; 
+      
+      // --- BLOCO DE TRATAMENTO DE ERRO CORA ---
+      // Verifica se a mensagem contém indícios de erro de documento
+      if (error.message && (error.message.includes('customer.document.identity') || error.message.includes('is not a valid CNPJ or CPF'))) {
+         throw new Error('O CPF do Responsável Financeiro é inválido ou está formatado incorretamente. Verifique o cadastro do responsável.');
       }
+      
+      if (error.message.includes('Erro Cora')) {
+         // Remove o prefixo técnico se possível para mostrar o JSON ou mensagem
+         throw new Error(`Erro na Cora: ${error.message.replace('Erro Cora Create:', '').trim()}`);
+      }
+
       throw new Error(`Falha na criação da fatura: ${error.message}`);
     }
   }
