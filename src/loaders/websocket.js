@@ -170,6 +170,17 @@ function registerAppListeners() {
         // O Front vai receber type: 'NEW_ASSESSMENT'
         broadcast({ type: 'NEW_ASSESSMENT', payload: assessment }, assessment.school_id);
     });
+
+    // --- [NOVO] Notificações (Automação) ---
+    appEmitter.on('notification:created', (log) => {
+        // Quando entra na fila
+        broadcast({ type: 'NEW_NOTIFICATION', payload: log }, log.school_id);
+    });
+
+    appEmitter.on('notification:updated', (log) => {
+        // Quando muda status (Enviado/Falha/Processando)
+        broadcast({ type: 'UPDATED_NOTIFICATION', payload: log }, log.school_id);
+    });
 }
 
 /**

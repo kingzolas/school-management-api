@@ -38,6 +38,8 @@ const gradeRoutes = require('./api/routes/grade.routes');
 
 const analyticsRoutes = require('./api/routes/analytics.routes');
 
+const notificationRoutes = require('./api/routes/notification.routes.js');
+
 const app = express();
 
 // Configuração CORS
@@ -96,5 +98,8 @@ app.use('/api/analytics', analyticsRoutes);
 
 app.use('/api/evaluations', evaluationRoutes);
 app.use('/api/grades', gradeRoutes);
+
+// ADICIONE ESTA LINHA:
+app.use('/api/notifications', notificationRoutes);
 
 module.exports = app;
