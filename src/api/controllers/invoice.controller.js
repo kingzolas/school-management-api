@@ -17,7 +17,8 @@ class InvoiceController {
       res.status(201).json(newInvoice);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.create:', error.message);
-      next(error);
+      // Alterado de next(error) para res.status(400) para garantir que o front receba JSON
+      res.status(400).json({ message: error.message || 'Erro desconhecido ao criar fatura.' });
     }
   }
 

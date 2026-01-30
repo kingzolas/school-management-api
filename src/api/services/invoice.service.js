@@ -165,16 +165,34 @@ class InvoiceService {
       return await this.getInvoiceById(newInvoice._id, schoolId);
 
     } catch (error) {
-      console.error('❌ ERRO Create Invoice:', error.message);
+      console.error('❌ ERRO Create Invoice (Raw):', error.message);
       
-      // --- BLOCO DE TRATAMENTO DE ERRO CORA ---
-      // Verifica se a mensagem contém indícios de erro de documento
-      if (error.message && (error.message.includes('customer.document.identity') || error.message.includes('is not a valid CNPJ or CPF'))) {
-         throw new Error('O CPF do Responsável Financeiro é inválido ou está formatado incorretamente. Verifique o cadastro do responsável.');
+      // --- TRATAMENTO DE ERROS DO GATEWAY (CORA / AXIOS) ---
+      // A Cora retorna o erro dentro de error.response.data.errors
+      
+      if (error.response && error.response.data && error.response.data.errors) {
+          const coraErrors = error.response.data.errors;
+          
+          // Verifica se algum erro é sobre identidade/documento
+          const isIdentityError = coraErrors.some(e => e.code === 'customer.document.identity' || (e.message && e.message.includes('CPF')));
+          
+          if (isIdentityError) {
+              throw new Error('O CPF do Responsável Financeiro é inválido ou está incorreto. Verifique o cadastro do responsável.');
+          }
+          
+          // Se for outro erro da Cora, tenta pegar a primeira mensagem legível
+          if (coraErrors.length > 0 && coraErrors[0].message) {
+               throw new Error(`Erro no Banco Cora: ${coraErrors[0].message}`);
+          }
+      }
+
+      // Fallback para mensagens de texto simples
+      if (error.message && (error.message.includes('customer.document.identity') || error.message.includes('not a valid CNPJ or CPF'))) {
+         throw new Error('O CPF do Responsável Financeiro é inválido. Verifique o cadastro.');
       }
       
       if (error.message.includes('Erro Cora')) {
-         // Remove o prefixo técnico se possível para mostrar o JSON ou mensagem
+         // Tenta limpar o JSON sujo se vier como string
          throw new Error(`Erro na Cora: ${error.message.replace('Erro Cora Create:', '').trim()}`);
       }
 
