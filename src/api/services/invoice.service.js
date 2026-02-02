@@ -139,7 +139,7 @@ class InvoiceService {
       await newInvoice.save();
 
       // ==================================================================================
-      // 🛡️ AUTOMAÇÃO COM FILTRO DE DATA (AQUI ESTÁ A CORREÇÃO)
+      // 🛡️ AUTOMAÇÃO COM FILTRO DE DATA
       // ==================================================================================
       if (payerPhone) {
           try {

@@ -11,7 +11,7 @@ router.post(
   invoiceController.batchPrint
 );
 
-// --- [NOVO] ROTA DE REENVIO DE WHATSAPP ---
+// --- ROTA DE REENVIO DE WHATSAPP ---
 // Importante: Definida antes de /:id para não conflitar
 router.post(
   '/:id/resend', 
@@ -27,11 +27,16 @@ router.get('/', invoiceController.getAll);
 // Rota de consulta Mercado Pago
 router.get('/mp/:paymentId', invoiceController.checkMpStatus);
 
+// --- [CORREÇÃO] ROTA DE SYNC PENDENTES ---
+// ESTA ROTA TEM QUE VIR ANTES DE /:id
+// Se vier depois, o express acha que "sync-pending" é um ID
+router.get('/sync-pending', invoiceController.syncPending);
+
 // Rotas Específicas
 router.get('/student/:studentId', invoiceController.getByStudent);
 router.put('/:id/cancel', invoiceController.cancel);
 
-// Rota por ID (deixe por último)
+// Rota por ID (DEVE FICAR POR ÚLTIMO ENTRE OS GETs)
 router.get('/:id', invoiceController.getById);
 
 module.exports = router;

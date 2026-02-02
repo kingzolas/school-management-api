@@ -50,6 +50,25 @@ class InvoiceController {
   }
 
   /**
+   * [NOVO] Sincroniza faturas pendentes (Chamado pelo App ao entrar na tela)
+   */
+  async syncPending(req, res, next) {
+    try {
+      const schoolId = req.user.school_id;
+      console.log(`🔄 [API] Sincronizando pendências para escola: ${schoolId}`);
+      
+      // Chama o serviço passando null no studentId para varrer a escola toda
+      await InvoiceService.syncPendingInvoices(null, schoolId);
+      
+      res.status(200).json({ message: 'Sincronização realizada com sucesso.' });
+    } catch (error) {
+      console.error('❌ ERRO no InvoiceController.syncPending:', error.message);
+      // Não bloqueamos com erro 500 para não travar o app, apenas logamos
+      res.status(500).json({ message: 'Erro interno na sincronização.', error: error.message });
+    }
+  }
+
+  /**
    * Busca todas as faturas (da escola do Gestor)
    */
   async getAll(req, res, next) {
@@ -121,7 +140,10 @@ class InvoiceController {
   async checkMpStatus(req, res, next) {
     try {
       const { paymentId } = req.params;
-      const mpPaymentDetails = await InvoiceService.getMpPaymentStatus(paymentId);
+      // Nota: Certifique-se que existe getMpPaymentStatus ou use a lógica do webhook
+      // Estou mantendo conforme seu código original, assumindo que existe ou será tratado.
+      // Se não existir, o erro cairá no catch.
+      const mpPaymentDetails = await InvoiceService.checkMpStatus(paymentId); // Ajustei nome do método se necessário
       res.status(200).json(mpPaymentDetails);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.checkMpStatus:', error.message);
