@@ -143,8 +143,6 @@ class InvoiceService {
       // ==================================================================================
       if (payerPhone) {
           try {
-              // Verifica se a data é elegível (Hoje, Atrasado ou Daqui a 3 dias)
-              // Se for fatura para daqui a 5 meses, retorna FALSE.
               const shouldSendNow = NotificationService.isEligibleForSending(newInvoice.dueDate);
 
               if (shouldSendNow) {
@@ -166,13 +164,11 @@ class InvoiceService {
       }
       // ==================================================================================
 
-      // Retorna a fatura populada
       return await this.getInvoiceById(newInvoice._id, schoolId);
 
     } catch (error) {
       console.error('❌ ERRO Create Invoice (Raw):', error.message);
       
-      // --- TRATAMENTO DE ERRO ESPECÍFICO (CORA) ---
       if (error.response && error.response.data && error.response.data.errors) {
           const coraErrors = error.response.data.errors;
           const isIdentityError = coraErrors.some(e => e.code === 'customer.document.identity' || (e.message && e.message.includes('CPF')));
@@ -199,7 +195,6 @@ class InvoiceService {
 
   /**
    * Reenvio Manual 
-   * (Mantém o envio direto para a fila, pois é uma ação manual do usuário)
    */
   async resendNotification(invoiceId, schoolId) {
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
@@ -223,7 +218,6 @@ class InvoiceService {
     }
 
     try {
-        // Enfileira com prioridade (o type 'reminder' usa um template de lembrete)
         await NotificationService.queueNotification({
             schoolId: schoolId,
             invoiceId: invoice._id,
@@ -239,13 +233,7 @@ class InvoiceService {
     }
   }
 
-  /**
-   * Processador Diário Legado
-   * Mantido para compatibilidade, mas a lógica real está no NotificationService.scanAndQueueInvoices
-   */
   async processDailyReminders() {
-      // Esta função pode eventualmente ser removida se o Cron do NotificationService estiver rodando 100%
-      // Por enquanto, mantemos para não quebrar chamadas antigas
       console.log('⚠️ [InvoiceService] processDailyReminders chamado (Legado). Considere usar o NotificationService.');
   }
 
@@ -271,11 +259,15 @@ class InvoiceService {
     return invoice;
   }
 
+  /**
+   * [ATUALIZADO] Retorna flag 'updated' e 'newStatus'
+   */
   async handlePaymentWebhook(externalId, providerName, statusRaw) {
     let invoice = await Invoice.findOne({ 
         $or: [ { external_id: externalId }, { mp_payment_id: externalId } ]
     });
-    if (!invoice) return { processed: false, reason: 'not_found' };
+    // Se não achar a fatura, retorna que não foi processado/atualizado
+    if (!invoice) return { processed: false, updated: false, reason: 'not_found' };
 
     let novoStatus = invoice.status;
     const statusPago = ['approved', 'paid', 'COMPLETED', 'LIQUIDATED', 'PAID'];
@@ -289,13 +281,18 @@ class InvoiceService {
         }
     }
 
+    let wasUpdated = false;
+    // Só salva se o status realmente mudou
     if (invoice.status !== novoStatus) {
       invoice.status = novoStatus;
       if (novoStatus === 'paid' && !invoice.paidAt) invoice.paidAt = new Date();
       await invoice.save();
       console.log(`✅ [DB UPDATE] Fatura ${invoice._id} SALVA como ${novoStatus} (Origem: ${providerName})`);
+      wasUpdated = true;
     }
-    return { processed: true, invoice };
+    
+    // Retorna dados detalhados para o relatório de sync
+    return { processed: true, updated: wasUpdated, invoice, newStatus: novoStatus };
   }
 
   async generateBatchPdf(invoiceIds, schoolId) {
@@ -337,6 +334,9 @@ class InvoiceService {
     return await mergedPdf.save();
   }
 
+  /**
+   * [ATUALIZADO] Retorna relatório de estatísticas (stats)
+   */
   async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null) {
     const filter = {
         school_id: schoolId,
@@ -348,32 +348,59 @@ class InvoiceService {
     if (singleInvoiceId) filter._id = singleInvoiceId;
 
     const pendingInvoices = await Invoice.find(filter);
-    if (pendingInvoices.length === 0) return;
+    
+    // Estrutura de relatório
+    const stats = {
+        totalChecked: pendingInvoices.length,
+        updatedCount: 0,
+        details: []
+    };
+
+    if (pendingInvoices.length === 0) return stats;
 
     const school = await School.findById(schoolId).select('+mercadoPagoConfig.prodAccessToken').lean();
-    if (!school) return;
+    if (!school) return stats;
 
     await Promise.all(pendingInvoices.map(async (invoice) => {
         try {
+            let result = { updated: false };
+
             if (invoice.gateway === 'mercadopago') {
                 const mpToken = school.mercadoPagoConfig?.prodAccessToken;
-                if (!mpToken) return;
-                const res = await axios.get(`https://api.mercadopago.com/v1/payments/${invoice.external_id}`, { headers: { 'Authorization': `Bearer ${mpToken}` } });
-                const statusMP = res.data.status;
-                await this.handlePaymentWebhook(invoice.external_id, 'MP-SYNC', statusMP);
+                if (mpToken) {
+                    const res = await axios.get(`https://api.mercadopago.com/v1/payments/${invoice.external_id}`, { headers: { 'Authorization': `Bearer ${mpToken}` } });
+                    const statusMP = res.data.status;
+                    result = await this.handlePaymentWebhook(invoice.external_id, 'MP-SYNC', statusMP);
+                }
+            } 
+            // Se houver lógica de consulta Cora no futuro, ela entra aqui
+            
+            // Se houve atualização, incrementa o contador
+            if (result.updated) {
+                stats.updatedCount++;
+                stats.details.push({
+                    id: invoice._id,
+                    newStatus: result.newStatus
+                });
             }
+
         } catch (error) { /* Silent fail */ }
     }));
+
+    return stats;
   }
 
   async getAllInvoices(filters = {}, schoolId) {
-    try { await this.syncPendingInvoices(null, schoolId); } catch (e) {}
+    // Sync em background sem travar a resposta
+    this.syncPendingInvoices(null, schoolId).catch(() => {});
+    
     const query = { school_id: schoolId }; 
     if (filters.status) query.status = filters.status;
     return Invoice.find(query).sort({ dueDate: -1 }).populate('student', 'fullName').populate('tutor', 'fullName');
   }
 
   async getInvoiceById(invoiceId, schoolId) {
+    // Tenta sincronizar esse boleto específico antes de devolver
     try { await this.syncPendingInvoices(null, schoolId, invoiceId); } catch (e) {}
     return Invoice.findOne({ _id: invoiceId, school_id: schoolId }).populate('student', 'fullName profilePicture').populate('tutor', 'fullName');
   }
