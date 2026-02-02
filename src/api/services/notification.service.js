@@ -5,21 +5,20 @@ const NotificationConfig = require('../models/notification-config.model');
 const whatsappService = require('./whatsapp.service');
 const cron = require('node-cron');
 
+// ... (Mantenha as importações do EventEmitter e Templates iguais ao seu código original) ...
 // --- IMPORTAÇÃO SEGURA DO EVENT EMITTER ---
 let appEmitter;
 try {
-    // Tenta importar do caminho padrão
     appEmitter = require('../../config/eventEmitter'); 
 } catch (e) {
     try {
-        // Tenta importar do caminho alternativo (loaders) que vi nos seus logs
         appEmitter = require('../../loaders/eventEmitter');
     } catch (e2) {
-        console.warn("⚠️ appEmitter não encontrado. O WebSocket de notificações não funcionará.");
+        console.warn("⚠️ appEmitter não encontrado.");
     }
 }
 
-// --- TEMPLATES ---
+// ... (Mantenha as CONST TEMPLATES_FUTURO, TEMPLATES_HOJE, TEMPLATES_ATRASO aqui) ...
 const TEMPLATES_FUTURO = [
     "Olá {nome}! Tudo bem? 😊\nA *{escola}* está enviando a fatura referente a: *{descricao}*.\nEla vence apenas em {vencimento}, mas já estamos adiantando.\nValor: R$ {valor}.",
     "Oi {nome}! A mensalidade de *{descricao}* da *{escola}* já está disponível.\nVencimento: {vencimento}.\nSegue abaixo para quando precisar:",
@@ -38,13 +37,48 @@ const TEMPLATES_ATRASO = [
     "Lembrete *{escola}*: Consta em aberto a fatura de *{descricao}*.\nPara evitar bloqueios ou mais juros, utilize o link abaixo:"
 ];
 
+
 class NotificationService {
     
     constructor() {
         this.isProcessing = false;
     }
 
+    /**
+     * [NOVO] O "Guardião" das Datas.
+     * Retorna TRUE se a fatura deve ser enviada HOJE.
+     * Regras:
+     * 1. Lembrete: Vence exatamente daqui a 3 dias.
+     * 2. Hoje: Vence hoje.
+     * 3. Atrasado: Venceu entre ontem e 60 dias atrás.
+     */
+    isEligibleForSending(dueDate) {
+        const hoje = new Date();
+        hoje.setHours(0,0,0,0);
+        
+        const vencimento = new Date(dueDate);
+        vencimento.setHours(0,0,0,0); // Normaliza para meia-noite
+        
+        // Diferença em milissegundos
+        const diffTime = vencimento - hoje; 
+        // Converte para dias (Arredonda para lidar com horário de verão/fuso)
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        // Regra 1: Futuro (3 dias antes)
+        if (diffDays === 3) return true;
+
+        // Regra 2: Hoje
+        if (diffDays === 0) return true;
+
+        // Regra 3: Atrasado (Até 60 dias atrás)
+        // Ex: Ontem é -1, Anteontem -2... até -60
+        if (diffDays < 0 && diffDays >= -60) return true;
+
+        return false;
+    }
+
     async queueNotification({ schoolId, invoiceId, studentName, tutorName, phone, type = 'new_invoice' }) {
+        // ... (Mantém idêntico ao seu código original) ...
         try {
             const exists = await NotificationLog.exists({
                 invoice_id: invoiceId, type: type, status: { $in: ['queued', 'processing'] }
@@ -65,7 +99,6 @@ class NotificationService {
             
             console.log(`📥 [Fila] + ADICIONADO: ${studentName} (${type})`);
             
-            // [WEBSOCKET] Dispara evento com verificação de segurança
             if (appEmitter && typeof appEmitter.emit === 'function') {
                 appEmitter.emit('notification:created', newLog);
             }
@@ -75,8 +108,9 @@ class NotificationService {
         }
     }
 
+    // --- LÓGICA DE VARREDURA CORRIGIDA ---
     async scanAndQueueInvoices() {
-        console.log('🔎 [Cron] INICIANDO VARREDURA DE FATURAS');
+        console.log('🔎 [Cron] INICIANDO VARREDURA INTELIGENTE');
         try {
             const activeConfigs = await NotificationConfig.find({ isActive: true });
             if (!activeConfigs.length) return;
@@ -85,42 +119,55 @@ class NotificationService {
             const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
             for (const config of activeConfigs) {
+                // Checa janela de horário (Mantido igual)
                 const [startH, startM] = config.windowStart.split(':').map(Number);
                 const [endH, endM] = config.windowEnd.split(':').map(Number);
-                const startMinutes = startH * 60 + startM;
-                const endMinutes = endH * 60 + endM;
-
-                if (currentMinutes < startMinutes || currentMinutes >= endMinutes) continue;
+                if (currentMinutes < (startH * 60 + startM) || currentMinutes >= (endH * 60 + endM)) continue;
 
                 const schoolId = config.school_id;
 
-                // 1. Vence Hoje
-                if (config.enableDueToday) {
-                    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-                    const todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
-                    const dueToday = await Invoice.find({
-                        school_id: schoolId, status: 'pending', dueDate: { $gte: todayStart, $lte: todayEnd }
-                    }).populate('student').populate('tutor');
+                // Definimos os limites de data para a Query no Banco
+                const hojeStart = new Date(); hojeStart.setHours(0,0,0,0);
+                const hojeEnd = new Date(); hojeEnd.setHours(23,59,59,999);
+                
+                // Limite Passado (60 dias)
+                const limitPassado = new Date(); limitPassado.setDate(limitPassado.getDate() - 60); limitPassado.setHours(0,0,0,0);
+                
+                // Limite Futuro (Daqui a 3 dias exatos)
+                const futuroStart = new Date(); futuroStart.setDate(futuroStart.getDate() + 3); futuroStart.setHours(0,0,0,0);
+                const futuroEnd = new Date(); futuroEnd.setDate(futuroEnd.getDate() + 3); futuroEnd.setHours(23,59,59,999);
 
-                    for (const inv of dueToday) {
-                        const sent = await NotificationLog.exists({
-                            invoice_id: inv._id, type: { $in: ['reminder', 'new_invoice'] }, createdAt: { $gte: todayStart }
+                // Busca Unificada: Traz tudo que pode ser relevante (Atrasados + Hoje + Daqui 3 dias)
+                const invoices = await Invoice.find({
+                    school_id: schoolId, 
+                    status: 'pending', 
+                    $or: [
+                        { dueDate: { $gte: limitPassado, $lte: hojeEnd } }, // Atrasados + Hoje
+                        { dueDate: { $gte: futuroStart, $lte: futuroEnd } } // Daqui a 3 dias
+                    ]
+                }).populate('student').populate('tutor');
+
+                console.log(`📊 Escola ${schoolId}: ${invoices.length} faturas potenciais encontradas.`);
+
+                for (const inv of invoices) {
+                    // Usa a função "Guardião" para ter certeza absoluta
+                    if (this.isEligibleForSending(inv.dueDate)) {
+                        
+                        // Define o tipo correto para o Log
+                        const diffDays = Math.ceil((new Date(inv.dueDate) - new Date()) / (86400000));
+                        let type = 'reminder';
+                        if (diffDays < 0) type = 'overdue';
+                        if (diffDays === 0) type = 'due_today';
+
+                        // Verifica se JÁ enviou hoje para não floodar
+                        const sentToday = await NotificationLog.exists({
+                            invoice_id: inv._id,
+                            createdAt: { $gte: hojeStart } 
                         });
-                        if (!sent) await this._prepareAndQueue(inv, 'reminder');
-                    }
-                }
 
-                // 2. Atrasados (60 dias)
-                if (config.enableOverdue) {
-                    const limit = new Date(); limit.setDate(limit.getDate() - 60); limit.setHours(0,0,0,0);
-                    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-                    const overdue = await Invoice.find({
-                        school_id: schoolId, status: 'pending', dueDate: { $gte: limit, $lte: yesterday }
-                    }).limit(50).populate('student').populate('tutor');
-
-                    for (const inv of overdue) {
-                        const sent = await NotificationLog.exists({ invoice_id: inv._id, type: 'overdue' });
-                        if (!sent) await this._prepareAndQueue(inv, 'overdue');
+                        if (!sentToday) {
+                            await this._prepareAndQueue(inv, type);
+                        }
                     }
                 }
             }
@@ -129,6 +176,7 @@ class NotificationService {
         }
     }
 
+    // ... (Mantém _prepareAndQueue, processQueue, _sendSingleNotification, etc. iguais ao seu código) ...
     async _prepareAndQueue(invoice, type) {
         let name, phone;
         if (invoice.tutor) { name = invoice.tutor.fullName; phone = invoice.tutor.phoneNumber || invoice.tutor.telefone; }
@@ -257,7 +305,7 @@ class NotificationService {
                     log.school_id, 
                     log.target_phone, 
                     invoice.boleto_url, 
-                    fileName,              
+                    fileName,               
                     "📄 Segue o seu boleto." 
                 );
             } catch (e) {

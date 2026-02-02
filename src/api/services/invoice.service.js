@@ -2,8 +2,8 @@ const Invoice = require('../models/invoice.model.js');
 const Student = require('../models/student.model.js');
 const Tutor = require('../models/tutor.model.js');
 const School = require('../models/school.model.js'); 
-const whatsappService = require('./whatsapp.service.js'); // Mantido para funções auxiliares de conexão se necessário
-const NotificationService = require('./notification.service.js'); // [NOVO] O Maestro da Fila
+const whatsappService = require('./whatsapp.service.js'); 
+const NotificationService = require('./notification.service.js'); // O Maestro da Fila
 const GatewayFactory = require('../gateways/gateway.factory.js');
 const { v4: uuidv4 } = require('uuid'); 
 const axios = require('axios');
@@ -13,7 +13,7 @@ const { PDFDocument } = require('pdf-lib');
 class InvoiceService {
 
   /**
-   * Cria fatura (Mercado Pago ou Cora) e enfileira a notificação
+   * Cria fatura (Mercado Pago ou Cora) e enfileira a notificação SE for elegível
    */
   async createInvoice(invoiceData, schoolId) {
     const { studentId, value, dueDate, description, tutorId, gateway: chosenGateway } = invoiceData;
@@ -138,23 +138,33 @@ class InvoiceService {
 
       await newInvoice.save();
 
-      // --- AUTOMAÇÃO (MUDANÇA CRÍTICA) ---
-      // Não enviamos mais direto. Colocamos na fila segura.
+      // ==================================================================================
+      // 🛡️ AUTOMAÇÃO COM FILTRO DE DATA (AQUI ESTÁ A CORREÇÃO)
+      // ==================================================================================
       if (payerPhone) {
           try {
-              await NotificationService.queueNotification({
-                  schoolId: schoolId,
-                  invoiceId: newInvoice._id,
-                  studentName: student.fullName,
-                  tutorName: payerName,
-                  phone: payerPhone,
-                  type: 'new_invoice' // Define o template "FUTURO/HOJE" lá no NotificationService
-              });
+              // Verifica se a data é elegível (Hoje, Atrasado ou Daqui a 3 dias)
+              // Se for fatura para daqui a 5 meses, retorna FALSE.
+              const shouldSendNow = NotificationService.isEligibleForSending(newInvoice.dueDate);
+
+              if (shouldSendNow) {
+                  await NotificationService.queueNotification({
+                      schoolId: schoolId,
+                      invoiceId: newInvoice._id,
+                      studentName: student.fullName,
+                      tutorName: payerName,
+                      phone: payerPhone,
+                      type: 'new_invoice' 
+                  });
+                  console.log(`✅ [Automação] Fatura enviada para a fila (Elegível).`);
+              } else {
+                  console.log(`⏳ [Automação] Fatura gerada, mas aguardará a data correta para envio.`);
+              }
           } catch (queueError) {
-              console.error('⚠️ Erro ao enfileirar notificação automática:', queueError.message);
-              // Não falhamos a criação da fatura se a fila der erro, apenas logamos.
+              console.error('⚠️ Erro ao tentar enfileirar (não bloqueante):', queueError.message);
           }
       }
+      // ==================================================================================
 
       // Retorna a fatura populada
       return await this.getInvoiceById(newInvoice._id, schoolId);
@@ -188,7 +198,8 @@ class InvoiceService {
   }
 
   /**
-   * Reenvio Manual (Agora também usa a Fila para segurança)
+   * Reenvio Manual 
+   * (Mantém o envio direto para a fila, pois é uma ação manual do usuário)
    */
   async resendNotification(invoiceId, schoolId) {
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
@@ -230,43 +241,12 @@ class InvoiceService {
 
   /**
    * Processador Diário Legado
-   * (Mantido para compatibilidade, mas agora delega para a fila)
+   * Mantido para compatibilidade, mas a lógica real está no NotificationService.scanAndQueueInvoices
    */
   async processDailyReminders() {
-      const hoje = new Date();
-      hoje.setHours(0, 0, 0, 0);
-      const amanha = new Date(hoje);
-      amanha.setDate(amanha.getDate() + 1);
-
-      const faturasVencendo = await Invoice.find({
-          status: 'pending',
-          dueDate: { $gte: hoje, $lt: amanha }
-      }).populate('student').populate('tutor');
-
-      console.log(`🔎 [InvoiceService] Encontradas ${faturasVencendo.length} faturas vencendo hoje.`);
-
-      for (const fatura of faturasVencendo) {
-          let targetName, targetPhone;
-          if (fatura.tutor) {
-              targetName = fatura.tutor.fullName;
-              targetPhone = fatura.tutor.phoneNumber || fatura.tutor.telefone;
-          } else if (fatura.student) {
-              targetName = fatura.student.fullName;
-              targetPhone = fatura.student.phoneNumber;
-          }
-          
-          if (targetName && targetPhone) {
-              // Delega para o Maestro (NotificationService)
-              await NotificationService.queueNotification({
-                  schoolId: fatura.school_id,
-                  invoiceId: fatura._id,
-                  studentName: fatura.student.fullName,
-                  tutorName: targetName,
-                  phone: targetPhone,
-                  type: 'reminder' // ou 'due_today' se configurado no NotificationService
-              });
-          }
-      }
+      // Esta função pode eventualmente ser removida se o Cron do NotificationService estiver rodando 100%
+      // Por enquanto, mantemos para não quebrar chamadas antigas
+      console.log('⚠️ [InvoiceService] processDailyReminders chamado (Legado). Considere usar o NotificationService.');
   }
 
   async cancelInvoice(invoiceId, schoolId) {
