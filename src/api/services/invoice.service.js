@@ -16,7 +16,8 @@ class InvoiceService {
    * Cria fatura (Mercado Pago ou Cora) e enfileira a notificação SE for elegível
    */
   async createInvoice(invoiceData, schoolId) {
-    const { studentId, value, dueDate, description, tutorId, gateway: chosenGateway } = invoiceData;
+    // [MODIFICAÇÃO 1] Extraímos o sendNow do invoiceData
+    const { studentId, value, dueDate, description, tutorId, gateway: chosenGateway, sendNow } = invoiceData;
 
     // 1. Busca configurações
     const selectString = [
@@ -139,11 +140,15 @@ class InvoiceService {
       await newInvoice.save();
 
       // ==================================================================================
-      // 🛡️ AUTOMAÇÃO COM FILTRO DE DATA
+      // 🛡️ AUTOMAÇÃO COM FILTRO DE DATA + FORÇAR ENVIO
       // ==================================================================================
       if (payerPhone) {
           try {
-              const shouldSendNow = NotificationService.isEligibleForSending(newInvoice.dueDate);
+              // Verifica se a data é elegível AUTOMATICAMENTE
+              const isAutoEligible = NotificationService.isEligibleForSending(newInvoice.dueDate);
+              
+              // [MODIFICAÇÃO 2] Se o Frontend mandou sendNow: true, ignoramos a data e enviamos.
+              const shouldSendNow = isAutoEligible || (sendNow === true);
 
               if (shouldSendNow) {
                   await NotificationService.queueNotification({
@@ -154,7 +159,7 @@ class InvoiceService {
                       phone: payerPhone,
                       type: 'new_invoice' 
                   });
-                  console.log(`✅ [Automação] Fatura enviada para a fila (Elegível).`);
+                  console.log(`✅ [Automação] Fatura enviada para a fila (Elegível: ${isAutoEligible} | Forçado: ${sendNow}).`);
               } else {
                   console.log(`⏳ [Automação] Fatura gerada, mas aguardará a data correta para envio.`);
               }
@@ -164,11 +169,13 @@ class InvoiceService {
       }
       // ==================================================================================
 
+      // Retorna a fatura populada
       return await this.getInvoiceById(newInvoice._id, schoolId);
 
     } catch (error) {
       console.error('❌ ERRO Create Invoice (Raw):', error.message);
       
+      // --- TRATAMENTO DE ERRO ESPECÍFICO (CORA) ---
       if (error.response && error.response.data && error.response.data.errors) {
           const coraErrors = error.response.data.errors;
           const isIdentityError = coraErrors.some(e => e.code === 'customer.document.identity' || (e.message && e.message.includes('CPF')));
@@ -195,6 +202,7 @@ class InvoiceService {
 
   /**
    * Reenvio Manual 
+   * (Mantém o envio direto para a fila, pois é uma ação manual do usuário)
    */
   async resendNotification(invoiceId, schoolId) {
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
@@ -218,6 +226,7 @@ class InvoiceService {
     }
 
     try {
+        // Enfileira com prioridade (o type 'reminder' usa um template de lembrete)
         await NotificationService.queueNotification({
             schoolId: schoolId,
             invoiceId: invoice._id,
@@ -233,7 +242,13 @@ class InvoiceService {
     }
   }
 
+  /**
+   * Processador Diário Legado
+   * Mantido para compatibilidade, mas a lógica real está no NotificationService.scanAndQueueInvoices
+   */
   async processDailyReminders() {
+      // Esta função pode eventualmente ser removida se o Cron do NotificationService estiver rodando 100%
+      // Por enquanto, mantemos para não quebrar chamadas antigas
       console.log('⚠️ [InvoiceService] processDailyReminders chamado (Legado). Considere usar o NotificationService.');
   }
 
@@ -373,7 +388,6 @@ class InvoiceService {
                     result = await this.handlePaymentWebhook(invoice.external_id, 'MP-SYNC', statusMP);
                 }
             } 
-            // Se houver lógica de consulta Cora no futuro, ela entra aqui
             
             // Se houve atualização, incrementa o contador
             if (result.updated) {
