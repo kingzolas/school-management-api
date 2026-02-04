@@ -1,9 +1,10 @@
+// src/api/services/invoice.service.js
 const Invoice = require('../models/invoice.model.js');
 const Student = require('../models/student.model.js');
 const Tutor = require('../models/tutor.model.js');
 const School = require('../models/school.model.js'); 
 const whatsappService = require('./whatsapp.service.js'); 
-const NotificationService = require('./notification.service.js'); // O Maestro da Fila
+const NotificationService = require('./notification.service.js');
 const GatewayFactory = require('../gateways/gateway.factory.js');
 const { v4: uuidv4 } = require('uuid'); 
 const axios = require('axios');
@@ -16,7 +17,6 @@ class InvoiceService {
    * Cria fatura (Mercado Pago ou Cora) e enfileira a notificação SE for elegível
    */
   async createInvoice(invoiceData, schoolId) {
-    // [MODIFICAÇÃO 1] Extraímos o sendNow do invoiceData
     const { studentId, value, dueDate, description, tutorId, gateway: chosenGateway, sendNow } = invoiceData;
 
     // 1. Busca configurações
@@ -47,7 +47,7 @@ class InvoiceService {
     // 3. Limpeza Endereço
     const rawAddr = student.address || {};
     let cleanZip = (rawAddr.zipCode || rawAddr.cep || '').replace(/\D/g, '');
-    
+     
     if (cleanZip.length !== 8) {
         cleanZip = '01310100'; // Fallback
     }
@@ -95,7 +95,7 @@ class InvoiceService {
     const finalEmail = (payerEmail && payerEmail.includes('@')) 
         ? payerEmail 
         : "pagador_sem_email@academyhub.com"; 
-    
+     
     const tempId = new Invoice()._id; 
 
     const paymentPayload = {
@@ -144,10 +144,7 @@ class InvoiceService {
       // ==================================================================================
       if (payerPhone) {
           try {
-              // Verifica se a data é elegível AUTOMATICAMENTE
               const isAutoEligible = NotificationService.isEligibleForSending(newInvoice.dueDate);
-              
-              // [MODIFICAÇÃO 2] Se o Frontend mandou sendNow: true, ignoramos a data e enviamos.
               const shouldSendNow = isAutoEligible || (sendNow === true);
 
               if (shouldSendNow) {
@@ -169,40 +166,74 @@ class InvoiceService {
       }
       // ==================================================================================
 
-      // Retorna a fatura populada
       return await this.getInvoiceById(newInvoice._id, schoolId);
 
     } catch (error) {
       console.error('❌ ERRO Create Invoice (Raw):', error.message);
       
-      // --- TRATAMENTO DE ERRO ESPECÍFICO (CORA) ---
-      if (error.response && error.response.data && error.response.data.errors) {
-          const coraErrors = error.response.data.errors;
-          const isIdentityError = coraErrors.some(e => e.code === 'customer.document.identity' || (e.message && e.message.includes('CPF')));
-          
-          if (isIdentityError) {
-              throw new Error('O CPF do Responsável Financeiro é inválido ou está incorreto. Verifique o cadastro do responsável.');
-          }
-          if (coraErrors.length > 0 && coraErrors[0].message) {
-               throw new Error(`Erro no Banco Cora: ${coraErrors[0].message}`);
-          }
-      }
-
-      if (error.message && (error.message.includes('customer.document.identity') || error.message.includes('not a valid CNPJ or CPF'))) {
-         throw new Error('O CPF do Responsável Financeiro é inválido. Verifique o cadastro.');
-      }
-      
-      if (error.message.includes('Erro Cora')) {
-         throw new Error(`Erro na Cora: ${error.message.replace('Erro Cora Create:', '').trim()}`);
-      }
-
-      throw new Error(`Falha na criação da fatura: ${error.message}`);
+      // [MODIFICAÇÃO IMPORTANTE] 
+      // Usamos uma função auxiliar para traduzir o erro antes de lançar
+      const friendlyError = this._translateGatewayError(error);
+      throw new Error(friendlyError);
     }
   }
 
   /**
+   * [NOVO MÉTODO] Tradutor de Erros (Principalmente Cora)
+   * Recebe o erro bruto do Axios e devolve uma string amigável
+   */
+  _translateGatewayError(error) {
+    // 1. Verifica se tem resposta da API (Axios error response)
+    if (error.response && error.response.data) {
+        const data = error.response.data;
+        
+        // Log para debug
+        // console.log('DEBUG CORA ERROR:', JSON.stringify(data, null, 2));
+
+        if (data.errors && Array.isArray(data.errors) && data.errors.length > 0) {
+            const err = data.errors[0]; // Pega o primeiro erro
+            const code = err.code || '';
+            const msg = (err.message || '').toLowerCase();
+
+            // Mapa de códigos comuns da Cora
+            if (code === 'customer.email' || msg.includes('not a valid email')) {
+                return 'O e-mail do Responsável Financeiro é inválido ou está mal formatado. Por favor, corrija o cadastro.';
+            }
+            if (code === 'customer.document' || code === 'customer.document.identity' || msg.includes('cpf') || msg.includes('cnpj')) {
+                return 'O CPF/CNPJ do Responsável Financeiro é inválido. Verifique o cadastro.';
+            }
+            if (code === 'customer.name') {
+                return 'O nome do Responsável Financeiro é inválido ou muito curto.';
+            }
+            if (code === 'services.amount' || msg.includes('amount')) {
+                return 'O valor da cobrança é inválido (deve ser maior que zero).';
+            }
+            if (code === 'payment_options.due_date') {
+                return 'A data de vencimento é inválida ou já passou (para boletos registrados).';
+            }
+            
+            // Retorno genérico do banco se não mapeado
+            return `Erro no Banco Cora: ${err.message}`;
+        }
+
+        // Mensagem direta sem array
+        if (data.message) {
+            if (data.message.includes('Request has invalid parameters')) return 'Dados inválidos enviados para o banco. Verifique e-mail e CPF.';
+            return `O Banco recusou: ${data.message}`;
+        }
+    }
+
+    // 2. Tratamentos de strings genéricas que podem ter passado
+    const msg = error.message || '';
+    if (msg.includes('customer.email')) return 'E-mail do responsável inválido.';
+    if (msg.includes('customer.document')) return 'CPF do responsável inválido.';
+
+    // 3. Retorno padrão se não for nada acima
+    return msg;
+  }
+
+  /**
    * Reenvio Manual 
-   * (Mantém o envio direto para a fila, pois é uma ação manual do usuário)
    */
   async resendNotification(invoiceId, schoolId) {
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
@@ -226,7 +257,6 @@ class InvoiceService {
     }
 
     try {
-        // Enfileira com prioridade (o type 'reminder' usa um template de lembrete)
         await NotificationService.queueNotification({
             schoolId: schoolId,
             invoiceId: invoice._id,
@@ -242,13 +272,7 @@ class InvoiceService {
     }
   }
 
-  /**
-   * Processador Diário Legado
-   * Mantido para compatibilidade, mas a lógica real está no NotificationService.scanAndQueueInvoices
-   */
   async processDailyReminders() {
-      // Esta função pode eventualmente ser removida se o Cron do NotificationService estiver rodando 100%
-      // Por enquanto, mantemos para não quebrar chamadas antigas
       console.log('⚠️ [InvoiceService] processDailyReminders chamado (Legado). Considere usar o NotificationService.');
   }
 
@@ -256,10 +280,10 @@ class InvoiceService {
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId });
     if (!invoice) throw new Error('Fatura não encontrada');
     if (invoice.status === 'paid') throw new Error('Fatura já PAGA não pode ser cancelada.');
-    
+     
     const school = await School.findById(schoolId).lean();
     const gatewayName = invoice.gateway === 'cora' ? 'CORA' : 'MERCADOPAGO';
-    
+     
     try {
         const gateway = GatewayFactory.create(school, gatewayName);
         if (invoice.external_id) {
@@ -274,14 +298,10 @@ class InvoiceService {
     return invoice;
   }
 
-  /**
-   * [ATUALIZADO] Retorna flag 'updated' e 'newStatus'
-   */
   async handlePaymentWebhook(externalId, providerName, statusRaw) {
     let invoice = await Invoice.findOne({ 
         $or: [ { external_id: externalId }, { mp_payment_id: externalId } ]
     });
-    // Se não achar a fatura, retorna que não foi processado/atualizado
     if (!invoice) return { processed: false, updated: false, reason: 'not_found' };
 
     let novoStatus = invoice.status;
@@ -297,7 +317,6 @@ class InvoiceService {
     }
 
     let wasUpdated = false;
-    // Só salva se o status realmente mudou
     if (invoice.status !== novoStatus) {
       invoice.status = novoStatus;
       if (novoStatus === 'paid' && !invoice.paidAt) invoice.paidAt = new Date();
@@ -305,8 +324,7 @@ class InvoiceService {
       console.log(`✅ [DB UPDATE] Fatura ${invoice._id} SALVA como ${novoStatus} (Origem: ${providerName})`);
       wasUpdated = true;
     }
-    
-    // Retorna dados detalhados para o relatório de sync
+     
     return { processed: true, updated: wasUpdated, invoice, newStatus: novoStatus };
   }
 
@@ -349,9 +367,6 @@ class InvoiceService {
     return await mergedPdf.save();
   }
 
-  /**
-   * [ATUALIZADO] Retorna relatório de estatísticas (stats)
-   */
   async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null) {
     const filter = {
         school_id: schoolId,
@@ -363,8 +378,7 @@ class InvoiceService {
     if (singleInvoiceId) filter._id = singleInvoiceId;
 
     const pendingInvoices = await Invoice.find(filter);
-    
-    // Estrutura de relatório
+     
     const stats = {
         totalChecked: pendingInvoices.length,
         updatedCount: 0,
@@ -388,8 +402,7 @@ class InvoiceService {
                     result = await this.handlePaymentWebhook(invoice.external_id, 'MP-SYNC', statusMP);
                 }
             } 
-            
-            // Se houve atualização, incrementa o contador
+             
             if (result.updated) {
                 stats.updatedCount++;
                 stats.details.push({
@@ -405,16 +418,14 @@ class InvoiceService {
   }
 
   async getAllInvoices(filters = {}, schoolId) {
-    // Sync em background sem travar a resposta
     this.syncPendingInvoices(null, schoolId).catch(() => {});
-    
+     
     const query = { school_id: schoolId }; 
     if (filters.status) query.status = filters.status;
     return Invoice.find(query).sort({ dueDate: -1 }).populate('student', 'fullName').populate('tutor', 'fullName');
   }
 
   async getInvoiceById(invoiceId, schoolId) {
-    // Tenta sincronizar esse boleto específico antes de devolver
     try { await this.syncPendingInvoices(null, schoolId, invoiceId); } catch (e) {}
     return Invoice.findOne({ _id: invoiceId, school_id: schoolId }).populate('student', 'fullName profilePicture').populate('tutor', 'fullName');
   }
@@ -423,7 +434,7 @@ class InvoiceService {
     try { await this.syncPendingInvoices(studentId, schoolId); } catch (e) {}
     return Invoice.find({ student: studentId, school_id: schoolId }).sort({ dueDate: -1 }).populate('tutor', 'fullName');
   }
-  
+   
   async findOverdue(schoolId) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
