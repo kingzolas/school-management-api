@@ -13,9 +13,6 @@ const { PDFDocument } = require('pdf-lib');
 
 class InvoiceService {
 
-  /**
-   * Cria fatura (Mercado Pago ou Cora) e enfileira a notificação SE for elegível
-   */
   async createInvoice(invoiceData, schoolId) {
     const { studentId, value, dueDate, description, tutorId, gateway: chosenGateway, sendNow } = invoiceData;
 
@@ -139,9 +136,7 @@ class InvoiceService {
 
       await newInvoice.save();
 
-      // ==================================================================================
-      // 🛡️ AUTOMAÇÃO COM FILTRO DE DATA + FORÇAR ENVIO
-      // ==================================================================================
+      // Automação
       if (payerPhone) {
           try {
               const isAutoEligible = NotificationService.isEligibleForSending(newInvoice.dueDate);
@@ -156,94 +151,56 @@ class InvoiceService {
                       phone: payerPhone,
                       type: 'new_invoice' 
                   });
-                  console.log(`✅ [Automação] Fatura enviada para a fila (Elegível: ${isAutoEligible} | Forçado: ${sendNow}).`);
-              } else {
-                  console.log(`⏳ [Automação] Fatura gerada, mas aguardará a data correta para envio.`);
               }
           } catch (queueError) {
               console.error('⚠️ Erro ao tentar enfileirar (não bloqueante):', queueError.message);
           }
       }
-      // ==================================================================================
 
       return await this.getInvoiceById(newInvoice._id, schoolId);
 
     } catch (error) {
       console.error('❌ ERRO Create Invoice (Raw):', error.message);
-      
-      // [MODIFICAÇÃO IMPORTANTE] 
-      // Usamos uma função auxiliar para traduzir o erro antes de lançar
       const friendlyError = this._translateGatewayError(error);
       throw new Error(friendlyError);
     }
   }
 
-  /**
-   * [NOVO MÉTODO] Tradutor de Erros (Principalmente Cora)
-   * Recebe o erro bruto do Axios e devolve uma string amigável
-   */
   _translateGatewayError(error) {
-    // 1. Verifica se tem resposta da API (Axios error response)
     if (error.response && error.response.data) {
         const data = error.response.data;
-        
-        // Log para debug
-        // console.log('DEBUG CORA ERROR:', JSON.stringify(data, null, 2));
-
         if (data.errors && Array.isArray(data.errors) && data.errors.length > 0) {
-            const err = data.errors[0]; // Pega o primeiro erro
+            const err = data.errors[0];
             const code = err.code || '';
             const msg = (err.message || '').toLowerCase();
 
-            // Mapa de códigos comuns da Cora
-            if (code === 'customer.email' || msg.includes('not a valid email')) {
-                return 'O e-mail do Responsável Financeiro é inválido ou está mal formatado. Por favor, corrija o cadastro.';
-            }
-            if (code === 'customer.document' || code === 'customer.document.identity' || msg.includes('cpf') || msg.includes('cnpj')) {
-                return 'O CPF/CNPJ do Responsável Financeiro é inválido. Verifique o cadastro.';
-            }
-            if (code === 'customer.name') {
-                return 'O nome do Responsável Financeiro é inválido ou muito curto.';
-            }
-            if (code === 'services.amount' || msg.includes('amount')) {
-                return 'O valor da cobrança é inválido (deve ser maior que zero).';
-            }
-            if (code === 'payment_options.due_date') {
-                return 'A data de vencimento é inválida ou já passou (para boletos registrados).';
-            }
+            if (code === 'customer.email' || msg.includes('not a valid email')) return 'O e-mail do Responsável Financeiro é inválido.';
+            if (code === 'customer.document' || msg.includes('cpf')) return 'O CPF/CNPJ do Responsável Financeiro é inválido.';
+            if (code === 'customer.name') return 'O nome do Responsável Financeiro é inválido ou muito curto.';
+            if (code === 'services.amount') return 'O valor da cobrança é inválido.';
+            if (code === 'payment_options.due_date') return 'A data de vencimento é inválida ou já passou.';
             
-            // Retorno genérico do banco se não mapeado
             return `Erro no Banco Cora: ${err.message}`;
         }
-
-        // Mensagem direta sem array
         if (data.message) {
-            if (data.message.includes('Request has invalid parameters')) return 'Dados inválidos enviados para o banco. Verifique e-mail e CPF.';
+            if (data.message.includes('Request has invalid parameters')) return 'Dados inválidos enviados para o banco.';
             return `O Banco recusou: ${data.message}`;
         }
     }
-
-    // 2. Tratamentos de strings genéricas que podem ter passado
     const msg = error.message || '';
     if (msg.includes('customer.email')) return 'E-mail do responsável inválido.';
-    if (msg.includes('customer.document')) return 'CPF do responsável inválido.';
-
-    // 3. Retorno padrão se não for nada acima
     return msg;
   }
 
-  /**
-   * Reenvio Manual 
-   */
   async resendNotification(invoiceId, schoolId) {
+    // ... (Código de reenvio mantido igual)
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
-        .populate('student')
-        .populate('tutor');
+        .populate('student').populate('tutor');
 
     if (!invoice) throw new Error('Fatura não encontrada.');
-
+    
+    // ... Logica de pegar telefone ...
     let targetName, targetPhone;
-
     if (invoice.tutor) {
         targetName = invoice.tutor.fullName;
         targetPhone = invoice.tutor.phoneNumber || invoice.tutor.telefone || invoice.tutor.celular;
@@ -252,9 +209,7 @@ class InvoiceService {
         targetPhone = invoice.student.phoneNumber || invoice.student.telefone || invoice.student.celular;
     }
 
-    if (!targetPhone) {
-        throw new Error('Responsável financeiro não possui telefone cadastrado.');
-    }
+    if (!targetPhone) throw new Error('Responsável financeiro sem telefone.');
 
     try {
         await NotificationService.queueNotification({
@@ -267,13 +222,12 @@ class InvoiceService {
         });
         return true;
     } catch (e) {
-        console.error("Erro no reenvio manual:", e);
         throw new Error("Erro ao agendar envio: " + e.message);
     }
   }
 
   async processDailyReminders() {
-      console.log('⚠️ [InvoiceService] processDailyReminders chamado (Legado). Considere usar o NotificationService.');
+      console.log('⚠️ [InvoiceService] processDailyReminders chamado (Legado).');
   }
 
   async cancelInvoice(invoiceId, schoolId) {
@@ -286,9 +240,7 @@ class InvoiceService {
      
     try {
         const gateway = GatewayFactory.create(school, gatewayName);
-        if (invoice.external_id) {
-            await gateway.cancelInvoice(invoice.external_id);
-        }
+        if (invoice.external_id) await gateway.cancelInvoice(invoice.external_id);
     } catch (error) {
         console.warn(`Erro ao cancelar no gateway (${gatewayName}):`, error.message);
     }
@@ -299,48 +251,53 @@ class InvoiceService {
   }
 
   async handlePaymentWebhook(externalId, providerName, statusRaw) {
+    console.log(`🔎 [WEBHOOK/SYNC] Processando status para ID: ${externalId} | Status: ${statusRaw} | Prov: ${providerName}`);
+    
     let invoice = await Invoice.findOne({ 
         $or: [ { external_id: externalId }, { mp_payment_id: externalId } ]
     });
-    if (!invoice) return { processed: false, updated: false, reason: 'not_found' };
+    
+    if (!invoice) {
+        console.error(`❌ [WEBHOOK/SYNC] Fatura não encontrada no DB para o ID ${externalId}`);
+        return { processed: false, updated: false, reason: 'not_found' };
+    }
 
     let novoStatus = invoice.status;
     const statusPago = ['approved', 'paid', 'COMPLETED', 'LIQUIDATED', 'PAID'];
     const statusCancelado = ['cancelled', 'rejected', 'CANCELED', 'canceled', 'CANCELLED'];
 
     if (statusRaw) {
-        if (statusPago.includes(statusRaw) || statusPago.includes(statusRaw.toLowerCase())) {
+        if (statusPago.includes(statusRaw) || statusPago.includes(statusRaw.toUpperCase())) {
             novoStatus = 'paid';
-        } else if (statusCancelado.includes(statusRaw) || statusCancelado.includes(statusRaw.toLowerCase())) {
+        } else if (statusCancelado.includes(statusRaw) || statusCancelado.includes(statusRaw.toUpperCase())) {
             novoStatus = 'canceled';
         }
     }
 
     let wasUpdated = false;
     if (invoice.status !== novoStatus) {
+      console.log(`🔄 [STATUS CHANGE] Fatura ${invoice._id} mudando de ${invoice.status} para ${novoStatus}`);
       invoice.status = novoStatus;
       if (novoStatus === 'paid' && !invoice.paidAt) invoice.paidAt = new Date();
       await invoice.save();
-      console.log(`✅ [DB UPDATE] Fatura ${invoice._id} SALVA como ${novoStatus} (Origem: ${providerName})`);
+      console.log(`✅ [DB SAVED] Fatura ${invoice._id} salva com sucesso.`);
       wasUpdated = true;
+    } else {
+        console.log(`ℹ️ [NO CHANGE] Fatura ${invoice._id} já estava com status ${invoice.status}.`);
     }
      
     return { processed: true, updated: wasUpdated, invoice, newStatus: novoStatus };
   }
 
   async generateBatchPdf(invoiceIds, schoolId) {
+    // ... (Mantido código de PDF igual)
     const invoices = await Invoice.find({
         _id: { $in: invoiceIds },
         school_id: schoolId,
-        $or: [
-            { boleto_url: { $exists: true, $ne: null } },
-            { mp_ticket_url: { $exists: true, $ne: null } }
-        ]
+        $or: [ { boleto_url: { $exists: true, $ne: null } }, { mp_ticket_url: { $exists: true, $ne: null } } ]
     });
 
-    if (!invoices.length) {
-        throw new Error("Nenhuma fatura com boleto/PDF encontrada para impressão.");
-    }
+    if (!invoices.length) throw new Error("Nenhuma fatura encontrada.");
 
     const mergedPdf = await PDFDocument.create();
     let processedCount = 0;
@@ -356,18 +313,20 @@ class InvoiceService {
             copiedPages.forEach((page) => mergedPdf.addPage(page));
             processedCount++;
         } catch (error) {
-            console.error(`Erro ao baixar/processar boleto ${inv._id}:`, error.message);
+            console.error(`Erro PDF ${inv._id}:`, error.message);
         }
     }
 
-    if (processedCount === 0) {
-        throw new Error("Falha ao processar os arquivos PDF. Verifique se os links dos boletos estão acessíveis.");
-    }
-
+    if (processedCount === 0) throw new Error("Falha ao processar PDFs.");
     return await mergedPdf.save();
   }
 
+  // =========================================================================================
+  // 🔥 MÉTODO COM LOGS DETALHADOS (DEBUG MODE ON)
+  // =========================================================================================
   async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null) {
+    console.log(`🚀 [SYNC] Iniciando syncPendingInvoices. SchoolID: ${schoolId}`);
+    
     const filter = {
         school_id: schoolId,
         status: 'pending',
@@ -378,47 +337,144 @@ class InvoiceService {
     if (singleInvoiceId) filter._id = singleInvoiceId;
 
     const pendingInvoices = await Invoice.find(filter);
+    console.log(`📂 [SYNC] Encontradas ${pendingInvoices.length} faturas pendentes no banco.`);
      
-    const stats = {
-        totalChecked: pendingInvoices.length,
-        updatedCount: 0,
-        details: []
-    };
-
+    const stats = { totalChecked: pendingInvoices.length, updatedCount: 0, details: [] };
     if (pendingInvoices.length === 0) return stats;
 
-    const school = await School.findById(schoolId).select('+mercadoPagoConfig.prodAccessToken').lean();
-    if (!school) return stats;
+    const selectString = [
+        '+mercadoPagoConfig.prodAccessToken',
+        'coraConfig.isSandbox', 
+        'coraConfig.sandbox.clientId',
+        '+coraConfig.sandbox.certificateContent',
+        '+coraConfig.sandbox.privateKeyContent',
+        'coraConfig.production.clientId',
+        '+coraConfig.production.certificateContent',
+        '+coraConfig.production.privateKeyContent'
+    ].join(' ');
+
+    const school = await School.findById(schoolId).select(selectString).lean();
+    if (!school) {
+        console.error(`❌ [SYNC] Escola não encontrada nas configurações. Abortando.`);
+        return stats;
+    }
+
+    let coraAccessToken = null;
+
+    // Função interna de Auth com LOGS
+    const getCoraToken = async () => {
+        if (coraAccessToken) return coraAccessToken;
+        try {
+            console.log(`🔑 [CORA-AUTH] Tentando gerar token...`);
+            const isSandbox = school.coraConfig?.isSandbox;
+            const config = isSandbox ? school.coraConfig.sandbox : school.coraConfig.production;
+            
+            if (!config.certificateContent || !config.privateKeyContent) {
+                console.error(`❌ [CORA-AUTH] Certificado ou Chave Privada ausentes.`);
+                return null;
+            }
+
+            const httpsAgent = new https.Agent({
+                cert: config.certificateContent,
+                key: config.privateKeyContent,
+                rejectUnauthorized: false
+            });
+
+            const authUrl = isSandbox 
+                ? 'https://matls-clients.api.stage.cora.com.br/token'
+                : 'https://matls-clients.api.cora.com.br/token';
+
+            const payload = {
+                grant_type: 'client_credentials',
+                client_id: config.clientId
+            };
+
+            const response = await axios.post(authUrl, payload, {
+                httpsAgent,
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            coraAccessToken = response.data.access_token;
+            console.log('✅ [CORA-AUTH] Token gerado com sucesso!');
+            return coraAccessToken;
+        } catch (e) {
+            const data = e.response ? JSON.stringify(e.response.data) : 'Sem dados';
+            console.error(`❌ [CORA-AUTH] Falha Crítica: ${e.message} | Dados: ${data}`);
+            return null;
+        }
+    };
 
     await Promise.all(pendingInvoices.map(async (invoice) => {
         try {
             let result = { updated: false };
+            console.log(`👉 [SYNC-ITEM] Verificando Invoice: ${invoice._id} | Gateway: ${invoice.gateway} | ExtID: ${invoice.external_id}`);
 
+            // ----------------------------------------------------
+            // 1. MERCADO PAGO
+            // ----------------------------------------------------
             if (invoice.gateway === 'mercadopago') {
                 const mpToken = school.mercadoPagoConfig?.prodAccessToken;
                 if (mpToken) {
                     const res = await axios.get(`https://api.mercadopago.com/v1/payments/${invoice.external_id}`, { headers: { 'Authorization': `Bearer ${mpToken}` } });
-                    const statusMP = res.data.status;
-                    result = await this.handlePaymentWebhook(invoice.external_id, 'MP-SYNC', statusMP);
+                    result = await this.handlePaymentWebhook(invoice.external_id, 'MP-SYNC', res.data.status);
+                } else {
+                    console.warn(`⚠️ [SYNC-MP] Token MP não configurado.`);
                 }
             } 
+            // ----------------------------------------------------
+            // 2. CORA
+            // ----------------------------------------------------
+            else if (invoice.gateway === 'cora') {
+                const token = await getCoraToken();
+                if (token) {
+                    const isSandbox = school.coraConfig?.isSandbox;
+                    const baseUrl = isSandbox 
+                        ? 'https://api.stage.cora.com.br/v2/invoices' 
+                        : 'https://api.cora.com.br/v2/invoices';
+
+                    const urlConsulta = `${baseUrl}/${invoice.external_id}`;
+                    // console.log(`📡 [CORA-REQ] GET ${urlConsulta}`); // Descomente se quiser ver a URL exata
+
+                    try {
+                        const res = await axios.get(urlConsulta, {
+                            headers: { 
+                                'Authorization': `Bearer ${token}`,
+                                'X-API-Key': isSandbox ? school.coraConfig.sandbox.clientId : school.coraConfig.production.clientId
+                            }
+                        });
+
+                        const statusCora = res.data.status || res.data.state;
+                        console.log(`📩 [CORA-RES] Invoice ${invoice.external_id} retornou status: ${statusCora}`);
+
+                        if (statusCora) {
+                            result = await this.handlePaymentWebhook(invoice.external_id, 'CORA-SYNC', statusCora);
+                        }
+                    } catch (reqError) {
+                        const errData = reqError.response ? JSON.stringify(reqError.response.data) : 'N/A';
+                        console.error(`❌ [CORA-REQ-ERR] Falha ao consultar ID ${invoice.external_id}: ${reqError.message} | Resp: ${errData}`);
+                    }
+                } else {
+                     console.error(`❌ [CORA-SKIP] Pulo de verificação pois não há token.`);
+                }
+            }
              
             if (result.updated) {
                 stats.updatedCount++;
-                stats.details.push({
-                    id: invoice._id,
-                    newStatus: result.newStatus
-                });
+                stats.details.push({ id: invoice._id, newStatus: result.newStatus });
             }
 
-        } catch (error) { /* Silent fail */ }
+        } catch (error) { 
+            console.error(`💥 [SYNC-CRASH] Erro não tratado no loop para a fatura ${invoice._id}:`, error.message);
+        }
     }));
 
+    console.log(`🏁 [SYNC-END] Finalizado. Atualizados: ${stats.updatedCount}/${stats.totalChecked}`);
     return stats;
   }
 
   async getAllInvoices(filters = {}, schoolId) {
-    this.syncPendingInvoices(null, schoolId).catch(() => {});
+    // Sync em background ao listar
+    this.syncPendingInvoices(null, schoolId).catch(err => console.error("Erro no sync background:", err));
      
     const query = { school_id: schoolId }; 
     if (filters.status) query.status = filters.status;
