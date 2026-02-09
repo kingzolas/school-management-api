@@ -18,7 +18,7 @@ class DashboardService {
 
         const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
 
-        // Executa todas as queries em paralelo para performance
+        // Executa todas as queries em paralelo
         const [
             studentCount,
             totalTeachers,
@@ -28,7 +28,8 @@ class DashboardService {
             expenseMetrics,
             financialHistory,
             birthdays,
-            classDistribution
+            classDistribution,
+            dailyChart // <--- NOVO: Dados diários do mês atual
         ] = await Promise.all([
             // 1. Contagem de Alunos Ativos
             Student.countDocuments({ school_id: schoolId, isActive: true }),
@@ -48,14 +49,17 @@ class DashboardService {
             // 6. Métricas de Despesas (Saídas)
             this._calculateExpenses(schoolObjectId, startOfMonth, endOfMonth),
             
-            // 7. Histórico Financeiro para o Gráfico
+            // 7. Histórico Financeiro para o Gráfico de Linhas (6 Meses)
             this._getFinancialHistory(schoolObjectId),
-            
+
             // 8. Aniversariantes do Mês
             this._getBirthdays(schoolObjectId),
 
-            // 9. Distribuição de Alunos por Turma (Novo)
-            this._getClassDistribution(schoolObjectId)
+            // 9. Distribuição de Alunos por Turma
+            this._getClassDistribution(schoolObjectId),
+
+            // 10. Gráfico Diário do Mês Atual (Barras)
+            this._getCurrentMonthDaily(schoolObjectId)
         ]);
 
         return {
@@ -77,8 +81,9 @@ class DashboardService {
                 despesaPendente: expenseMetrics.totalPending,
                 saldoLiquido: financialMetrics.saldoMes - expenseMetrics.totalMonth
             },
-            chartData: financialHistory,
-            classData: classDistribution, // Envia os dados das turmas para o front
+            chartData: financialHistory, // Gráfico de Linhas (Histórico)
+            dailyChart: dailyChart,      // Gráfico de Barras (Diário)
+            classData: classDistribution,
             birthdays: birthdays
         };
     }
@@ -86,13 +91,11 @@ class DashboardService {
     // --- Métodos Privados de Cálculo ---
 
     async _calculateFinancials(schoolId, startOfDay, endOfDay, startOfMonth, endOfMonth) {
-        // Assume que valores no banco estão em centavos e divide por 100
         const metrics = await Invoice.aggregate([
             { $match: { school_id: schoolId } }, 
             {
                 $group: {
                     _id: null,
-                    // Valor total vencido e não pago
                     totalOverdueValue: { 
                         $sum: { 
                             $cond: [ 
@@ -102,7 +105,6 @@ class DashboardService {
                             ] 
                         } 
                     },
-                    // Lista de IDs de alunos inadimplentes (para contar únicos depois)
                     countOverdueStudents: { 
                         $addToSet: { 
                             $cond: [ 
@@ -112,7 +114,6 @@ class DashboardService {
                             ] 
                         } 
                     },
-                    // Recebido Hoje
                     balanceDay: { 
                         $sum: { 
                             $cond: [ 
@@ -122,7 +123,6 @@ class DashboardService {
                             ] 
                         } 
                     },
-                    // Quantidade de contas a vencer hoje
                     dueDayCount: { 
                         $sum: { 
                             $cond: [ 
@@ -132,7 +132,6 @@ class DashboardService {
                             ] 
                         } 
                     },
-                    // Recebido no Mês
                     balanceMonth: { 
                         $sum: { 
                             $cond: [ 
@@ -142,7 +141,6 @@ class DashboardService {
                             ] 
                         } 
                     },
-                    // Total Pendente Geral (Vencido ou A Vencer)
                     totalPendingValue: { 
                         $sum: { 
                             $cond: [
@@ -159,11 +157,9 @@ class DashboardService {
         const result = metrics[0] || {};
         const uniqueOverdueStudents = result.countOverdueStudents ? result.countOverdueStudents.filter(id => id !== null).length : 0;
         
-        // Cálculo da taxa de inadimplência (Vencido / (Pendente Total + Pago Total seria o ideal, mas simplificamos aqui))
-        // Aqui comparamos o que está vencido com o total que ainda tem pra receber
         const taxa = (result.totalOverdueValue > 0 && result.totalPendingValue > 0) 
             ? ((result.totalOverdueValue / result.totalPendingValue) * 100).toFixed(1) 
-            : 0;
+            : "0.0";
 
         return {
             inadimplenciaValor: result.totalOverdueValue || 0,
@@ -248,6 +244,47 @@ class DashboardService {
         });
     }
 
+    // --- NOVO: Lógica para o gráfico diário ---
+    async _getCurrentMonthDaily(schoolId) {
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+        // Busca apenas faturas PAGAS no mês atual
+        const dailyData = await Invoice.aggregate([
+            { 
+                $match: { 
+                    school_id: schoolId, 
+                    status: 'paid', 
+                    paidAt: { $gte: startOfMonth, $lte: endOfMonth } 
+                } 
+            },
+            { 
+                $group: { 
+                    _id: { day: { $dayOfMonth: "$paidAt" } }, 
+                    total: { $sum: { $divide: ["$value", 100] } } 
+                } 
+            },
+            { $sort: { "_id.day": 1 } }
+        ]);
+
+        const daysInMonth = endOfMonth.getDate();
+        const fullMonthData = [];
+        const dataMap = new Map();
+        
+        dailyData.forEach(d => dataMap.set(d._id.day, d.total));
+
+        // Preenche dias sem movimento com 0 para o gráfico não ficar buraco
+        for (let day = 1; day <= daysInMonth; day++) {
+            fullMonthData.push({
+                day: day,
+                value: dataMap.get(day) || 0.0
+            });
+        }
+
+        return fullMonthData;
+    }
+
     async _getBirthdays(schoolId) {
         const currentMonth = new Date().getMonth() + 1; 
         return await Student.aggregate([
@@ -259,7 +296,6 @@ class DashboardService {
     }
 
     async _getClassDistribution(schoolId) {
-        // Agrupa alunos por ID de turma
         const result = await Student.aggregate([
             { $match: { school_id: schoolId, isActive: true } },
             { 
@@ -268,7 +304,6 @@ class DashboardService {
                     count: { $sum: 1 } 
                 } 
             },
-            // Busca o nome da turma na coleção 'classes'
             {
                 $lookup: {
                     from: "classes",
@@ -284,7 +319,7 @@ class DashboardService {
                     count: 1 
                 } 
             },
-            { $sort: { count: -1 } } // Ordena das maiores turmas para as menores
+            { $sort: { count: -1 } }
         ]);
 
         const totalStudents = result.reduce((acc, curr) => acc + curr.count, 0);
@@ -292,7 +327,7 @@ class DashboardService {
         return result.map(item => ({
             className: item.className,
             studentCount: item.count,
-            percentage: totalStudents > 0 ? ((item.count / totalStudents) * 100).toFixed(1) : 0
+            percentage: totalStudents > 0 ? ((item.count / totalStudents) * 100).toFixed(1) : "0"
         }));
     }
 }
