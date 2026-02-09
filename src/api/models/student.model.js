@@ -2,9 +2,9 @@ const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 const addressSchema = require('./address.model');
 
-const auditLogPlugin = require('../../helpers/auditLog.plugin'); // Importe o plugin
+const auditLogPlugin = require('../../helpers/auditLog.plugin');
 
-// --- SUB-SCHEMAS (Mantidos inalterados) ---
+// --- SUB-SCHEMAS ---
 const studentAuthSchema = new Schema({
     username: { type: String, sparse: true, trim: true },
     passwordHash: { type: String, select: false },
@@ -56,7 +56,6 @@ const academicRecordSchema = new Schema({
 const studentSchema = new Schema({
     enrollmentNumber: { type: String, unique: true, trim: true, sparse: true, },
     
-    // [NOVO] Campo para persistir a série pretendida vinda da solicitação
     intendedGrade: { type: String, trim: true },
 
     accessCredentials: { type: studentAuthSchema, default: () => ({}) },
@@ -67,18 +66,16 @@ const studentSchema = new Schema({
     race: { type: String, required: true, enum: ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Prefiro não dizer'] },
     nationality: { type: String, required: true },
     
-    // Estrutura para salvar a foto no banco (igual School)
     profilePicture: {
         data: Buffer,
         contentType: String
     },
     
-    // Contatos do Aluno (Crucial para maiores de idade)
     email: { type: String, lowercase: true, sparse: true, trim: true },
     phoneNumber: { type: String },
     
     rg: { type: String, sparse: true },
-    cpf: { type: String, sparse: true }, // Obrigatório se financialResp = 'STUDENT'
+    cpf: { type: String, sparse: true }, 
     
     birthCertificateUrl: { type: String },
     address: { type: addressSchema, required: true },
@@ -88,6 +85,7 @@ const studentSchema = new Schema({
             {
                 _id: false, 
                 tutorId: { type: Schema.Types.ObjectId, ref: 'Tutor' }, 
+                // A validação de ENUM acontece aqui, mas o hook 'pre validate' vai corrigir antes
                 relationship: { type: String, enum: ['Mãe', 'Pai', 'Avó/Avô', 'Tio/Tia', 'Outro', 'Cônjuge'] }
             }
         ],
@@ -117,7 +115,36 @@ const studentSchema = new Schema({
     timestamps: true 
 });
 
-// HOOKS DE VALIDAÇÃO
+// --- [NOVO] HOOK DE CORREÇÃO (Sanitização) ---
+// Roda ANTES da validação do Mongoose. Transforma 'pai' em 'Pai', etc.
+studentSchema.pre('validate', function(next) {
+    if (this.tutors && this.tutors.length > 0) {
+        const mapRel = {
+            'pai': 'Pai',
+            'mãe': 'Mãe', 'mae': 'Mãe',
+            'avó': 'Avó/Avô', 'avô': 'Avó/Avô', 'avo': 'Avó/Avô', 'avó/avô': 'Avó/Avô',
+            'tio': 'Tio/Tia', 'tia': 'Tio/Tia', 'tio/tia': 'Tio/Tia',
+            'conjuge': 'Cônjuge', 'cônjuge': 'Cônjuge',
+            'outro': 'Outro'
+        };
+
+        this.tutors.forEach(tutor => {
+            if (tutor.relationship && typeof tutor.relationship === 'string') {
+                const lower = tutor.relationship.toLowerCase().trim();
+                // Tenta encontrar no mapa, se não, tenta Capitalizar a primeira letra
+                if (mapRel[lower]) {
+                    tutor.relationship = mapRel[lower];
+                } else {
+                    // Fallback: 'alguma coisa' -> 'Alguma coisa'
+                    tutor.relationship = tutor.relationship.charAt(0).toUpperCase() + tutor.relationship.slice(1).toLowerCase();
+                }
+            }
+        });
+    }
+    next();
+});
+
+// HOOKS DE VALIDAÇÃO DE NEGÓCIO
 studentSchema.pre('save', function(next) {
     if (this.rg === '') { this.rg = null; }
     if (this.cpf === '') { this.cpf = null; }
@@ -159,7 +186,6 @@ studentSchema.pre('save', function(next) {
     next();
 });
 
-// ATIVE O PLUGIN AQUI
 studentSchema.plugin(auditLogPlugin, { entityName: 'Student' });
 
 const Student = mongoose.model('Student', studentSchema);

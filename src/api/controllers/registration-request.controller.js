@@ -1,10 +1,37 @@
 const service = require('../services/registration-request.service');
 const appEmitter = require('../../loaders/eventEmitter');
 
+// --- [NOVO] Função Auxiliar para Normalizar Parentesco ---
+const normalizeRelationship = (tutors) => {
+    if (!tutors || !Array.isArray(tutors)) return tutors;
+    
+    const mapRel = {
+        'pai': 'Pai',
+        'mãe': 'Mãe', 'mae': 'Mãe',
+        'avó': 'Avó/Avô', 'avô': 'Avó/Avô', 'avo': 'Avó/Avô',
+        'tio': 'Tio/Tia', 'tia': 'Tio/Tia',
+        'conjuge': 'Cônjuge', 'cônjuge': 'Cônjuge',
+        'outro': 'Outro'
+    };
+
+    return tutors.map(t => {
+        if (t.relationship) {
+            const lower = t.relationship.toLowerCase().trim();
+            if (mapRel[lower]) {
+                t.relationship = mapRel[lower];
+            } else {
+                // Capitaliza primeira letra se não achar no mapa
+                t.relationship = t.relationship.charAt(0).toUpperCase() + t.relationship.slice(1).toLowerCase();
+            }
+        }
+        return t;
+    });
+};
+// ---------------------------------------------------------
+
 exports.createRequest = async (req, res) => {
     try {
         const result = await service.createPublicRequest(req.body);
-        // Emite o evento para o WebSocket
         appEmitter.emit('registration:created', result);
         return res.status(201).json({ 
             message: 'Solicitação enviada com sucesso! Aguarde a aprovação.',
@@ -16,11 +43,9 @@ exports.createRequest = async (req, res) => {
     }
 };
 
-// [ALTERADO] Busca TODAS as solicitações (Pendente, Aprovado, Rejeitado)
 exports.listAll = async (req, res) => {
     try {
         const { schoolId } = req.user;
-        // Chama o método que busca tudo, sem filtro de status
         const requests = await service.listAllRequests(schoolId);
         return res.json(requests);
     } catch (error) {
@@ -47,7 +72,12 @@ exports.approveRequest = async (req, res) => {
     try {
         const { requestId } = req.params;
         const { schoolId, id: userId } = req.user;
-        const { finalStudentData, finalTutorData } = req.body;
+        let { finalStudentData, finalTutorData } = req.body;
+
+        // [CORREÇÃO] Sanitização preventiva no Controller
+        if (finalStudentData && finalStudentData.tutors) {
+            finalStudentData.tutors = normalizeRelationship(finalStudentData.tutors);
+        }
 
         const result = await service.approveRequest(requestId, schoolId, userId, finalStudentData, finalTutorData);
         return res.json(result);
