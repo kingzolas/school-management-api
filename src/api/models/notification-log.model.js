@@ -19,7 +19,8 @@ const NotificationLogSchema = new mongoose.Schema({
   // Tipo da mensagem (para o template)
   type: {
     type: String,
-    enum: ['new_invoice', 'reminder', 'overdue'],
+    // 👇 ADICIONEI 'due_today' AQUI NA LISTA
+    enum: ['new_invoice', 'reminder', 'overdue', 'due_today'],
     default: 'new_invoice'
   },
   
