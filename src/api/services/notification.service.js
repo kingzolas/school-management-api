@@ -5,7 +5,6 @@ const NotificationConfig = require('../models/notification-config.model');
 const whatsappService = require('./whatsapp.service');
 const cron = require('node-cron');
 
-// ... (Mantenha as importações do EventEmitter e Templates iguais ao seu código original) ...
 // --- IMPORTAÇÃO SEGURA DO EVENT EMITTER ---
 let appEmitter;
 try {
@@ -18,7 +17,6 @@ try {
     }
 }
 
-// ... (Mantenha as CONST TEMPLATES_FUTURO, TEMPLATES_HOJE, TEMPLATES_ATRASO aqui) ...
 const TEMPLATES_FUTURO = [
     "Olá {nome}! Tudo bem? 😊\nA *{escola}* está enviando a fatura referente a: *{descricao}*.\nEla vence apenas em {vencimento}, mas já estamos adiantando.\nValor: R$ {valor}.",
     "Oi {nome}! A mensalidade de *{descricao}* da *{escola}* já está disponível.\nVencimento: {vencimento}.\nSegue abaixo para quando precisar:",
@@ -37,7 +35,6 @@ const TEMPLATES_ATRASO = [
     "Lembrete *{escola}*: Consta em aberto a fatura de *{descricao}*.\nPara evitar bloqueios ou mais juros, utilize o link abaixo:"
 ];
 
-
 class NotificationService {
     
     constructor() {
@@ -45,40 +42,127 @@ class NotificationService {
     }
 
     /**
-     * [NOVO] O "Guardião" das Datas.
-     * Retorna TRUE se a fatura deve ser enviada HOJE.
-     * Regras:
-     * 1. Lembrete: Vence exatamente daqui a 3 dias.
-     * 2. Hoje: Vence hoje.
-     * 3. Atrasado: Venceu entre ontem e 60 dias atrás.
+     * [NOVO] Estatísticas em Tempo Real
+     * Retorna o resumo exato do dia (sem paginação).
      */
-    isEligibleForSending(dueDate) {
-        const hoje = new Date();
-        hoje.setHours(0,0,0,0);
+    async getDailyStats(schoolId) {
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const endOfDay = new Date();
+        endOfDay.setHours(23, 59, 59, 999);
+
+        // Agregação para contar status rapidamente
+        const stats = await NotificationLog.aggregate([
+            {
+                $match: {
+                    school_id: schoolId,
+                    // Considera logs criados HOJE ou atualizados HOJE
+                    updatedAt: { $gte: startOfDay, $lte: endOfDay }
+                }
+            },
+            {
+                $group: {
+                    _id: "$status",
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+
+        // Formata o retorno para garantir que todos os campos existam mesmo se zerados
+        const result = {
+            queued: 0,
+            processing: 0,
+            sent: 0,
+            failed: 0,
+            total_today: 0
+        };
+
+        stats.forEach(s => {
+            if (result[s._id] !== undefined) result[s._id] = s.count;
+        });
+
+        result.total_today = result.queued + result.processing + result.sent + result.failed;
         
-        const vencimento = new Date(dueDate);
-        vencimento.setHours(0,0,0,0); // Normaliza para meia-noite
+        return result;
+    }
+
+    /**
+     * [NOVO] Previsão de Futuro (Dry Run)
+     * Simula o que o sistema faria em uma data específica.
+     */
+    async getForecast(schoolId, targetDate) {
+        const simData = new Date(targetDate);
+        simData.setHours(0, 0, 0, 0);
+
+        // 1. Define limites baseados na DATA SIMULADA
+        const limitPassado = new Date(simData); 
+        limitPassado.setDate(limitPassado.getDate() - 60);
         
-        // Diferença em milissegundos
-        const diffTime = vencimento - hoje; 
-        // Converte para dias (Arredonda para lidar com horário de verão/fuso)
+        const hojeStart = new Date(simData); hojeStart.setHours(0,0,0,0);
+        const hojeEnd = new Date(simData); hojeEnd.setHours(23,59,59,999);
+
+        const futuroStart = new Date(simData); 
+        futuroStart.setDate(futuroStart.getDate() + 3); futuroStart.setHours(0,0,0,0);
+        const futuroEnd = new Date(futuroStart); futuroEnd.setHours(23,59,59,999);
+
+        // 2. Busca faturas como se fosse o Cron
+        const invoices = await Invoice.find({
+            school_id: schoolId,
+            status: 'pending',
+            $or: [
+                { dueDate: { $gte: limitPassado, $lte: hojeEnd } }, // Atrasados + Hoje simulado
+                { dueDate: { $gte: futuroStart, $lte: futuroEnd } } // Daqui a 3 dias (simulado)
+            ]
+        }).select('dueDate value student tutor description').populate('student', 'fullName').populate('tutor', 'fullName');
+
+        // 3. Processa a lógica sem salvar
+        const forecast = {
+            date: simData,
+            total_expected: 0,
+            breakdown: {
+                due_today: 0,
+                overdue: 0,
+                reminder: 0
+            }
+        };
+
+        for (const inv of invoices) {
+            // Usa helper de elegibilidade com data de referência
+            const check = this._checkEligibilityForDate(inv.dueDate, simData);
+            if (check.shouldSend) {
+                forecast.total_expected++;
+                forecast.breakdown[check.type]++;
+            }
+        }
+
+        return forecast;
+    }
+
+    /**
+     * Helper: Verifica elegibilidade baseada em uma data de referência (hoje ou simulada)
+     */
+    _checkEligibilityForDate(dueDate, referenceDate) {
+        const ref = new Date(referenceDate); ref.setHours(0,0,0,0);
+        const venc = new Date(dueDate); venc.setHours(0,0,0,0);
+        
+        const diffTime = venc - ref;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-        // Regra 1: Futuro (3 dias antes)
-        if (diffDays === 3) return true;
+        if (diffDays === 3) return { shouldSend: true, type: 'reminder' };
+        if (diffDays === 0) return { shouldSend: true, type: 'due_today' };
+        if (diffDays < 0 && diffDays >= -60) return { shouldSend: true, type: 'overdue' };
 
-        // Regra 2: Hoje
-        if (diffDays === 0) return true;
+        return { shouldSend: false, type: null };
+    }
 
-        // Regra 3: Atrasado (Até 60 dias atrás)
-        // Ex: Ontem é -1, Anteontem -2... até -60
-        if (diffDays < 0 && diffDays >= -60) return true;
-
-        return false;
+    // --- MANTIDO PARA COMPATIBILIDADE ---
+    isEligibleForSending(dueDate) {
+        const check = this._checkEligibilityForDate(dueDate, new Date());
+        return check.shouldSend;
     }
 
     async queueNotification({ schoolId, invoiceId, studentName, tutorName, phone, type = 'new_invoice' }) {
-        // ... (Mantém idêntico ao seu código original) ...
         try {
             const exists = await NotificationLog.exists({
                 invoice_id: invoiceId, type: type, status: { $in: ['queued', 'processing'] }
@@ -108,7 +192,6 @@ class NotificationService {
         }
     }
 
-    // --- LÓGICA DE VARREDURA CORRIGIDA ---
     async scanAndQueueInvoices() {
         console.log('🔎 [Cron] INICIANDO VARREDURA INTELIGENTE');
         try {
@@ -119,54 +202,44 @@ class NotificationService {
             const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
             for (const config of activeConfigs) {
-                // Checa janela de horário (Mantido igual)
                 const [startH, startM] = config.windowStart.split(':').map(Number);
                 const [endH, endM] = config.windowEnd.split(':').map(Number);
                 if (currentMinutes < (startH * 60 + startM) || currentMinutes >= (endH * 60 + endM)) continue;
 
                 const schoolId = config.school_id;
 
-                // Definimos os limites de data para a Query no Banco
+                // Datas reais de HOJE
                 const hojeStart = new Date(); hojeStart.setHours(0,0,0,0);
                 const hojeEnd = new Date(); hojeEnd.setHours(23,59,59,999);
                 
-                // Limite Passado (60 dias)
                 const limitPassado = new Date(); limitPassado.setDate(limitPassado.getDate() - 60); limitPassado.setHours(0,0,0,0);
                 
-                // Limite Futuro (Daqui a 3 dias exatos)
                 const futuroStart = new Date(); futuroStart.setDate(futuroStart.getDate() + 3); futuroStart.setHours(0,0,0,0);
                 const futuroEnd = new Date(); futuroEnd.setDate(futuroEnd.getDate() + 3); futuroEnd.setHours(23,59,59,999);
 
-                // Busca Unificada: Traz tudo que pode ser relevante (Atrasados + Hoje + Daqui 3 dias)
                 const invoices = await Invoice.find({
                     school_id: schoolId, 
                     status: 'pending', 
                     $or: [
-                        { dueDate: { $gte: limitPassado, $lte: hojeEnd } }, // Atrasados + Hoje
-                        { dueDate: { $gte: futuroStart, $lte: futuroEnd } } // Daqui a 3 dias
+                        { dueDate: { $gte: limitPassado, $lte: hojeEnd } }, 
+                        { dueDate: { $gte: futuroStart, $lte: futuroEnd } } 
                     ]
                 }).populate('student').populate('tutor');
 
                 console.log(`📊 Escola ${schoolId}: ${invoices.length} faturas potenciais encontradas.`);
 
                 for (const inv of invoices) {
-                    // Usa a função "Guardião" para ter certeza absoluta
-                    if (this.isEligibleForSending(inv.dueDate)) {
-                        
-                        // Define o tipo correto para o Log
-                        const diffDays = Math.ceil((new Date(inv.dueDate) - new Date()) / (86400000));
-                        let type = 'reminder';
-                        if (diffDays < 0) type = 'overdue';
-                        if (diffDays === 0) type = 'due_today';
-
-                        // Verifica se JÁ enviou hoje para não floodar
+                    // Verificação real
+                    const check = this._checkEligibilityForDate(inv.dueDate, new Date());
+                    
+                    if (check.shouldSend) {
                         const sentToday = await NotificationLog.exists({
                             invoice_id: inv._id,
                             createdAt: { $gte: hojeStart } 
                         });
 
                         if (!sentToday) {
-                            await this._prepareAndQueue(inv, type);
+                            await this._prepareAndQueue(inv, check.type);
                         }
                     }
                 }
@@ -176,7 +249,6 @@ class NotificationService {
         }
     }
 
-    // ... (Mantém _prepareAndQueue, processQueue, _sendSingleNotification, etc. iguais ao seu código) ...
     async _prepareAndQueue(invoice, type) {
         let name, phone;
         if (invoice.tutor) { name = invoice.tutor.fullName; phone = invoice.tutor.phoneNumber || invoice.tutor.telefone; }
@@ -195,7 +267,6 @@ class NotificationService {
         this.isProcessing = true;
 
         try {
-            // Lote pequeno (1 a 3) para evitar bloqueio e garantir segurança
             const logs = await NotificationLog.find({
                 status: 'queued', scheduled_for: { $lte: new Date() }
             }).limit(1).populate('invoice_id'); 
@@ -211,7 +282,6 @@ class NotificationService {
                 }
 
                 try {
-                    // [ANTI-BAN] Delay aleatório 15s a 30s
                     const delay = Math.floor(Math.random() * 15000) + 15000;
                     console.log(`⏳ Aguardando ${Math.floor(delay/1000)}s...`);
                     await new Promise(r => setTimeout(r, delay));
@@ -254,25 +324,15 @@ class NotificationService {
         const school = await School.findById(log.school_id).select('name whatsapp').lean();
         const nomeEscola = school.name || "Escola";
 
-        // ==============================================================================
-        // 🛡️ CORREÇÃO (AUTO-HEAL): Verifica a API se o banco disser que está offline
-        // ==============================================================================
         if (!school.whatsapp || school.whatsapp.status !== 'connected') {
             console.log(`⚠️ [Zap] Banco diz 'disconnected'. Verificando status real na API...`);
-            
-            // Chama o ensureConnection que vai na Evolution checar o estado real
-            // Se estiver 'open' lá, ele já atualiza o banco automaticamente e retorna true
             const isReallyConnected = await whatsappService.ensureConnection(log.school_id);
-            
             if (!isReallyConnected) {
-                // Se a API confirmar que está offline, aí sim lançamos o erro
                 throw new Error("WhatsApp desconectado (Confirmado pela API).");
             }
             console.log(`✅ [Zap] Conexão recuperada! A API estava online. Prosseguindo envio...`);
         }
-        // ==============================================================================
 
-        // 2. Template Inteligente
         const hoje = new Date(); hoje.setHours(0,0,0,0);
         const venc = new Date(invoice.dueDate); venc.setHours(0,0,0,0);
         const diff = (venc - hoje) / (1000 * 60 * 60 * 24);
@@ -288,31 +348,21 @@ class NotificationService {
             .replace('{valor}', (invoice.value/100).toFixed(2).replace('.',','))
             .replace('{vencimento}', venc.toLocaleDateString('pt-BR', {timeZone: 'UTC'}));
 
-        // 2. Envio Texto
         await whatsappService.sendText(log.school_id, log.target_phone, text);
         await new Promise(r => setTimeout(r, 2000));
 
-        // 3. Envio Anexo (PDF ou Pix)
         if (invoice.gateway === 'cora' && invoice.boleto_url) {
             try {
-                // Nome seguro para PDF
                 const safeName = log.student_name.split(' ')[0].replace(/[^a-zA-Z0-9]/g, '_');
                 const fileName = `Boleto_${safeName}.pdf`;
-
                 console.log(`📎 [Zap] Enviando PDF: ${fileName}`);
-                
                 await whatsappService.sendFile(
-                    log.school_id, 
-                    log.target_phone, 
-                    invoice.boleto_url, 
-                    fileName,               
-                    "📄 Segue o seu boleto." 
+                    log.school_id, log.target_phone, invoice.boleto_url, fileName, "📄 Segue o seu boleto." 
                 );
             } catch (e) {
                 console.error("⚠️ Falha PDF:", e.message);
                 await whatsappService.sendText(log.school_id, log.target_phone, `📄 Baixe aqui: ${invoice.boleto_url}`);
             }
-
             if (invoice.boleto_barcode) {
                 await whatsappService.sendText(log.school_id, log.target_phone, invoice.boleto_barcode);
             }
