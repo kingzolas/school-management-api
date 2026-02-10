@@ -19,6 +19,9 @@ router.use(verifyToken);
 router.get('/logs', NotificationController.getLogs);
 router.post('/trigger', NotificationController.triggerManualRun);
 
+router.get('/stats', NotificationController.getDashboardStats);
+router.get('/forecast', NotificationController.getForecast);
+
 // Configuração
 router.get('/config', NotificationController.getConfig);
 router.post('/config', NotificationController.saveConfig);
