@@ -42,23 +42,25 @@ class NotificationService {
     }
 
     /**
-     * [NOVO] Estatísticas em Tempo Real
+     * [CORRIGIDO] Estatísticas em Tempo Real com Debug
      * Retorna o resumo exato do dia (sem paginação).
      */
     async getDailyStats(schoolId) {
-        const startOfDay = new Date();
-        startOfDay.setHours(0, 0, 0, 0);
+        // Truque para garantir o dia inteiro UTC
+        const start = new Date();
+        start.setHours(0, 0, 0, 0);
+        
+        const end = new Date();
+        end.setHours(23, 59, 59, 999);
 
-        const endOfDay = new Date();
-        endOfDay.setHours(23, 59, 59, 999);
+        console.log(`📊 [Stats] Buscando logs da escola ${schoolId} entre: ${start.toISOString()} e ${end.toISOString()}`);
 
-        // Agregação para contar status rapidamente
         const stats = await NotificationLog.aggregate([
             {
                 $match: {
                     school_id: schoolId,
-                    // Considera logs criados HOJE ou atualizados HOJE
-                    updatedAt: { $gte: startOfDay, $lte: endOfDay }
+                    // Filtra pela data de criação ou atualização HOJE
+                    updatedAt: { $gte: start, $lte: end }
                 }
             },
             {
@@ -69,7 +71,8 @@ class NotificationService {
             }
         ]);
 
-        // Formata o retorno para garantir que todos os campos existam mesmo se zerados
+        console.log("📊 [Stats] Resultado bruto do Banco:", stats);
+
         const result = {
             queued: 0,
             processing: 0,
@@ -88,35 +91,41 @@ class NotificationService {
     }
 
     /**
-     * [NOVO] Previsão de Futuro (Dry Run)
+     * [CORRIGIDO] Previsão de Futuro (Dry Run) com Debug Extenso
      * Simula o que o sistema faria em uma data específica.
      */
     async getForecast(schoolId, targetDate) {
+        // Normaliza a data alvo (ex: Amanhã)
+        // Usa meio-dia para evitar problemas de borda de fuso horário
         const simData = new Date(targetDate);
-        simData.setHours(0, 0, 0, 0);
+        simData.setHours(12, 0, 0, 0);
 
-        // 1. Define limites baseados na DATA SIMULADA
-        const limitPassado = new Date(simData); 
-        limitPassado.setDate(limitPassado.getDate() - 60);
-        
-        const hojeStart = new Date(simData); hojeStart.setHours(0,0,0,0);
-        const hojeEnd = new Date(simData); hojeEnd.setHours(23,59,59,999);
+        console.log(`🔮 [Forecast] Iniciando simulação para DATA BASE: ${simData.toISOString().split('T')[0]}`);
 
-        const futuroStart = new Date(simData); 
-        futuroStart.setDate(futuroStart.getDate() + 3); futuroStart.setHours(0,0,0,0);
-        const futuroEnd = new Date(futuroStart); futuroEnd.setHours(23,59,59,999);
+        // 1. Define limites ampliados para garantir que ache tudo
+        // Olha até 90 dias para trás (para pegar atrasados antigos)
+        const limitPassado = new Date(simData);
+        limitPassado.setDate(limitPassado.getDate() - 90);
+        limitPassado.setHours(0,0,0,0);
 
-        // 2. Busca faturas como se fosse o Cron
+        // Olha até 5 dias para frente (para pegar lembretes futuros)
+        const futuroLimit = new Date(simData);
+        futuroLimit.setDate(futuroLimit.getDate() + 5);
+        futuroLimit.setHours(23,59,59,999);
+
+        console.log(`🔎 [Forecast] Query intervalo ampliado: ${limitPassado.toISOString()} até ${futuroLimit.toISOString()}`);
+
+        // 2. Busca faturas PENDENTES neste intervalo grande
+        // IMPORTANTE: Verifique se o status no banco é 'pending', 'open' ou 'aberta'
         const invoices = await Invoice.find({
             school_id: schoolId,
-            status: 'pending',
-            $or: [
-                { dueDate: { $gte: limitPassado, $lte: hojeEnd } }, // Atrasados + Hoje simulado
-                { dueDate: { $gte: futuroStart, $lte: futuroEnd } } // Daqui a 3 dias (simulado)
-            ]
-        }).select('dueDate value student tutor description').populate('student', 'fullName').populate('tutor', 'fullName');
+            status: 'pending', // <--- PONTO DE ATENÇÃO: Se seu banco usa outro status, mude aqui
+            dueDate: { $gte: limitPassado, $lte: futuroLimit }
+        }).select('dueDate value description student tutor status').populate('student', 'fullName').populate('tutor', 'fullName');
 
-        // 3. Processa a lógica sem salvar
+        console.log(`🔎 [Forecast] Total de faturas 'pending' encontradas no intervalo: ${invoices.length}`);
+
+        // 3. Processa a lógica (Simulação)
         const forecast = {
             date: simData,
             total_expected: 0,
@@ -128,14 +137,18 @@ class NotificationService {
         };
 
         for (const inv of invoices) {
-            // Usa helper de elegibilidade com data de referência
+            // Usa helper de elegibilidade passando a DATA SIMULADA como "hoje"
             const check = this._checkEligibilityForDate(inv.dueDate, simData);
+            
             if (check.shouldSend) {
+                // Descomente para ver detalhe de quem seria cobrado
+                // console.log(`   -> Simulação: Cobraria ${inv.student?.fullName} (${check.type}) - Venc: ${inv.dueDate.toISOString().split('T')[0]}`);
                 forecast.total_expected++;
                 forecast.breakdown[check.type]++;
             }
         }
 
+        console.log(`✅ [Forecast] Resultado final da simulação:`, forecast.breakdown);
         return forecast;
     }
 
@@ -143,14 +156,22 @@ class NotificationService {
      * Helper: Verifica elegibilidade baseada em uma data de referência (hoje ou simulada)
      */
     _checkEligibilityForDate(dueDate, referenceDate) {
+        // Normaliza ambas as datas para 00:00:00 UTC para comparação justa de dias
         const ref = new Date(referenceDate); ref.setHours(0,0,0,0);
         const venc = new Date(dueDate); venc.setHours(0,0,0,0);
         
+        // Diferença em milissegundos
         const diffTime = venc - ref;
+        // Diferença em dias inteiros
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
+        // Regra 1: Lembrete (3 dias antes)
         if (diffDays === 3) return { shouldSend: true, type: 'reminder' };
+        
+        // Regra 2: Hoje (Dia exato)
         if (diffDays === 0) return { shouldSend: true, type: 'due_today' };
+        
+        // Regra 3: Atrasado (Ontem até 60 dias atrás)
         if (diffDays < 0 && diffDays >= -60) return { shouldSend: true, type: 'overdue' };
 
         return { shouldSend: false, type: null };
@@ -204,11 +225,15 @@ class NotificationService {
             for (const config of activeConfigs) {
                 const [startH, startM] = config.windowStart.split(':').map(Number);
                 const [endH, endM] = config.windowEnd.split(':').map(Number);
-                if (currentMinutes < (startH * 60 + startM) || currentMinutes >= (endH * 60 + endM)) continue;
+                // Verifica janela de tempo
+                if (currentMinutes < (startH * 60 + startM) || currentMinutes >= (endH * 60 + endM)) {
+                    // console.log(`⏳ Escola ${config.school_id}: Fora da janela de envio.`);
+                    continue;
+                }
 
                 const schoolId = config.school_id;
 
-                // Datas reais de HOJE
+                // Datas reais de HOJE para varredura
                 const hojeStart = new Date(); hojeStart.setHours(0,0,0,0);
                 const hojeEnd = new Date(); hojeEnd.setHours(23,59,59,999);
                 
@@ -217,6 +242,7 @@ class NotificationService {
                 const futuroStart = new Date(); futuroStart.setDate(futuroStart.getDate() + 3); futuroStart.setHours(0,0,0,0);
                 const futuroEnd = new Date(); futuroEnd.setDate(futuroEnd.getDate() + 3); futuroEnd.setHours(23,59,59,999);
 
+                // Busca faturas elegíveis
                 const invoices = await Invoice.find({
                     school_id: schoolId, 
                     status: 'pending', 
@@ -226,13 +252,14 @@ class NotificationService {
                     ]
                 }).populate('student').populate('tutor');
 
-                console.log(`📊 Escola ${schoolId}: ${invoices.length} faturas potenciais encontradas.`);
+                console.log(`📊 [Cron] Escola ${schoolId}: ${invoices.length} faturas potenciais encontradas.`);
 
                 for (const inv of invoices) {
-                    // Verificação real
+                    // Verificação real com a data de HOJE
                     const check = this._checkEligibilityForDate(inv.dueDate, new Date());
                     
                     if (check.shouldSend) {
+                        // Verifica se JÁ enviou hoje
                         const sentToday = await NotificationLog.exists({
                             invoice_id: inv._id,
                             createdAt: { $gte: hojeStart } 
