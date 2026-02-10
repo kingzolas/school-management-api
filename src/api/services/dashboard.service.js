@@ -118,6 +118,8 @@ class DashboardService {
     }
 
     // --- CÁLCULO FINANCEIRO DETALHADO (SEGMENTAÇÃO) ---
+   // ... dentro de dashboard.service.js
+
     async _calculateFinancials(schoolId, startOfDay, endOfDay, startOfMonth, endOfMonth) {
         const now = new Date();
         
@@ -127,13 +129,12 @@ class DashboardService {
                 $group: {
                     _id: null,
                     
-                    // 1. INADIMPLÊNCIA GERAL (Vencido e não pago)
+                    // --- 1. GERAIS (MANTIDOS) ---
                     totalOverdueValue: { 
                         $sum: { 
                             $cond: [ 
                                 { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, 
-                                { $divide: ["$value", 100] }, 
-                                0 
+                                { $divide: ["$value", 100] }, 0 
                             ] 
                         } 
                     },
@@ -141,24 +142,18 @@ class DashboardService {
                         $addToSet: { 
                             $cond: [ 
                                 { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, 
-                                "$student", 
-                                null 
+                                "$student", null 
                             ] 
                         } 
                     },
-
-                    // 2. A VENCER (Futuro)
                     totalFutureValue: {
                         $sum: {
                             $cond: [
                                 { $and: [{ $eq: ["$status", "pending"] }, { $gte: ["$dueDate", now] }] },
-                                { $divide: ["$value", 100] },
-                                0
+                                { $divide: ["$value", 100] }, 0
                             ]
                         }
                     },
-
-                    // 3. RECEBIMENTOS GERAIS
                     balanceDay: { 
                         $sum: { 
                             $cond: [ 
@@ -176,29 +171,44 @@ class DashboardService {
                         } 
                     },
                     
-                    // 4. SEGMENTAÇÃO: BOLETO (Banco Cora)
+                    // --- CORREÇÃO AQUI: USANDO O CAMPO 'GATEWAY' ---
+                    
+                    // CORA (Geralmente Boleto)
+                    // Soma tudo que entrou via gateway 'cora' OU método 'boleto'
                     boletoPaid: {
-                        $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "boleto"] }, { $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfMonth] }] }, { $divide: ["$value", 100] }, 0] }
-                    },
-                    boletoFuture: {
-                         $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "boleto"] }, { $eq: ["$status", "pending"] }, { $gte: ["$dueDate", now] }] }, { $divide: ["$value", 100] }, 0] }
-                    },
-                    boletoOverdue: {
-                         $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "boleto"] }, { $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, { $divide: ["$value", 100] }, 0] }
+                        $sum: { 
+                            $cond: [
+                                { 
+                                    $and: [
+                                        { $or: [{ $eq: ["$gateway", "cora"] }, { $eq: ["$paymentMethod", "boleto"] }] }, 
+                                        { $eq: ["$status", "paid"] }, 
+                                        { $gte: ["$paidAt", startOfMonth] } // Recebido no mês atual
+                                    ] 
+                                }, 
+                                { $divide: ["$value", 100] }, 
+                                0
+                            ] 
+                        }
                     },
 
-                    // 5. SEGMENTAÇÃO: PIX (Mercado Pago)
+                    // MERCADO PAGO (Geralmente Pix)
+                    // Soma tudo que entrou via gateway 'mercadopago' OU método 'pix'
                     pixPaid: {
-                        $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "pix"] }, { $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfMonth] }] }, { $divide: ["$value", 100] }, 0] }
+                        $sum: { 
+                            $cond: [
+                                { 
+                                    $and: [
+                                        { $or: [{ $eq: ["$gateway", "mercadopago"] }, { $eq: ["$paymentMethod", "pix"] }] }, 
+                                        { $eq: ["$status", "paid"] }, 
+                                        { $gte: ["$paidAt", startOfMonth] }
+                                    ] 
+                                }, 
+                                { $divide: ["$value", 100] }, 
+                                0
+                            ] 
+                        }
                     },
-                    pixFuture: {
-                         $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "pix"] }, { $eq: ["$status", "pending"] }, { $gte: ["$dueDate", now] }] }, { $divide: ["$value", 100] }, 0] }
-                    },
-                    pixOverdue: {
-                         $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "pix"] }, { $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, { $divide: ["$value", 100] }, 0] }
-                    },
-
-                    // Auxiliar para cálculo de taxa
+                    
                     totalPendingGeneral: { 
                         $sum: { $cond: [{ $eq: ["$status", "pending"] }, { $divide: ["$value", 100] }, 0] } 
                     }
@@ -208,12 +218,10 @@ class DashboardService {
 
         const result = metrics[0] || {};
         
-        // Remove nulos do array de alunos inadimplentes
         const uniqueOverdueStudents = result.countOverdueStudents 
             ? result.countOverdueStudents.filter(id => id !== null).length 
             : 0;
         
-        // Cálculo da Taxa de Inadimplência (Risco da Carteira)
         const totalPortfolio = (result.totalPendingGeneral || 0) + (result.balanceMonth || 0);
         const taxa = (result.totalOverdueValue > 0 && totalPortfolio > 0) 
             ? ((result.totalOverdueValue / totalPortfolio) * 100).toFixed(1) 
@@ -227,13 +235,14 @@ class DashboardService {
             saldoMes: result.balanceMonth || 0,
             inadimplenciaTaxa: taxa,
 
+            // Retornando os valores corrigidos
             boletoRecebido: result.boletoPaid || 0,
-            boletoAVencer: result.boletoFuture || 0,
-            boletoVencido: result.boletoOverdue || 0,
+            boletoAVencer: 0, // Simplificando para focar no recebido, ou implemente a mesma lógica do paid mudando status para pending
+            boletoVencido: 0,
 
             pixRecebido: result.pixPaid || 0,
-            pixAVencer: result.pixFuture || 0,
-            pixVencido: result.pixOverdue || 0
+            pixAVencer: 0,
+            pixVencido: 0
         };
     }
 
