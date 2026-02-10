@@ -35,7 +35,6 @@ class InvoiceService {
     ].join(' ');
 
     const school = await School.findById(schoolId).select(selectString).lean(); 
-
     if (!school) throw new Error('Escola não encontrada.');
 
     // 2. Validações de Aluno
@@ -47,10 +46,7 @@ class InvoiceService {
     // 3. Limpeza Endereço
     const rawAddr = student.address || {};
     let cleanZip = (rawAddr.zipCode || rawAddr.cep || '').replace(/\D/g, '');
-     
-    if (cleanZip.length !== 8) {
-        cleanZip = '01310100'; // Fallback
-    }
+    if (cleanZip.length !== 8) cleanZip = '01310100'; // Fallback
 
     const cleanAddress = {
         street: rawAddr.street || 'Rua não informada',
@@ -92,8 +88,9 @@ class InvoiceService {
 
     // 5. Gateway e Payload
     const gateway = GatewayFactory.create(school, chosenGateway);
+    // Garante que o email não tenha espaços vazios
     const finalEmail = (payerEmail && payerEmail.includes('@')) 
-        ? payerEmail 
+        ? payerEmail.trim() 
         : "pagador_sem_email@academyhub.com"; 
      
     const tempId = new Invoice()._id; 
@@ -140,7 +137,7 @@ class InvoiceService {
       await newInvoice.save();
 
       // ==================================================================================
-      // 🛡️ AUTOMAÇÃO COM FILTRO DE DATA + FORÇAR ENVIO
+      // 🛡️ AUTOMAÇÃO
       // ==================================================================================
       if (payerPhone) {
           try {
@@ -156,56 +153,83 @@ class InvoiceService {
                       phone: payerPhone,
                       type: 'new_invoice' 
                   });
-                  console.log(`✅ [Automação] Fatura enviada para a fila (Elegível: ${isAutoEligible} | Forçado: ${sendNow}).`);
-              } else {
-                  console.log(`⏳ [Automação] Fatura gerada, mas aguardará a data correta para envio.`);
               }
           } catch (queueError) {
               console.error('⚠️ Erro ao tentar enfileirar (não bloqueante):', queueError.message);
           }
       }
-      // ==================================================================================
 
       return await this.getInvoiceById(newInvoice._id, schoolId);
 
     } catch (error) {
       console.error('❌ ERRO Create Invoice (Raw):', error.message);
       
-      // Aqui usamos o nome do pagador para criar a mensagem amigável
+      // Chamada da função de tradução robusta
       const friendlyError = this._translateGatewayError(error, payerName);
+      
+      // Lança o erro limpo para o Controller devolver ao Front
       throw new Error(friendlyError);
     }
   }
 
   /**
-   * Tradutor de Erros com Nome do Responsável
+   * Tradutor de Erros Avançado (Baseado no seu código antigo + correções atuais)
    */
   _translateGatewayError(error, payerName = 'o responsável') {
+    let errorData = null;
+
+    // 1. Tenta pegar o erro estruturado do Axios (Response)
     if (error.response && error.response.data) {
-        const data = error.response.data;
-        
-        // Verifica erros de validação da Cora (Lista de erros)
-        if (data.errors && Array.isArray(data.errors) && data.errors.length > 0) {
-            const err = data.errors[0];
-            const msg = (err.message || '').toLowerCase();
-            const code = (err.code || '').toLowerCase();
-            
-            // Tratamento específico para E-MAIL
-            if (msg.includes('email') || msg.includes('not a valid email') || code.includes('email')) {
-                return `O boleto não foi gerado porque o Responsável Financeiro ${payerName} está com um e-mail inválido/incorreto. Por favor, corrija o cadastro.`;
+        errorData = error.response.data;
+    } 
+    // 2. Se não tiver response, tenta ver se a mensagem de erro é um JSON (O caso do Log que você mandou)
+    else {
+        try {
+            // Procura por JSON dentro da string de erro (ex: "Erro Cora: {...}")
+            const match = error.message.match(/\{.*\}/);
+            if (match) {
+                errorData = JSON.parse(match[0]);
             }
-
-            // Tratamento específico para CPF/CNPJ
-            if (msg.includes('cpf') || msg.includes('document') || msg.includes('cnpj')) {
-                return `O boleto não foi gerado porque o CPF/CNPJ do Responsável ${payerName} é inválido ou está incorreto.`;
-            }
-
-            return `Erro no Banco Cora: ${err.message}`;
-        }
-
-        if (data.message) return `O Banco recusou: ${data.message}`;
+        } catch (e) { /* Falha silenciosa no parse */ }
     }
-    return error.message || 'Erro desconhecido no gateway.';
+
+    // --- TRATAMENTO ESTRUTURADO (Se conseguimos extrair um objeto de erro) ---
+    if (errorData && errorData.errors && Array.isArray(errorData.errors) && errorData.errors.length > 0) {
+        const err = errorData.errors[0];
+        const code = (err.code || '').toLowerCase();
+        const msg = (err.message || '').toLowerCase();
+
+        // [SEU CÓDIGO ANTIGO] Mapeamento de erros comuns da Cora
+        if (code === 'customer.email' || msg.includes('email')) {
+            return `O e-mail do Responsável Financeiro (${payerName}) é inválido ou mal formatado. Corrija o cadastro.`;
+        }
+        if (code === 'customer.document' || code === 'customer.document.identity' || msg.includes('cpf') || msg.includes('cnpj')) {
+            return `O CPF/CNPJ do Responsável (${payerName}) é inválido. Verifique se os números estão corretos.`;
+        }
+        if (code === 'customer.name' || msg.includes('name')) {
+            return `O nome do Responsável (${payerName}) está incompleto ou inválido para o banco.`;
+        }
+        if (code === 'services.amount' || msg.includes('amount')) {
+            return `O valor da cobrança é inválido (deve ser maior que zero).`;
+        }
+        if (code === 'payment_options.due_date' || msg.includes('due_date')) {
+            return `A data de vencimento é inválida ou antiga demais para registro.`;
+        }
+        
+        // Retorno genérico do banco (fallback)
+        return `Erro no Banco Cora: ${err.message}`;
+    }
+
+    // --- TRATAMENTO DE TEXTO BRUTO (Última linha de defesa) ---
+    // Caso o erro venha como string simples sem JSON
+    const errorString = (error.message || '').toLowerCase();
+
+    if (errorString.includes('customer.email')) return `E-mail do responsável (${payerName}) inválido.`;
+    if (errorString.includes('customer.document')) return `CPF do responsável (${payerName}) inválido.`;
+    if (errorString.includes('socket hang up') || errorString.includes('econneused')) return 'Erro de conexão com o banco. Tente novamente.';
+
+    // Se nada funcionar, retorna a mensagem original (tentando limpar prefixos técnicos)
+    return error.message.replace('Erro Cora Create:', '').trim() || 'Erro desconhecido ao comunicar com o banco.';
   }
 
   async resendNotification(invoiceId, schoolId) {
@@ -240,8 +264,9 @@ class InvoiceService {
     }
   }
 
+  // Mantido para compatibilidade com seu código antigo
   async processDailyReminders() {
-      console.log('⚠️ [InvoiceService] processDailyReminders chamado (Legado).');
+      console.log('⚠️ [InvoiceService] processDailyReminders chamado (Legado). Use NotificationService.');
   }
 
   async cancelInvoice(invoiceId, schoolId) {
@@ -331,90 +356,47 @@ class InvoiceService {
     return await mergedPdf.save();
   }
 
-  // ========================================================================
-  // 🔄 SYNC ATUALIZADO (Bulk Strategy para Cora)
-  // ========================================================================
+  // [SINCRONIZAÇÃO] - Voltando para o modelo do seu código antigo que retorna stats
   async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null) {
-    console.log(`🚀 [BULK SYNC] Verificando faturas para Escola: ${schoolId}`);
-
-    // 1. Carregar Configurações (INCLUINDO CERTIFICADOS CORA)
-    const selectString = [
-        '+mercadoPagoConfig.prodAccessToken',
-        'coraConfig.isSandbox', 
-        'coraConfig.sandbox.clientId',
-        '+coraConfig.sandbox.certificateContent',
-        '+coraConfig.sandbox.privateKeyContent',
-        'coraConfig.production.clientId',
-        '+coraConfig.production.certificateContent',
-        '+coraConfig.production.privateKeyContent'
-    ].join(' ');
-
-    const school = await School.findById(schoolId).select(selectString).lean();
-    if (!school) {
-        console.error('❌ [SYNC] Escola não encontrada.');
-        return { totalChecked: 0, updatedCount: 0 };
-    }
-
-    const stats = { totalChecked: 0, updatedCount: 0, details: [] };
-
-    // ============================
-    // ESTRATÉGIA 1: CORA (Lote)
-    // ============================
-    // Verifica se tem Cora configurado e tenta baixar lista de pagos
-    if (school.coraConfig && (school.coraConfig.sandbox?.clientId || school.coraConfig.production?.clientId)) {
-        try {
-            // Cria o Gateway usando a Factory (ele já vai validar certificado e conectar)
-            const gateway = GatewayFactory.create(school, 'CORA');
-            
-            // Só executa se o gateway tiver o método de lote (adicionado no arquivo CoraGateway)
-            if (typeof gateway.getPaidInvoices === 'function') {
-                const paidIds = await gateway.getPaidInvoices(60); // Últimos 60 dias
-                
-                if (paidIds.length > 0) {
-                    console.log(`📦 [CORA SYNC] Encontrados ${paidIds.length} boletos pagos na Cora. Atualizando banco...`);
-                    
-                    const updateRes = await Invoice.updateMany(
-                        { 
-                            school_id: schoolId,
-                            status: { $ne: 'paid' },
-                            external_id: { $in: paidIds }
-                        },
-                        { 
-                            $set: { status: 'paid', paidAt: new Date() }
-                        }
-                    );
-                    
-                    stats.updatedCount += (updateRes.nModified || updateRes.modifiedCount);
-                    console.log(`🔥 [CORA SYNC] ${stats.updatedCount} boletos atualizados localmente.`);
-                } else {
-                    console.log('✅ [CORA SYNC] Nenhum boleto pago novo encontrado.');
-                }
-            }
-        } catch (coraErr) {
-            console.error('⚠️ [CORA SYNC ERROR] Falha ao sincronizar Cora:', coraErr.message);
-        }
-    }
-
-    // ============================
-    // ESTRATÉGIA 2: MERCADO PAGO (Legado / Individual)
-    // ============================
-    // Mantemos a verificação individual para MP pois a API de busca é diferente
-    const filterMP = {
+    const filter = {
         school_id: schoolId,
         status: 'pending',
-        gateway: 'mercadopago',
+        gateway: 'mercadopago', // MP precisa de sync manual
         external_id: { $exists: true }
     };
-    if (studentId) filterMP.student = studentId;
-    if (singleInvoiceId) filterMP._id = singleInvoiceId;
 
-    const pendingMP = await Invoice.find(filterMP);
+    if (studentId) filter.student = studentId;
+    if (singleInvoiceId) filter._id = singleInvoiceId;
+
+    const pendingInvoices = await Invoice.find(filter);
     
-    if (pendingMP.length > 0 && school.mercadoPagoConfig?.prodAccessToken) {
-        console.log(`🟠 [MP SYNC] Verificando ${pendingMP.length} boletos MP individualmente...`);
-        const mpToken = school.mercadoPagoConfig.prodAccessToken;
+    // CORA: Implementação do Sync em Massa (Se disponível na config)
+    // Mantive isso pois é muito mais performático que um por um
+    try {
+        const school = await School.findById(schoolId).lean();
+        if (school.coraConfig?.production?.clientId || school.coraConfig?.sandbox?.clientId) {
+             const gateway = GatewayFactory.create(school, 'CORA');
+             if (typeof gateway.getPaidInvoices === 'function') {
+                const paidIds = await gateway.getPaidInvoices(30);
+                if (paidIds.length > 0) {
+                     await Invoice.updateMany(
+                        { school_id: schoolId, status: { $ne: 'paid' }, external_id: { $in: paidIds } },
+                        { $set: { status: 'paid', paidAt: new Date() } }
+                    );
+                    console.log(`📦 [CORA BULK] ${paidIds.length} faturas atualizadas.`);
+                }
+             }
+        }
+    } catch(e) { console.error("Erro no Sync Cora:", e.message); }
 
-        await Promise.all(pendingMP.map(async (inv) => {
+    // MERCADO PAGO: Validação individual (igual ao seu código legado)
+    const stats = { totalChecked: pendingInvoices.length, updatedCount: 0, details: [] };
+    const selectString = '+mercadoPagoConfig.prodAccessToken';
+    const school = await School.findById(schoolId).select(selectString).lean();
+
+    if (school && school.mercadoPagoConfig?.prodAccessToken) {
+        const mpToken = school.mercadoPagoConfig.prodAccessToken;
+        await Promise.all(pendingInvoices.map(async (inv) => {
             try {
                 const res = await axios.get(`https://api.mercadopago.com/v1/payments/${inv.external_id}`, { 
                     headers: { 'Authorization': `Bearer ${mpToken}` } 
@@ -429,8 +411,8 @@ class InvoiceService {
   }
 
   async getAllInvoices(filters = {}, schoolId) {
-    // Dispara sync em background sem await
-    this.syncPendingInvoices(null, schoolId).catch(err => console.error("Sync Bg Error:", err.message));
+    // Sync em background
+    this.syncPendingInvoices(null, schoolId).catch(() => {});
      
     const query = { school_id: schoolId }; 
     if (filters.status) query.status = filters.status;
