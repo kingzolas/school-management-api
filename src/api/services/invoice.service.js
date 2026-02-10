@@ -171,24 +171,38 @@ class InvoiceService {
     } catch (error) {
       console.error('❌ ERRO Create Invoice (Raw):', error.message);
       
-      const friendlyError = this._translateGatewayError(error);
+      // Aqui usamos o nome do pagador para criar a mensagem amigável
+      const friendlyError = this._translateGatewayError(error, payerName);
       throw new Error(friendlyError);
     }
   }
 
   /**
-   * Tradutor de Erros
+   * Tradutor de Erros com Nome do Responsável
    */
-  _translateGatewayError(error) {
+  _translateGatewayError(error, payerName = 'o responsável') {
     if (error.response && error.response.data) {
         const data = error.response.data;
+        
+        // Verifica erros de validação da Cora (Lista de erros)
         if (data.errors && Array.isArray(data.errors) && data.errors.length > 0) {
             const err = data.errors[0];
             const msg = (err.message || '').toLowerCase();
-            if (msg.includes('email')) return 'E-mail inválido.';
-            if (msg.includes('cpf') || msg.includes('document')) return 'CPF/CNPJ inválido.';
+            const code = (err.code || '').toLowerCase();
+            
+            // Tratamento específico para E-MAIL
+            if (msg.includes('email') || msg.includes('not a valid email') || code.includes('email')) {
+                return `O boleto não foi gerado porque o Responsável Financeiro ${payerName} está com um e-mail inválido/incorreto. Por favor, corrija o cadastro.`;
+            }
+
+            // Tratamento específico para CPF/CNPJ
+            if (msg.includes('cpf') || msg.includes('document') || msg.includes('cnpj')) {
+                return `O boleto não foi gerado porque o CPF/CNPJ do Responsável ${payerName} é inválido ou está incorreto.`;
+            }
+
             return `Erro no Banco Cora: ${err.message}`;
         }
+
         if (data.message) return `O Banco recusou: ${data.message}`;
     }
     return error.message || 'Erro desconhecido no gateway.';
