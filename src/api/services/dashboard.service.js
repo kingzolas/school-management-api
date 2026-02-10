@@ -9,97 +9,129 @@ const Expense = require('../models/expense.model');
 class DashboardService {
 
     async getDashboardData(schoolId) {
-        console.log(`📊 [DashboardService] Iniciando busca completa para SchoolID: ${schoolId}`);
+        console.log(`📊 [DashboardService] Gerando Inteligência Financeira para SchoolID: ${schoolId}`);
         
+        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+        const currentYear = new Date().getFullYear();
+
+        // --- Definição de Datas ---
         const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
         const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
         const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0, 0, 0, 0);
         const endOfMonth = new Date(startOfMonth); endOfMonth.setMonth(endOfMonth.getMonth() + 1);
 
-        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
-
-        // Executa todas as queries em paralelo
+        // --- Execução Paralela de Todas as Consultas ---
         const [
-            studentCount,
-            totalTeachers,
-            totalClasses,
-            totalSubjects,
+            counts,
             financialMetrics,
             expenseMetrics,
-            financialHistory,
+            monthlyPerformance,
+            dailyChart,
             birthdays,
-            classDistribution,
-            dailyChart // <--- NOVO: Dados diários do mês atual
+            classDistribution
         ] = await Promise.all([
-            // 1. Contagem de Alunos Ativos
-            Student.countDocuments({ school_id: schoolId, isActive: true }),
-            
-            // 2. Contagem de Professores
-            Staff.countDocuments({ school_id: schoolId, $or: [{ role: 'teacher' }, { roles: { $in: ['Professor', 'Teacher', 'teacher'] } }] }),
-            
-            // 3. Contagem de Turmas
-            ClassModel.countDocuments({ school_id: schoolId }),
-            
-            // 4. Contagem de Disciplinas
-            Subject.countDocuments({ school_id: schoolId }),
-            
-            // 5. Métricas Financeiras (Entradas/Inadimplência)
+            // 1. Contagens Básicas (Alunos, Professores, etc)
+            this._getCounts(schoolId),
+
+            // 2. Métricas Financeiras do Mês Atual (Segmentado por Boleto/Pix e Status)
             this._calculateFinancials(schoolObjectId, startOfDay, endOfDay, startOfMonth, endOfMonth),
             
-            // 6. Métricas de Despesas (Saídas)
+            // 3. Despesas do Mês
             this._calculateExpenses(schoolObjectId, startOfMonth, endOfMonth),
             
-            // 7. Histórico Financeiro para o Gráfico de Linhas (6 Meses)
-            this._getFinancialHistory(schoolObjectId),
+            // 4. Inteligência de Negócio: Performance Mensal (Jan vs Fev vs Mar...)
+            this._getMonthlyPerformance(schoolObjectId, currentYear),
 
-            // 8. Aniversariantes do Mês
+            // 5. Gráfico Diário (Evolução dia a dia do mês atual)
+            this._getCurrentMonthDaily(schoolObjectId),
+
+            // 6. Aniversariantes
             this._getBirthdays(schoolObjectId),
 
-            // 9. Distribuição de Alunos por Turma
-            this._getClassDistribution(schoolObjectId),
-
-            // 10. Gráfico Diário do Mês Atual (Barras)
-            this._getCurrentMonthDaily(schoolObjectId)
+            // 7. Distribuição por Turma
+            this._getClassDistribution(schoolObjectId)
         ]);
 
+        // --- Montagem do Objeto de Resposta ---
         return {
-            counts: {
-                students: studentCount, 
-                teachers: totalTeachers,
-                classes: totalClasses,
-                subjects: totalSubjects
-            },
+            counts: counts,
+            
+            // Visão do Mês Atual (Operacional)
             financial: {
-                inadimplenciaValor: financialMetrics.inadimplenciaValor,
-                inadimplenciaAlunos: financialMetrics.inadimplenciaAlunos,
-                inadimplenciaTaxa: financialMetrics.inadimplenciaTaxa,
+                // Caixa Realizado (O que entrou)
                 saldoDia: financialMetrics.saldoDia,
-                vencimentosDiaQtd: financialMetrics.vencimentosDiaQtd,
                 saldoMes: financialMetrics.saldoMes,
-                totalVencimentosPendentes: financialMetrics.totalVencimentosPendentes,
+                
+                // Fluxo de Caixa (Previsão vs Atraso)
+                totalAVencer: financialMetrics.totalAVencer,     // Receita Futura
+                totalVencido: financialMetrics.totalInadimplente, // Receita Travada
+                
+                // Indicadores de Inadimplência
+                inadimplenciaAlunos: financialMetrics.qtdAlunosInadimplentes,
+                inadimplenciaTaxa: financialMetrics.inadimplenciaTaxa,
+                
+                // Segmentação por Método (Cora/Boleto vs MP/Pix)
+                metodos: {
+                    boleto: {
+                        recebido: financialMetrics.boletoRecebido,
+                        aReceber: financialMetrics.boletoAVencer,
+                        atrasado: financialMetrics.boletoVencido
+                    },
+                    pix: {
+                        recebido: financialMetrics.pixRecebido,
+                        aReceber: financialMetrics.pixAVencer,
+                        atrasado: financialMetrics.pixVencido
+                    }
+                },
+
+                // Resultado Líquido
                 despesaMes: expenseMetrics.totalMonth,
                 despesaPendente: expenseMetrics.totalPending,
                 saldoLiquido: financialMetrics.saldoMes - expenseMetrics.totalMonth
             },
-            chartData: financialHistory, // Gráfico de Linhas (Histórico)
-            dailyChart: dailyChart,      // Gráfico de Barras (Diário)
+
+            // Visão Estratégica (Evolução Anual)
+            history: {
+                year: currentYear,
+                performance: monthlyPerformance // Array com o comparativo de alunos e receita mês a mês
+            },
+
+            // Gráficos Auxiliares
+            dailyChart: dailyChart,
             classData: classDistribution,
             birthdays: birthdays
         };
     }
 
-    // --- Métodos Privados de Cálculo ---
+    // =========================================================================
+    // MÉTODOS PRIVADOS (CÁLCULOS E AGGREGATIONS)
+    // =========================================================================
 
+    async _getCounts(schoolId) {
+        const [students, teachers, classes, subjects] = await Promise.all([
+            Student.countDocuments({ school_id: schoolId, isActive: true }),
+            Staff.countDocuments({ school_id: schoolId, $or: [{ role: 'teacher' }, { roles: { $in: ['Professor', 'Teacher', 'teacher'] } }] }),
+            ClassModel.countDocuments({ school_id: schoolId }),
+            Subject.countDocuments({ school_id: schoolId })
+        ]);
+        return { students, teachers, classes, subjects };
+    }
+
+    // --- CÁLCULO FINANCEIRO DETALHADO (SEGMENTAÇÃO) ---
     async _calculateFinancials(schoolId, startOfDay, endOfDay, startOfMonth, endOfMonth) {
+        const now = new Date();
+        
         const metrics = await Invoice.aggregate([
             { $match: { school_id: schoolId } }, 
             {
                 $group: {
                     _id: null,
+                    
+                    // 1. INADIMPLÊNCIA GERAL (Vencido e não pago)
                     totalOverdueValue: { 
                         $sum: { 
                             $cond: [ 
-                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", new Date()] }] }, 
+                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, 
                                 { $divide: ["$value", 100] }, 
                                 0 
                             ] 
@@ -108,27 +140,30 @@ class DashboardService {
                     countOverdueStudents: { 
                         $addToSet: { 
                             $cond: [ 
-                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", new Date()] }] }, 
+                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, 
                                 "$student", 
                                 null 
                             ] 
                         } 
                     },
+
+                    // 2. A VENCER (Futuro)
+                    totalFutureValue: {
+                        $sum: {
+                            $cond: [
+                                { $and: [{ $eq: ["$status", "pending"] }, { $gte: ["$dueDate", now] }] },
+                                { $divide: ["$value", 100] },
+                                0
+                            ]
+                        }
+                    },
+
+                    // 3. RECEBIMENTOS GERAIS
                     balanceDay: { 
                         $sum: { 
                             $cond: [ 
                                 { $and: [{ $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfDay] }, { $lte: ["$paidAt", endOfDay] }] }, 
-                                { $divide: ["$value", 100] }, 
-                                0 
-                            ] 
-                        } 
-                    },
-                    dueDayCount: { 
-                        $sum: { 
-                            $cond: [ 
-                                { $and: [{ $gte: ["$dueDate", startOfDay] }, { $lte: ["$dueDate", endOfDay] }] }, 
-                                1, 
-                                0 
+                                { $divide: ["$value", 100] }, 0 
                             ] 
                         } 
                     },
@@ -136,40 +171,135 @@ class DashboardService {
                         $sum: { 
                             $cond: [ 
                                 { $and: [{ $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfMonth] }, { $lte: ["$paidAt", endOfMonth] }] }, 
-                                { $divide: ["$value", 100] }, 
-                                0 
+                                { $divide: ["$value", 100] }, 0 
                             ] 
                         } 
                     },
-                    totalPendingValue: { 
-                        $sum: { 
-                            $cond: [
-                                { $eq: ["$status", "pending"] }, 
-                                { $divide: ["$value", 100] }, 
-                                0
-                            ] 
-                        } 
+                    
+                    // 4. SEGMENTAÇÃO: BOLETO (Banco Cora)
+                    boletoPaid: {
+                        $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "boleto"] }, { $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfMonth] }] }, { $divide: ["$value", 100] }, 0] }
+                    },
+                    boletoFuture: {
+                         $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "boleto"] }, { $eq: ["$status", "pending"] }, { $gte: ["$dueDate", now] }] }, { $divide: ["$value", 100] }, 0] }
+                    },
+                    boletoOverdue: {
+                         $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "boleto"] }, { $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, { $divide: ["$value", 100] }, 0] }
+                    },
+
+                    // 5. SEGMENTAÇÃO: PIX (Mercado Pago)
+                    pixPaid: {
+                        $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "pix"] }, { $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfMonth] }] }, { $divide: ["$value", 100] }, 0] }
+                    },
+                    pixFuture: {
+                         $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "pix"] }, { $eq: ["$status", "pending"] }, { $gte: ["$dueDate", now] }] }, { $divide: ["$value", 100] }, 0] }
+                    },
+                    pixOverdue: {
+                         $sum: { $cond: [{ $and: [{ $eq: ["$paymentMethod", "pix"] }, { $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, { $divide: ["$value", 100] }, 0] }
+                    },
+
+                    // Auxiliar para cálculo de taxa
+                    totalPendingGeneral: { 
+                        $sum: { $cond: [{ $eq: ["$status", "pending"] }, { $divide: ["$value", 100] }, 0] } 
                     }
                 }
             }
         ]);
 
         const result = metrics[0] || {};
-        const uniqueOverdueStudents = result.countOverdueStudents ? result.countOverdueStudents.filter(id => id !== null).length : 0;
         
-        const taxa = (result.totalOverdueValue > 0 && result.totalPendingValue > 0) 
-            ? ((result.totalOverdueValue / result.totalPendingValue) * 100).toFixed(1) 
+        // Remove nulos do array de alunos inadimplentes
+        const uniqueOverdueStudents = result.countOverdueStudents 
+            ? result.countOverdueStudents.filter(id => id !== null).length 
+            : 0;
+        
+        // Cálculo da Taxa de Inadimplência (Risco da Carteira)
+        const totalPortfolio = (result.totalPendingGeneral || 0) + (result.balanceMonth || 0);
+        const taxa = (result.totalOverdueValue > 0 && totalPortfolio > 0) 
+            ? ((result.totalOverdueValue / totalPortfolio) * 100).toFixed(1) 
             : "0.0";
 
         return {
-            inadimplenciaValor: result.totalOverdueValue || 0,
-            inadimplenciaAlunos: uniqueOverdueStudents,
+            totalInadimplente: result.totalOverdueValue || 0,
+            totalAVencer: result.totalFutureValue || 0,
+            qtdAlunosInadimplentes: uniqueOverdueStudents,
             saldoDia: result.balanceDay || 0,
-            vencimentosDiaQtd: result.dueDayCount || 0,
             saldoMes: result.balanceMonth || 0,
-            totalVencimentosPendentes: result.totalPendingValue || 0,
-            inadimplenciaTaxa: taxa
+            inadimplenciaTaxa: taxa,
+
+            boletoRecebido: result.boletoPaid || 0,
+            boletoAVencer: result.boletoFuture || 0,
+            boletoVencido: result.boletoOverdue || 0,
+
+            pixRecebido: result.pixPaid || 0,
+            pixAVencer: result.pixFuture || 0,
+            pixVencido: result.pixOverdue || 0
         };
+    }
+
+    // --- INTELIGÊNCIA DE NEGÓCIO (PERFORMANCE MENSAL) ---
+    async _getMonthlyPerformance(schoolId, year) {
+        const startOfYear = new Date(year, 0, 1);
+        const endOfYear = new Date(year, 11, 31, 23, 59, 59);
+
+        const performance = await Invoice.aggregate([
+            { 
+                $match: { 
+                    school_id: schoolId, 
+                    dueDate: { $gte: startOfYear, $lte: endOfYear }, // Filtra por COMPETÊNCIA (Vencimento)
+                    status: { $ne: 'canceled' }
+                } 
+            },
+            {
+                $group: {
+                    _id: { month: { $month: "$dueDate" } },
+                    
+                    // Receita Esperada (Total faturado no mês)
+                    totalExpected: { $sum: { $divide: ["$value", 100] } },
+                    
+                    // Receita Realizada (Total pago referente àquele mês)
+                    totalPaid: { 
+                        $sum: { 
+                            $cond: [{ $eq: ["$status", "paid"] }, { $divide: ["$value", 100] }, 0] 
+                        } 
+                    },
+                    
+                    // Inadimplência daquele mês específico
+                    totalOverdue: {
+                        $sum: {
+                            $cond: [
+                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", new Date()] }] },
+                                { $divide: ["$value", 100] },
+                                0
+                            ]
+                        }
+                    },
+
+                    // Quantidade de Alunos distintos cobrados no mês (Proxy para Alunos Ativos)
+                    uniqueStudents: { $addToSet: "$student" }
+                }
+            },
+            { $sort: { "_id.month": 1 } }
+        ]);
+
+        return performance.map(item => {
+            const studentCount = item.uniqueStudents ? item.uniqueStudents.length : 0;
+            const collectionRate = item.totalExpected > 0 
+                ? ((item.totalPaid / item.totalExpected) * 100).toFixed(1) 
+                : 0;
+
+            return {
+                month: item._id.month,
+                monthName: this._getMonthName(item._id.month),
+                studentCount: studentCount, 
+                financial: {
+                    expected: item.totalExpected, 
+                    paid: item.totalPaid,         
+                    overdue: item.totalOverdue,   
+                    collectionRate: Number(collectionRate) 
+                }
+            };
+        });
     }
 
     async _calculateExpenses(schoolId, startOfMonth, endOfMonth) {
@@ -182,18 +312,13 @@ class DashboardService {
                         $sum: { 
                             $cond: [ 
                                 { $and: [ { $gte: ["$date", startOfMonth] }, { $lte: ["$date", endOfMonth] } ]}, 
-                                "$amount", 
-                                0 
+                                "$amount", 0 
                             ] 
                         } 
                     },
                     totalPending: { 
                         $sum: { 
-                            $cond: [
-                                { $eq: ["$status", "pending"] }, 
-                                "$amount", 
-                                0
-                            ] 
+                            $cond: [{ $eq: ["$status", "pending"] }, "$amount", 0] 
                         } 
                     }
                 }
@@ -202,55 +327,11 @@ class DashboardService {
         return result[0] || { totalMonth: 0, totalPending: 0 };
     }
 
-    async _getFinancialHistory(schoolId) {
-        const sixMonthsAgo = new Date(); sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5); sixMonthsAgo.setDate(1); sixMonthsAgo.setHours(0,0,0,0);
-
-        const incomes = await Invoice.aggregate([
-            { $match: { school_id: schoolId, status: 'paid', paidAt: { $gte: sixMonthsAgo } } },
-            { $group: { _id: { month: { $month: "$paidAt" }, year: { $year: "$paidAt" } }, total: { $sum: { $divide: ["$value", 100] } } } }
-        ]);
-
-        const expenses = await Expense.aggregate([
-            { $match: { schoolId: schoolId, date: { $gte: sixMonthsAgo } } },
-            { $group: { _id: { month: { $month: "$date" }, year: { $year: "$date" } }, total: { $sum: "$amount" } } }
-        ]);
-
-        const historyMap = new Map();
-        for (let i = 0; i < 6; i++) {
-            const d = new Date(); d.setMonth(d.getMonth() - i);
-            const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
-            historyMap.set(key, { month: d.getMonth() + 1, year: d.getFullYear(), income: 0, expense: 0 });
-        }
-
-        incomes.forEach(item => {
-            const key = `${item._id.year}-${item._id.month}`;
-            if (historyMap.has(key)) {
-                const entry = historyMap.get(key);
-                entry.income = item.total;
-            }
-        });
-
-        expenses.forEach(item => {
-            const key = `${item._id.year}-${item._id.month}`;
-            if (historyMap.has(key)) {
-                const entry = historyMap.get(key);
-                entry.expense = item.total;
-            }
-        });
-
-        return Array.from(historyMap.values()).sort((a, b) => {
-            if (a.year !== b.year) return a.year - b.year;
-            return a.month - b.month;
-        });
-    }
-
-    // --- NOVO: Lógica para o gráfico diário ---
     async _getCurrentMonthDaily(schoolId) {
         const now = new Date();
         const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
         const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-        // Busca apenas faturas PAGAS no mês atual
         const dailyData = await Invoice.aggregate([
             { 
                 $match: { 
@@ -274,14 +355,12 @@ class DashboardService {
         
         dailyData.forEach(d => dataMap.set(d._id.day, d.total));
 
-        // Preenche dias sem movimento com 0 para o gráfico não ficar buraco
         for (let day = 1; day <= daysInMonth; day++) {
             fullMonthData.push({
                 day: day,
                 value: dataMap.get(day) || 0.0
             });
         }
-
         return fullMonthData;
     }
 
@@ -323,12 +402,16 @@ class DashboardService {
         ]);
 
         const totalStudents = result.reduce((acc, curr) => acc + curr.count, 0);
-        
         return result.map(item => ({
             className: item.className,
             studentCount: item.count,
             percentage: totalStudents > 0 ? ((item.count / totalStudents) * 100).toFixed(1) : "0"
         }));
+    }
+
+    _getMonthName(monthIndex) {
+        const months = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+        return months[monthIndex] || "";
     }
 }
 
