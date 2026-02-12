@@ -4,14 +4,16 @@ class NotificationController {
   
   /**
    * GET /logs
-   * Busca os logs de notificação (Mantido para a lista paginada)
+   * Busca os logs de notificação
+   * [CORRIGIDO]: Agora aceita 'limit' para permitir ver todos os erros de uma vez.
    */
   async getLogs(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
-      const { status, page } = req.query;
+      // Extrai o limit da query (o service trata se vier undefined ou 0)
+      const { status, page, limit } = req.query;
 
-      const result = await NotificationService.getLogs(schoolId, status, page);
+      const result = await NotificationService.getLogs(schoolId, status, page, limit);
       
       res.status(200).json(result);
     } catch (error) {
@@ -20,9 +22,25 @@ class NotificationController {
   }
 
   /**
+   * POST /retry-all
+   * [NOVO] Reenvia todas as falhas do dia
+   * Esse método estava faltando e causando o erro no server.js
+   */
+  async retryAllFailed(req, res, next) {
+    try {
+      const schoolId = req.user.schoolId || req.user.school_id;
+      
+      const result = await NotificationService.retryAllFailed(schoolId);
+      
+      res.status(200).json({ success: true, ...result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * GET /stats
-   * [NOVO] Retorna os contadores totais do dia (Para os Cards do topo)
-   * Resolve o problema de ver apenas 20 itens.
+   * Retorna os contadores totais do dia (Para os Cards do topo)
    */
   async getDashboardStats(req, res, next) {
     try {
@@ -36,19 +54,15 @@ class NotificationController {
 
   /**
    * GET /forecast
-   * [NOVO] Previsão de Cobrança
-   * Simula a varredura para uma data (padrão: Amanhã) e diz quanto seria cobrado.
-   * Query params: ?date=YYYY-MM-DD (Opcional)
+   * Previsão de Cobrança
    */
   async getForecast(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       
-      // Se não passar data, assume AMANHÃ
       let targetDate = new Date();
       if (req.query.date) {
         targetDate = new Date(req.query.date);
-        // Ajuste de fuso simples para garantir dia correto se vier string ISO
         targetDate.setHours(12,0,0,0); 
       } else {
         targetDate.setDate(targetDate.getDate() + 1);
@@ -68,6 +82,8 @@ class NotificationController {
   async triggerManualRun(req, res, next) {
     try {
       console.log('⚡ [API] Trigger Manual acionado pelo painel...');
+      // Não usamos await no processQueue para não travar a requisição, 
+      // mas usamos no scan para garantir que a fila foi populada antes de processar.
       await NotificationService.scanAndQueueInvoices();
       NotificationService.processQueue(); 
       
