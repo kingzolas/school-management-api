@@ -18,22 +18,25 @@ try {
     }
 }
 
+// Texto padrão para evitar cobranças indevidas por atraso de liquidação bancária
+const AVISO_LIQUIDACAO = "\n\n_Obs: Se você já realizou o pagamento, por favor desconsidere esta mensagem. O banco pode levar até 3 dias úteis para processar a baixa em nosso sistema._";
+
 const TEMPLATES_FUTURO = [
-    "Olá {nome}! Tudo bem? 😊\nA *{escola}* está enviando a fatura referente a: *{descricao}*.\nEla vence apenas em {vencimento}, mas já estamos adiantando.\nValor: R$ {valor}.",
-    "Oi {nome}! A mensalidade de *{descricao}* da *{escola}* já está disponível.\nVencimento: {vencimento}.\nSegue abaixo para quando precisar:",
-    "{escola} Informa: Fatura disponível.\n📝 Referência: {descricao}\n💲 Total: R$ {valor}\n🗓️ Vencimento: {vencimento} (Ainda no prazo)."
+    `Olá {nome}! Tudo bem? 😊\nA *{escola}* está enviando a fatura referente a: *{descricao}*.\nEla vence em {vencimento}, mas já estamos adiantando para sua organização.\nValor: R$ {valor}.${AVISO_LIQUIDACAO}`,
+    `Oi {nome}! A mensalidade de *{descricao}* da *{escola}* já está disponível para pagamento.\nVencimento: {vencimento}.\nSegue abaixo os dados:${AVISO_LIQUIDACAO}`,
+    `{escola} Informa: Fatura disponível.\n📝 Referência: {descricao}\n💲 Total: R$ {valor}\n🗓️ Vencimento: {vencimento}.${AVISO_LIQUIDACAO}`
 ];
 
 const TEMPLATES_HOJE = [
-    "Bom dia {nome}! A *{escola}* lembra que a mensalidade vence *HOJE* ({vencimento}).\nValor: R$ {valor}.\nEvite juros realizando o pagamento pelo link abaixo:",
-    "Olá {nome}, hoje é o dia do vencimento da fatura da *{escola}*.\nReferente a: {descricao}\nTotal: R$ {valor}.\n\nSegue o código/link para pagamento rápido:",
-    "Oi! A *{escola}* passa para lembrar do pagamento referente a *{descricao}* que vence hoje.\n\nCopie o código ou acesse o link abaixo:"
+    `Bom dia {nome}! A *{escola}* lembra que sua mensalidade vence *HOJE* ({vencimento}).\nValor: R$ {valor}.\nSegue o link para pagamento:${AVISO_LIQUIDACAO}`,
+    `Olá {nome}, hoje é o dia do vencimento da fatura da *{escola}*.\nReferente a: {descricao}\nTotal: R$ {valor}.\n\nSegue o código/link para pagamento rápido:${AVISO_LIQUIDACAO}`,
+    `Oi! A *{escola}* passa para lembrar do pagamento de *{descricao}* que vence hoje. Copie o código ou acesse o link abaixo:${AVISO_LIQUIDACAO}`
 ];
 
 const TEMPLATES_ATRASO = [
-    "Olá {nome}, a *{escola}* notou que a fatura de *{descricao}* (vencida em {vencimento}) está em aberto.\nPodemos ajudar? Segue o link atualizado:",
-    "Oi {nome}! A mensalidade de {descricao} na *{escola}* passou do vencimento ({vencimento}).\nValor original: R$ {valor}.\nSegue os dados para regularização:",
-    "Lembrete *{escola}*: Consta em aberto a fatura de *{descricao}*.\nPara evitar bloqueios ou mais juros, utilize o link abaixo:"
+    `Olá {nome}, a *{escola}* notou que a fatura de *{descricao}* (vencida em {vencimento}) ainda consta como pendente.\nPodemos ajudar? Segue o link atualizado:${AVISO_LIQUIDACAO}`,
+    `Oi {nome}! A mensalidade de {descricao} na *{escola}* passou do vencimento ({vencimento}).\nValor original: R$ {valor}.\nSegue os dados para regularização:${AVISO_LIQUIDACAO}`,
+    `Lembrete *{escola}*: Consta em aberto a fatura de *{descricao}*.\nPara evitar juros, utilize o link abaixo para atualizar seu boleto:${AVISO_LIQUIDACAO}`
 ];
 
 class NotificationService {
