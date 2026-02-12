@@ -6,8 +6,12 @@ class SchoolController {
         try {
             let createData = { ...req.body };
             
-            // Tratamento estruturado para criação de nova escola
-            if (createData['address[street]']) {
+            // Tratamento para JSON stringificado (caso venha via FormData antigo)
+            if (createData.address && typeof createData.address === 'string') {
+                 try { createData.address = JSON.parse(createData.address); } catch(e) {}
+            }
+            // Tratamento estruturado se vier via campos individuais
+            else if (createData['address[street]']) {
                 createData.address = {
                     zipCode: createData['address[zipCode]'] || createData['address[cep]'],
                     street: createData['address[street]'],
@@ -69,63 +73,69 @@ class SchoolController {
         }
     }
 
-    // --- [UPDATE REFORMULADO COM DOT NOTATION] ---
+    // --- [UPDATE CORRIGIDO COM FLATTEN/DOT NOTATION] ---
     async update(req, res, next) {
         try {
-            const rawBody = { ...req.body };
-            const updateData = {};
+            console.log('\n\n================================================');
+            console.log('🔍 [DEBUG] INÍCIO UPDATE ESCOLA');
+            console.log('🆔 ID:', req.params.id);
+            console.log('📥 [DEBUG] BODY RECEBIDO (RAW):', JSON.stringify(req.body, null, 2));
 
-            // Função interna para limpar aspas e remover strings vazias vindas do FormData
-            const cleanValue = (val) => {
-                if (typeof val === 'string') {
-                    const v = val.replace(/^"|"$/g, '').trim();
-                    return v === '' ? undefined : v;
-                }
-                return val;
+            const rawBody = { ...req.body };
+            
+            // Função recursiva para "achatar" objetos aninhados em Dot Notation
+            // Ex: { a: { b: 1 } } vira { "a.b": 1 }
+            const flattenObject = (obj, prefix = '') => {
+                return Object.keys(obj).reduce((acc, k) => {
+                    const pre = prefix.length ? prefix + '.' : '';
+                    if (typeof obj[k] === 'object' && obj[k] !== null && !Array.isArray(obj[k])) {
+                        Object.assign(acc, flattenObject(obj[k], pre + k));
+                    } else {
+                        acc[pre + k] = obj[k];
+                    }
+                    return acc;
+                }, {});
             };
 
-            // Mapeamento Dinâmico: Transforma chaves "Objeto[campo]" em "Objeto.campo"
-            Object.keys(rawBody).forEach(key => {
-                const value = cleanValue(rawBody[key]);
-                if (value === undefined) return;
-
-                // 1. Tratamento de Endereço
-                if (key.startsWith('address[')) {
-                    const field = key.match(/\[(.*?)\]/)[1];
-                    // Normaliza CEP e Bairro para os nomes de campos usados no Model
-                    const dbField = (field === 'cep' || field === 'zipCode') ? 'zipCode' :
-                                   (field === 'neighborhood' || field === 'district') ? 'district' : field;
-                    updateData[`address.${dbField}`] = value;
-                } 
-                // 2. Tratamento Mercado Pago
-                else if (key.startsWith('mercadoPagoConfig[')) {
-                    const field = key.match(/\[(.*?)\]/)[1];
-                    updateData[`mercadoPagoConfig.${field}`] = value;
-                    updateData['mercadoPagoConfig.isConfigured'] = true;
+            // 1. Convertemos tudo para Dot Notation
+            const flatBody = flattenObject(rawBody);
+            
+            // 2. Filtramos undefined, null e strings vazias/falsas
+            const updateData = {};
+            Object.keys(flatBody).forEach(key => {
+                const val = flatBody[key];
+                
+                // Ignora campos vazios ou nulos explícitos
+                if (val === undefined || val === null || val === '' || val === 'null' || val === 'undefined') {
+                    return;
                 }
-                // 3. Tratamento Cora (Com suporte a aninhamento duplo)
-                else if (key.startsWith('coraConfig[')) {
-                    // Captura todos os níveis dentro de colchetes, ex: [sandbox][clientId]
-                    const matches = key.match(/\[(.*?)\]/g).map(m => m.replace(/[\[\]]/g, ''));
-                    
-                    if (matches.length === 1) { // ex: coraConfig[isSandbox]
-                        const field = matches[0];
-                        // Converte string 'true' do FormData para booleano real
-                        updateData[`coraConfig.${field}`] = (value === 'true' || value === true);
-                    } else if (matches.length === 2) { // ex: coraConfig[sandbox][clientId]
-                        const sub = matches[0]; // sandbox | production | defaultFine
-                        const field = matches[1]; 
-                        updateData[`coraConfig.${sub}.${field}`] = value;
-                    }
-                    updateData['coraConfig.isConfigured'] = true;
-                }
-                // 4. Campos de Primeiro Nível (name, cnpj, preferredGateway, etc)
-                else {
-                    updateData[key] = value;
+                
+                // Tratamento especial para arrays de FormData antigos (ex: address[street])
+                // Se o flatten já resolveu como 'address.street', usamos ele.
+                // Se vier como chave string 'address[street]', convertemos manualmente.
+                if (key.includes('[')) {
+                    // Lógica legado para FormData manual, se ainda existir
+                    const cleanKey = key.replace(/\[/g, '.').replace(/\]/g, '');
+                    updateData[cleanKey] = val;
+                } else {
+                    updateData[key] = val;
                 }
             });
 
+            console.log('⚙️ [DEBUG] UPDATE DATA (DOT NOTATION - FINAL):', JSON.stringify(updateData, null, 2));
+
+            // Validação de segurança no log: Se tivermos clientId mas sem chave privada, e estiver em dot notation, OK.
+            // Se estivesse como objeto aninhado, seria perigo.
+            const hasNestedRisk = Object.keys(updateData).some(k => k === 'coraConfig' || k === 'coraConfig.production');
+            if (hasNestedRisk) {
+                console.warn('⚠️ [ALERTA CRÍTICO] Objeto aninhado detectado! Isso pode sobrescrever dados.');
+            }
+
             const school = await SchoolService.updateSchool(req.params.id, updateData, req.file);
+            
+            console.log('✅ [DEBUG] SUCESSO. Escola atualizada.');
+            console.log('================================================\n');
+
             res.status(200).json(school);
 
         } catch (error) {

@@ -24,46 +24,35 @@ class SchoolService {
     }
 
     async updateSchool(id, updateData, logoFile) {
-        // [CORREÇÃO CRÍTICA]: Carregamos explicitamente os campos binários e sensíveis.
-        // Se não carregarmos o logo.data e os certificados agora, o Mongoose irá 
-        // sobrescrevê-los como nulos ao chamar o .save() no final do método.
-        const school = await School.findById(id).select(
-            '+logo.data ' +
-            '+mercadoPagoConfig.prodAccessToken ' +
-            '+coraConfig.sandbox.certificateContent +coraConfig.sandbox.privateKeyContent ' +
-            '+coraConfig.production.certificateContent +coraConfig.production.privateKeyContent'
-        );
+        // [CORREÇÃO APLICADA]: Utilização de Update Atômico ($set).
+        // Ao usar findByIdAndUpdate com $set, garantimos que apenas os campos enviados (ex: 'authorizationProtocol')
+        // sejam alterados no banco. Isso impede que o Mongoose regrave o objeto 'coraConfig' inteiro,
+        // o que causava a perda dos campos 'select: false' (certificados/chaves) que não estavam carregados.
+        
+        const updatePayload = { ...updateData };
+
+        // Se houver nova logo, adicionamos ao payload do update
+        if (logoFile) {
+            updatePayload['logo.data'] = logoFile.buffer;
+            updatePayload['logo.contentType'] = logoFile.mimetype;
+        }
+
+        const school = await School.findByIdAndUpdate(
+            id,
+            { $set: updatePayload }, // O operador $set funde os dados novos com os existentes
+            { 
+                new: true, // Retorna o documento já atualizado
+                runValidators: true // Garante validações de tipo do Schema
+            }
+        ).select('-logo.data'); // Oculta o buffer da logo no retorno para não pesar a resposta
 
         if (!school) {
             throw new Error('Escola não encontrada.');
         }
 
-        // Aplicação de Update via Dot Notation (ex: updateData['address.city'] = 'São Paulo')
-        // O método .set() do Mongoose entende caminhos com pontos e atualiza apenas a sub-chave.
-        Object.keys(updateData).forEach(path => {
-            if (updateData[path] !== undefined && updateData[path] !== null) {
-                school.set(path, updateData[path]);
-            }
-        });
-
-        // Atualização da Logotipo (se um novo arquivo foi enviado)
-        if (logoFile) {
-            school.logo = {
-                data: logoFile.buffer,
-                contentType: logoFile.mimetype
-            };
-        }
-
-        // Persistência no Banco de Dados
-        await school.save();
-
-        // Retorno do objeto limpo (sem o buffer da imagem por questões de performance)
-        const schoolObject = school.toObject();
-        if (schoolObject.logo) {
-            delete schoolObject.logo.data;
-        }
-        
-        return schoolObject;
+        // Não precisamos converter toObject ou deletar logo.data manualmente aqui,
+        // pois o .select('-logo.data') acima já resolveu isso.
+        return school;
     }
 
     async getAllSchools() {

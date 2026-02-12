@@ -6,6 +6,10 @@ const SchoolSchema = new mongoose.Schema({
   cnpj: { type: String },
   stateRegistration: { type: String },
   municipalRegistration: { type: String },
+  
+  // Novo campo para o Ato Autorizativo/Portaria
+  authorizationProtocol: { type: String }, 
+
   contactPhone: { type: String },
   contactEmail: { type: String },
   
