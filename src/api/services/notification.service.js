@@ -4,7 +4,7 @@ const School = require('../models/school.model');
 const NotificationConfig = require('../models/notification-config.model');
 const whatsappService = require('./whatsapp.service');
 const cron = require('node-cron');
-const mongoose = require('mongoose'); // <--- IMPORTANTE: Adicionado para corrigir o ID
+const mongoose = require('mongoose'); 
 
 // --- IMPORTAÇÃO SEGURA DO EVENT EMITTER ---
 let appEmitter;
@@ -47,7 +47,6 @@ class NotificationService {
 
     /**
      * [CORRIGIDO] Estatísticas em Tempo Real
-     * Adicionado mongoose.Types.ObjectId para garantir que o Match funcione.
      */
     async getDailyStats(schoolId) {
         const startOfDay = new Date();
@@ -56,8 +55,6 @@ class NotificationService {
         const endOfDay = new Date();
         endOfDay.setHours(23, 59, 59, 999);
 
-        // [CORREÇÃO CRÍTICA] Converte String para ObjectId manualmente
-        // O aggregate não faz casting automático como o find()
         let objectIdSchool;
         try {
             objectIdSchool = new mongoose.Types.ObjectId(schoolId);
@@ -69,7 +66,7 @@ class NotificationService {
         const stats = await NotificationLog.aggregate([
             {
                 $match: {
-                    school_id: objectIdSchool, // <--- Usa o ID convertido
+                    school_id: objectIdSchool, 
                     updatedAt: { $gte: startOfDay, $lte: endOfDay }
                 }
             },
@@ -90,13 +87,11 @@ class NotificationService {
         };
 
         stats.forEach(s => {
-            // Mapeia status 'queued' e 'processing' como contagem
             if (result[s._id] !== undefined) {
                 result[s._id] = s.count;
             }
         });
 
-        // Soma total
         result.total_today = result.queued + result.processing + result.sent + result.failed;
         
         return result;
@@ -107,9 +102,8 @@ class NotificationService {
      */
     async getForecast(schoolId, targetDate) {
         const simData = new Date(targetDate);
-        simData.setHours(12, 0, 0, 0); // Meio dia para evitar problemas de fuso
+        simData.setHours(12, 0, 0, 0); 
 
-        // Limites ampliados
         const limitPassado = new Date(simData); 
         limitPassado.setDate(limitPassado.getDate() - 60);
         limitPassado.setHours(0,0,0,0);
@@ -118,7 +112,6 @@ class NotificationService {
         futuroLimit.setDate(futuroLimit.getDate() + 5);
         futuroLimit.setHours(23,59,59,999);
 
-        // Busca faturas. O .find() converte o ID automaticamente, então aqui não precisa do new ObjectId
         const invoices = await Invoice.find({
             school_id: schoolId,
             status: 'pending',
@@ -167,7 +160,6 @@ class NotificationService {
 
     async queueNotification({ schoolId, invoiceId, studentName, tutorName, phone, type = 'new_invoice' }) {
         try {
-            // Verifica duplicidade na fila
             const exists = await NotificationLog.exists({
                 invoice_id: invoiceId, 
                 type: type, 
@@ -176,7 +168,6 @@ class NotificationService {
 
             if (exists) return;
 
-            // Cria o log
             const newLog = await NotificationLog.create({
                 school_id: schoolId,
                 invoice_id: invoiceId,
@@ -190,7 +181,6 @@ class NotificationService {
             
             console.log(`📥 [Fila] + ADICIONADO: ${studentName} (${type})`);
             
-            // Emite evento para WebSocket
             if (appEmitter && typeof appEmitter.emit === 'function') {
                 appEmitter.emit('notification:created', newLog);
             }
@@ -210,14 +200,12 @@ class NotificationService {
             const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
             for (const config of activeConfigs) {
-                // Checa Janela de Horário
                 const [startH, startM] = config.windowStart.split(':').map(Number);
                 const [endH, endM] = config.windowEnd.split(':').map(Number);
                 if (currentMinutes < (startH * 60 + startM) || currentMinutes >= (endH * 60 + endM)) continue;
 
                 const schoolId = config.school_id;
 
-                // Define intervalos de data
                 const hojeStart = new Date(); hojeStart.setHours(0,0,0,0);
                 const hojeEnd = new Date(); hojeEnd.setHours(23,59,59,999);
                 
@@ -241,7 +229,6 @@ class NotificationService {
                     const check = this._checkEligibilityForDate(inv.dueDate, new Date());
                     
                     if (check.shouldSend) {
-                        // Evita enviar duas vezes no mesmo dia
                         const sentToday = await NotificationLog.exists({
                             invoice_id: inv._id,
                             createdAt: { $gte: hojeStart } 
@@ -276,7 +263,6 @@ class NotificationService {
         this.isProcessing = true;
 
         try {
-            // Pega o próximo da fila
             const logs = await NotificationLog.find({
                 status: 'queued', scheduled_for: { $lte: new Date() }
             }).limit(1).populate('invoice_id'); 
@@ -287,11 +273,9 @@ class NotificationService {
                 log.status = 'processing';
                 await log.save();
                 
-                // Avisa Front que mudou status para processing
                 if (appEmitter) appEmitter.emit('notification:updated', log);
 
                 try {
-                    // Delay Anti-Ban (15 a 30s)
                     const delay = Math.floor(Math.random() * 15000) + 15000;
                     console.log(`⏳ Aguardando ${Math.floor(delay/1000)}s...`);
                     await new Promise(r => setTimeout(r, delay));
@@ -305,7 +289,6 @@ class NotificationService {
 
                 } catch (error) {
                     let friendlyError = error.message;
-                    // Tenta extrair mensagem da Evolution API
                     if (error.response?.data?.response?.message?.[0]?.exists === false) {
                         friendlyError = "Número inválido/Sem WhatsApp.";
                     }
@@ -317,7 +300,6 @@ class NotificationService {
                 }
                 
                 const finalLog = await log.save();
-                // Avisa Front resultado final
                 if (appEmitter) appEmitter.emit('notification:updated', finalLog);
             }
         } catch (err) {
@@ -335,7 +317,6 @@ class NotificationService {
         const school = await School.findById(log.school_id).select('name whatsapp').lean();
         const nomeEscola = school.name || "Escola";
 
-        // Auto-Reconnect Check
         if (!school.whatsapp || school.whatsapp.status !== 'connected') {
             console.log(`⚠️ [Zap] Banco desconectado. Verificando API...`);
             const isReallyConnected = await whatsappService.ensureConnection(log.school_id);
@@ -391,15 +372,69 @@ class NotificationService {
         }
     }
 
-    async getLogs(schoolId, status, page = 1) {
+    // --- MÉTODOS ALTERADOS/ADICIONADOS ---
+
+    async getLogs(schoolId, status, page = 1, limit = 20) {
         const query = { school_id: schoolId };
         if (status && status !== 'Todos') query.status = status;
-        const limit = 20; const skip = (page - 1) * limit;
-        const logs = await NotificationLog.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+        
+        let dbQuery = NotificationLog.find(query).sort({ createdAt: -1 });
+
+        // MODIFICAÇÃO: Permite limit=0 ou 'all' para trazer tudo
+        const shouldPaginate = limit && limit !== 'all' && Number(limit) > 0;
+
+        if (shouldPaginate) {
+            const skip = (page - 1) * limit;
+            dbQuery = dbQuery.skip(skip).limit(parseInt(limit));
+        }
+
+        const logs = await dbQuery.lean();
         const total = await NotificationLog.countDocuments(query);
-        return { logs, total, pages: Math.ceil(total / limit) };
+        
+        // Ajusta cálculo de páginas
+        const pages = shouldPaginate ? Math.ceil(total / limit) : 1;
+        
+        return { logs, total, pages };
+    }
+
+    /**
+     * [NOVO] Reenviar todas as falhas do dia
+     */
+    async retryAllFailed(schoolId) {
+        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
+
+        // Busca logs que falharam HOJE
+        const failedLogs = await NotificationLog.find({
+            school_id: schoolId,
+            status: 'failed',
+            updatedAt: { $gte: startOfDay, $lte: endOfDay }
+        });
+
+        if (failedLogs.length === 0) {
+            return { count: 0, message: "Nenhuma falha encontrada hoje." };
+        }
+
+        let count = 0;
+        for (const log of failedLogs) {
+            log.status = 'queued';
+            log.error_message = null; 
+            log.scheduled_for = new Date(); 
+            
+            await log.save();
+            
+            // Avisa Front
+            if (appEmitter) appEmitter.emit('notification:updated', log);
+            
+            count++;
+        }
+
+        console.log(`🔄 [Bulk Retry] ${count} mensagens re-enfileiradas.`);
+        return { count, message: `${count} mensagens enviadas para a fila novamente.` };
     }
     
+    // --- FIM DOS MÉTODOS ALTERADOS ---
+
     async getConfig(schoolId) {
         let config = await NotificationConfig.findOne({ school_id: schoolId });
         if (!config) config = await NotificationConfig.create({ school_id: schoolId });

@@ -17,6 +17,10 @@ router.use(verifyToken);
 
 // Monitoramento
 router.get('/logs', NotificationController.getLogs);
+
+// [NOVO] Rota de reenvio em massa
+router.post('/retry-all', NotificationController.retryAllFailed);
+
 router.post('/trigger', NotificationController.triggerManualRun);
 
 router.get('/stats', NotificationController.getDashboardStats);
