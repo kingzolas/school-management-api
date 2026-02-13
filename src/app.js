@@ -35,6 +35,7 @@ const attendanceRoutes = require('./api/routes/attendance.routes.js'); // [ADICI
 const evaluationRoutes = require('./api/routes/evaluation.routes');
 const gradeRoutes = require('./api/routes/grade.routes');
 // ===================================================================
+const releaseRoutes = require('./api/routes/release.routes');
 
 const analyticsRoutes = require('./api/routes/analytics.routes');
 
@@ -101,5 +102,7 @@ app.use('/api/grades', gradeRoutes);
 
 // ADICIONE ESTA LINHA:
 app.use('/api/notifications', notificationRoutes);
+
+app.use('/releases', releaseRoutes);
 
 module.exports = app;
