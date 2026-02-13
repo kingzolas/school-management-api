@@ -103,6 +103,6 @@ app.use('/api/grades', gradeRoutes);
 // ADICIONE ESTA LINHA:
 app.use('/api/notifications', notificationRoutes);
 
-app.use('/releases', releaseRoutes);
+app.use('api/releases', releaseRoutes);
 
 module.exports = app;
