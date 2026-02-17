@@ -1,3 +1,4 @@
+// src/api/routes/webhook.routes.js
 const express = require('express');
 const router = express.Router();
 const webhookController = require('../controllers/webhook.controller');
@@ -7,24 +8,26 @@ const webhookController = require('../controllers/webhook.controller');
 // POST /api/webhook/mp
 // --------------------------------------------------------------------------
 router.post(
-  '/mp', 
+  '/mp',
   webhookController.handleMpWebhook.bind(webhookController)
 );
 
 // --------------------------------------------------------------------------
-// [NOVO] Rota PÚBLICA para o BANCO CORA
+// Rota PÚBLICA para o BANCO CORA
 // POST /api/webhook/cora
-// A Cora envia os dados no Header, o controller fará a leitura correta.
 // --------------------------------------------------------------------------
 router.post(
-  '/cora', 
-  (req, res) => webhookController.handleCoraWebhook(req, res)
+  '/cora',
+  webhookController.handleCoraWebhook.bind(webhookController)
 );
 
 // --------------------------------------------------------------------------
 // Rota PÚBLICA para o WHATSAPP (Evolution API)
 // POST /api/webhook/whatsapp
 // --------------------------------------------------------------------------
-router.post('/whatsapp', webhookController.handleWhatsappWebhook.bind(webhookController));
+router.post(
+  '/whatsapp',
+  webhookController.handleWhatsappWebhook.bind(webhookController)
+);
 
 module.exports = router;
