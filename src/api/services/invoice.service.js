@@ -82,7 +82,8 @@ class InvoiceService {
       linkedTutorId = targetTutor._id;
     }
 
-    const gateway = GatewayFactory.create(school, chosenGateway);
+   const gateway = await GatewayFactory.create(school, chosenGateway);
+
 
     const finalEmail = (payerEmail && payerEmail.includes('@'))
       ? payerEmail.trim()
