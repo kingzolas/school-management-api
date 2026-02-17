@@ -13,9 +13,6 @@ const { PDFDocument } = require('pdf-lib');
 
 class InvoiceService {
 
-  /**
-   * Cria fatura (Mercado Pago ou Cora) e enfileira a notificação SE for elegível
-   */
   async createInvoice(invoiceData, schoolId) {
     const { studentId, value, dueDate, description, tutorId, gateway: chosenGateway, sendNow } = invoiceData;
 
@@ -82,7 +79,6 @@ class InvoiceService {
       linkedTutorId = targetTutor._id;
     }
 
-    // ✅ aqui você já está correto (await)
     const gateway = await GatewayFactory.create(school, chosenGateway);
 
     const finalEmail = (payerEmail && payerEmail.includes('@'))
@@ -143,22 +139,11 @@ class InvoiceService {
       });
 
       await newInvoice.save();
-      console.log('[InvoiceService] ✅ Invoice salva no DB:', {
-        invoiceId: String(newInvoice._id),
-        gateway: newInvoice.gateway,
-        external_id: String(newInvoice.external_id)
-      });
 
       if (payerPhone) {
         try {
           const isAutoEligible = NotificationService.isEligibleForSending(newInvoice.dueDate);
           const shouldSendNow = isAutoEligible || (sendNow === true);
-
-          console.log('[InvoiceService] Notificação elegível?', {
-            isAutoEligible,
-            sendNow: sendNow === true,
-            shouldSendNow
-          });
 
           if (shouldSendNow) {
             await NotificationService.queueNotification({
@@ -168,10 +153,6 @@ class InvoiceService {
               tutorName: payerName,
               phone: payerPhone,
               type: 'new_invoice'
-            });
-            console.log('[InvoiceService] ✅ Notificação enfileirada:', {
-              invoiceId: String(newInvoice._id),
-              phone: payerPhone
             });
           }
         } catch (queueError) {
@@ -196,10 +177,8 @@ class InvoiceService {
     } else {
       try {
         const match = error.message.match(/\{.*\}/);
-        if (match) {
-          errorData = JSON.parse(match[0]);
-        }
-      } catch (e) { /* Falha silenciosa */ }
+        if (match) errorData = JSON.parse(match[0]);
+      } catch (e) { /* ignora */ }
     }
 
     if (errorData && errorData.errors && Array.isArray(errorData.errors) && errorData.errors.length > 0) {
@@ -235,42 +214,6 @@ class InvoiceService {
     return error.message.replace('Erro Cora Create:', '').trim() || 'Erro desconhecido ao comunicar com o banco.';
   }
 
-  async resendNotification(invoiceId, schoolId) {
-    const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
-      .populate('student').populate('tutor');
-
-    if (!invoice) throw new Error('Fatura não encontrada.');
-
-    let targetName, targetPhone;
-    if (invoice.tutor) {
-      targetName = invoice.tutor.fullName;
-      targetPhone = invoice.tutor.phoneNumber || invoice.tutor.telefone || invoice.tutor.celular;
-    } else if (invoice.student) {
-      targetName = invoice.student.fullName;
-      targetPhone = invoice.student.phoneNumber || invoice.student.telefone || invoice.student.celular;
-    }
-
-    if (!targetPhone) throw new Error('Responsável financeiro não possui telefone cadastrado.');
-
-    try {
-      await NotificationService.queueNotification({
-        schoolId: schoolId,
-        invoiceId: invoice._id,
-        studentName: invoice.student.fullName,
-        tutorName: targetName,
-        phone: targetPhone,
-        type: 'reminder'
-      });
-      return true;
-    } catch (e) {
-      throw new Error("Erro ao agendar envio: " + e.message);
-    }
-  }
-
-  async processDailyReminders() {
-    console.log('⚠️ [InvoiceService] processDailyReminders chamado (Legado). Use NotificationService.');
-  }
-
   async cancelInvoice(invoiceId, schoolId) {
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId });
     if (!invoice) throw new Error('Fatura não encontrada');
@@ -280,12 +223,8 @@ class InvoiceService {
     const gatewayName = invoice.gateway === 'cora' ? 'CORA' : 'MERCADOPAGO';
 
     try {
-      // ✅ CORREÇÃO: GatewayFactory.create é async agora
       const gateway = await GatewayFactory.create(school, gatewayName);
-
-      if (invoice.external_id) {
-        await gateway.cancelInvoice(invoice.external_id);
-      }
+      if (invoice.external_id) await gateway.cancelInvoice(invoice.external_id);
     } catch (error) {
       console.warn(`Erro ao cancelar no gateway (${gatewayName}):`, error.message);
     }
@@ -296,16 +235,17 @@ class InvoiceService {
   }
 
   /**
-   * ✅ Agora resolve o caso MP quando statusRaw=null, buscando status na API do MP.
-   * E melhora logs pra você rastrear o caminho.
+   * ✅ Agora: pode receber paidAt real do provedor (Cora/MP)
+   * - NUNCA mais usa "agora" como paidAt se o provedor fornecer a data real.
    */
-  async handlePaymentWebhook(externalId, providerName, statusRaw) {
+  async handlePaymentWebhook(externalId, providerName, statusRaw, paidAtRaw = null) {
     const hookRunId = `${providerName || 'PROVIDER'}-${Date.now()}`;
 
     console.log(`\n🔔 [handlePaymentWebhook ${hookRunId}] chamado`, {
       externalId: String(externalId),
       providerName,
-      statusRaw: statusRaw ?? null
+      statusRaw: statusRaw ?? null,
+      paidAtRaw: paidAtRaw ?? null
     });
 
     let invoice = await Invoice.findOne({
@@ -317,30 +257,23 @@ class InvoiceService {
       return { processed: false, updated: false, reason: 'not_found' };
     }
 
-    // ✅ Se for MP e não veio status, busca na API do MP
+    // MP: se não veio status, busca
     if ((!statusRaw || statusRaw === null) && String(providerName).toUpperCase().includes('MERCADO_PAGO')) {
       try {
-        console.log(`🔎 [handlePaymentWebhook ${hookRunId}] statusRaw vazio no MP, buscando status na API...`, {
-          invoiceId: String(invoice._id),
-          external_id: String(invoice.external_id)
-        });
-
         const school = await School.findById(invoice.school_id).select('+mercadoPagoConfig.prodAccessToken').lean();
         const mpToken = school?.mercadoPagoConfig?.prodAccessToken;
 
-        if (!mpToken) {
-          console.warn(`⚠️ [handlePaymentWebhook ${hookRunId}] MP token ausente na escola`, { schoolId: String(invoice.school_id) });
-        } else {
+        if (mpToken) {
           const res = await axios.get(`https://api.mercadopago.com/v1/payments/${externalId}`, {
             headers: { Authorization: `Bearer ${mpToken}` },
             timeout: 20000
           });
+
           statusRaw = res.data?.status || null;
 
-          console.log(`📌 [handlePaymentWebhook ${hookRunId}] status MP obtido`, {
-            statusRaw,
-            status_detail: res.data?.status_detail
-          });
+          // MP: se tiver approved_date, date_approved etc, você pode mapear aqui também
+          const mpPaidAt = res.data?.date_approved || res.data?.dateApproved || null;
+          if (!paidAtRaw && mpPaidAt) paidAtRaw = mpPaidAt;
         }
       } catch (e) {
         console.error(`❌ [handlePaymentWebhook ${hookRunId}] erro consultando MP:`, e.message);
@@ -348,6 +281,7 @@ class InvoiceService {
     }
 
     let novoStatus = invoice.status;
+
     const statusPago = ['approved', 'paid', 'COMPLETED', 'LIQUIDATED', 'PAID'];
     const statusCancelado = ['cancelled', 'rejected', 'CANCELED', 'canceled', 'CANCELLED'];
 
@@ -355,29 +289,41 @@ class InvoiceService {
       const s = String(statusRaw);
       const sl = s.toLowerCase();
 
-      if (statusPago.includes(s) || statusPago.includes(sl) || s === 'paid') {
+      if (statusPago.includes(s) || statusPago.includes(sl) || sl === 'paid') {
         novoStatus = 'paid';
       } else if (statusCancelado.includes(s) || statusCancelado.includes(sl)) {
         novoStatus = 'canceled';
       }
-    } else {
-      console.log(`ℹ️ [handlePaymentWebhook ${hookRunId}] statusRaw ainda vazio, mantendo status atual`, {
-        invoiceId: String(invoice._id),
-        currentStatus: invoice.status
-      });
+    }
+
+    // ✅ paidAt real (UTC) se fornecido e válido
+    let paidAtParsed = null;
+    if (paidAtRaw) {
+      const d = new Date(paidAtRaw);
+      if (!Number.isNaN(d.getTime())) paidAtParsed = d;
     }
 
     let wasUpdated = false;
 
-    if (invoice.status !== novoStatus || (novoStatus === 'paid' && !invoice.paidAt)) {
+    const shouldUpdatePaidAt =
+      novoStatus === 'paid' &&
+      (paidAtParsed && (!invoice.paidAt || invoice.paidAt.getTime() !== paidAtParsed.getTime()));
+
+    if (invoice.status !== novoStatus || shouldUpdatePaidAt) {
       const oldStatus = invoice.status;
 
       invoice.status = novoStatus;
-      if (novoStatus === 'paid' && !invoice.paidAt) {
-        invoice.paidAt = new Date();
+
+      if (novoStatus === 'paid') {
+        // ✅ regra profissional:
+        // - se Cora/MP trouxe paidAt real, salva ele
+        // - se NÃO trouxe, só usa "agora" como fallback (melhor que nada)
+        if (paidAtParsed) invoice.paidAt = paidAtParsed;
+        else if (!invoice.paidAt) invoice.paidAt = new Date();
       }
 
       await invoice.save();
+
       console.log(`✅ [DB UPDATE ${hookRunId}] Fatura ${invoice._id} atualizada`, {
         oldStatus,
         newStatus: novoStatus,
@@ -433,7 +379,9 @@ class InvoiceService {
   }
 
   /**
-   * ✅ Sync com LOGS + CORA bulk + CORA fallback individual + MP sync
+   * ✅ Sync:
+   * - Bulk Cora marca "paid" SEM inventar paidAt
+   * - Backfill (limitado) busca paidAt real via /v2/invoices/:id
    */
   async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null) {
     const syncRunId = `sync-${schoolId}-${Date.now()}`;
@@ -469,49 +417,29 @@ class InvoiceService {
 
     // --- CORA BULK ---
     let coraGateway = null;
+    let bulkPaidIdsStr = [];
     try {
       const school = await School.findById(schoolId).lean();
-
-      const hasCora =
-        !!(school?.coraConfig?.production?.clientId || school?.coraConfig?.sandbox?.clientId);
-
-      console.log(`🏦 [${syncRunId}] Cora config detectada?`, {
-        hasCora,
-        isSandbox: school?.coraConfig?.isSandbox ?? null
-      });
+      const hasCora = !!(school?.coraConfig?.production?.clientId || school?.coraConfig?.sandbox?.clientId);
 
       if (hasCora) {
-        // ✅ CORREÇÃO PRINCIPAL: precisa await porque GatewayFactory.create é async
         coraGateway = await GatewayFactory.create(school, 'CORA');
-
-        console.log(`🧩 [${syncRunId}] CORA gateway criado`, {
-          hasGetPaidInvoices: typeof coraGateway.getPaidInvoices === 'function',
-          hasGetInvoiceStatus: typeof coraGateway.getInvoiceStatus === 'function',
-          hasGetInvoice: typeof coraGateway.getInvoice === 'function'
-        });
 
         if (typeof coraGateway.getPaidInvoices === 'function') {
           const paidIds = await coraGateway.getPaidInvoices(60);
+          bulkPaidIdsStr = Array.isArray(paidIds) ? paidIds.map(x => String(x)) : [];
 
-          console.log(`📥 [${syncRunId}] CORA getPaidInvoices(60)`, {
-            paidIdsCount: Array.isArray(paidIds) ? paidIds.length : null,
-            sample: Array.isArray(paidIds) ? paidIds.slice(0, 5) : paidIds
-          });
-
-          if (Array.isArray(paidIds) && paidIds.length > 0) {
-            const paidIdsStr = paidIds.map(x => String(x));
-
+          if (bulkPaidIdsStr.length > 0) {
+            // ✅ Atualiza status SEM inventar paidAt
             const result = await Invoice.updateMany(
               {
                 school_id: schoolId,
                 status: { $ne: 'paid' },
-                external_id: { $in: paidIdsStr }
+                external_id: { $in: bulkPaidIdsStr }
               },
               {
-                $set: {
-                  status: 'paid',
-                  paidAt: new Date()
-                }
+                $set: { status: 'paid' },
+                // não sobrescreve paidAt aqui
               }
             );
 
@@ -520,11 +448,7 @@ class InvoiceService {
               modifiedCount: result.modifiedCount
             });
 
-            if (result.modifiedCount > 0) {
-              stats.updatedCount += result.modifiedCount;
-            }
-          } else {
-            console.log(`ℹ️ [${syncRunId}] CORA bulk retornou 0 paidIds`);
+            if (result.modifiedCount > 0) stats.updatedCount += result.modifiedCount;
           }
         }
       }
@@ -538,8 +462,6 @@ class InvoiceService {
       const selectString = '+mercadoPagoConfig.prodAccessToken';
       const schoolMp = await School.findById(schoolId).select(selectString).lean();
       mpToken = schoolMp?.mercadoPagoConfig?.prodAccessToken || null;
-
-      console.log(`💳 [${syncRunId}] MP token presente?`, { hasMpToken: !!mpToken });
     } catch (e) {
       console.error(`❌ [${syncRunId}] Erro lendo token MP:`, e.message);
     }
@@ -559,27 +481,28 @@ class InvoiceService {
             timeout: 20000
           });
 
-          const result = await this.handlePaymentWebhook(inv.external_id, 'MP-SYNC', res.data?.status);
+          const status = res.data?.status || null;
+          const paidAt = res.data?.date_approved || res.data?.dateApproved || null;
+
+          const result = await this.handlePaymentWebhook(inv.external_id, 'MP-SYNC', status, paidAt);
           if (result.updated) stats.updatedCount++;
           return;
         }
 
-        // CORA fallback individual
+        // CORA
         if (inv.gateway === 'cora' && coraGateway) {
-          let statusFromCora = null;
-
-          if (typeof coraGateway.getInvoiceStatus === 'function') {
-            statusFromCora = await coraGateway.getInvoiceStatus(inv.external_id);
-          }
+          // ✅ aqui buscamos status + paidAt real quando já está pago
+          const info = await coraGateway.getInvoicePaymentInfo(inv.external_id);
 
           console.log(`🔎 [${syncRunId}] CORA status check`, {
             invoiceId: String(inv._id),
             external_id: String(inv.external_id),
-            statusFromCora
+            statusFromCora: info?.status,
+            paidAtFromCora: info?.paidAt || null
           });
 
-          if (statusFromCora) {
-            const result = await this.handlePaymentWebhook(inv.external_id, 'CORA-SYNC', statusFromCora);
+          if (info?.status) {
+            const result = await this.handlePaymentWebhook(inv.external_id, 'CORA-SYNC', info.status, info.paidAt);
             if (result.updated) stats.updatedCount++;
           }
 
@@ -594,6 +517,55 @@ class InvoiceService {
         });
       }
     }));
+
+    /**
+     * ✅ Backfill adicional (opcional, mas recomendado):
+     * depois do BULK, algumas invoices podem ter virado "paid" sem paidAt.
+     * Vamos completar paidAt real em lote pequeno para evitar excesso de chamadas.
+     */
+    try {
+      if (coraGateway && bulkPaidIdsStr.length > 0) {
+        const MAX_BACKFILL = 40;
+
+        // pega do DB as que ficaram paid mas sem paidAt e estão dentro dos paidIds
+        const toBackfill = await Invoice.find({
+          school_id: schoolId,
+          gateway: 'cora',
+          status: 'paid',
+          paidAt: { $in: [null, undefined] },
+          external_id: { $in: bulkPaidIdsStr }
+        })
+          .limit(MAX_BACKFILL)
+          .select('_id external_id')
+          .lean();
+
+        if (toBackfill.length > 0) {
+          console.log(`🧷 [${syncRunId}] CORA backfill paidAt`, {
+            count: toBackfill.length
+          });
+
+          for (const row of toBackfill) {
+            try {
+              const info = await coraGateway.getInvoicePaymentInfo(row.external_id);
+              if (info?.paidAt) {
+                await Invoice.updateOne(
+                  { _id: row._id },
+                  { $set: { paidAt: new Date(info.paidAt) } }
+                );
+              }
+            } catch (e) {
+              console.warn(`⚠️ [${syncRunId}] backfill falhou`, {
+                invoiceId: String(row._id),
+                external_id: String(row.external_id),
+                message: e.message
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`❌ [${syncRunId}] Erro no backfill CORA paidAt:`, e.message);
+    }
 
     console.log(`✅ [${syncRunId}] Sync finalizado`, {
       totalChecked: stats.totalChecked,
