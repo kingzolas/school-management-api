@@ -82,8 +82,8 @@ class InvoiceService {
       linkedTutorId = targetTutor._id;
     }
 
-   const gateway = await GatewayFactory.create(school, chosenGateway);
-
+    // ✅ aqui você já está correto (await)
+    const gateway = await GatewayFactory.create(school, chosenGateway);
 
     const finalEmail = (payerEmail && payerEmail.includes('@'))
       ? payerEmail.trim()
@@ -280,7 +280,9 @@ class InvoiceService {
     const gatewayName = invoice.gateway === 'cora' ? 'CORA' : 'MERCADOPAGO';
 
     try {
-      const gateway = GatewayFactory.create(school, gatewayName);
+      // ✅ CORREÇÃO: GatewayFactory.create é async agora
+      const gateway = await GatewayFactory.create(school, gatewayName);
+
       if (invoice.external_id) {
         await gateway.cancelInvoice(invoice.external_id);
       }
@@ -479,7 +481,8 @@ class InvoiceService {
       });
 
       if (hasCora) {
-        coraGateway = GatewayFactory.create(school, 'CORA');
+        // ✅ CORREÇÃO PRINCIPAL: precisa await porque GatewayFactory.create é async
+        coraGateway = await GatewayFactory.create(school, 'CORA');
 
         console.log(`🧩 [${syncRunId}] CORA gateway criado`, {
           hasGetPaidInvoices: typeof coraGateway.getPaidInvoices === 'function',
@@ -496,7 +499,6 @@ class InvoiceService {
           });
 
           if (Array.isArray(paidIds) && paidIds.length > 0) {
-            // ✅ normaliza para string pra evitar mismatch
             const paidIdsStr = paidIds.map(x => String(x));
 
             const result = await Invoice.updateMany(
@@ -543,7 +545,6 @@ class InvoiceService {
     }
 
     // --- FALLBACK INDIVIDUAL (MP + CORA) ---
-    // ✅ limitador de chamadas individuais
     const MAX_INDIVIDUAL_CHECKS = 80;
     const toCheck = pendingInvoices.slice(0, MAX_INDIVIDUAL_CHECKS);
 
@@ -563,7 +564,7 @@ class InvoiceService {
           return;
         }
 
-        // ✅ CORA fallback individual
+        // CORA fallback individual
         if (inv.gateway === 'cora' && coraGateway) {
           let statusFromCora = null;
 
@@ -604,7 +605,6 @@ class InvoiceService {
   }
 
   async getAllInvoices(filters = {}, schoolId) {
-    // ✅ não engole erro silenciosamente: loga se falhar
     this.syncPendingInvoices(null, schoolId).catch((e) => {
       console.error('❌ [InvoiceService] syncPendingInvoices falhou em getAllInvoices:', e.message);
     });
