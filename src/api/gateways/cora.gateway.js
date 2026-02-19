@@ -188,6 +188,7 @@ class CoraGateway {
 
     // 2) payments[].finalized_at (melhor e mais comum)
     const payments = Array.isArray(data.payments) ? data.payments : [];
+
     const withFinalized = payments
       .map((p) => {
         const iso = p?.finalized_at || p?.finalizedAt || null;
@@ -207,84 +208,88 @@ class CoraGateway {
     return null;
   }
 
+  _fmtDate(d) {
+    return new Date(d).toISOString().split('T')[0];
+  }
+
   /**
-   * ✅ Busca lista DETALHADA de faturas PAGAS (Bulk Sync)
-   * IMPORTANTE: /v2/invoices aceita state APENAS:
-   * [DRAFT, RECURRENCE_DRAFT, OPEN, PAID, LATE, CANCELLED]
+   * ✅ Busca lista de faturas PAGAS (Bulk Sync)
+   *
+   * IMPORTANTE:
+   * A listagem da Cora (Consulta de boletos) é baseada em DATA DE VENCIMENTO (occurrence_date),
+   * então se você filtrar apenas "últimos X dias", boletos com vencimento antigo pagos agora podem ficar de fora.
+   *
+   * Por isso, este método aceita { startDate, endDate } para você buscar desde o menor vencimento pendente no DB.
    */
-  async getPaidInvoicesDetailed(daysAgo = 90) {
+  async getPaidInvoices(options = {}) {
     const token = await this.authenticate();
 
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - daysAgo);
+    const {
+      startDate = null,
+      endDate = null,
+      // states válidos segundo o erro do próprio endpoint: [DRAFT, RECURRENCE_DRAFT, OPEN, PAID, LATE, CANCELLED]
+      // Para pagos, use PAID.
+      states = ['PAID'],
+      perPage = 100,
+      maxPages = 500 // trava de segurança
+    } = options || {};
 
-    const fmtDate = (d) => d.toISOString().split('T')[0];
+    const end = endDate ? new Date(endDate) : new Date();
 
-    const statesToTry = ['PAID'];
-    const results = [];
-    const seen = new Set();
+    let start = null;
+    if (startDate) start = new Date(startDate);
+    else {
+      // fallback: 90 dias, mas o ideal é passar startDate vindo do menor dueDate pendente no DB
+      start = new Date();
+      start.setDate(start.getDate() - 90);
+    }
 
-    console.log(`🔵 [CoraGateway] Bulk paid detailed de ${fmtDate(startDate)} até ${fmtDate(endDate)} | states=${statesToTry.join(',')}`);
+    const fmtStart = this._fmtDate(start);
+    const fmtEnd = this._fmtDate(end);
 
-    const pushItem = (item) => {
-      const id = item?.id ? String(item.id) : null;
-      const code = item?.code ? String(item.code) : null;
+    const paidIdsSet = new Set();
 
-      const occurrenceDate =
-        item?.occurrence_date ||
-        item?.occurrenceDate ||
-        item?.due_date ||
-        item?.dueDate ||
-        null;
+    console.log(`🔵 [CoraGateway] Bulk paid sync (by dueDate/occurrence_date) de ${fmtStart} até ${fmtEnd} | states=${states.join(',')}`);
 
-      const st = item?.status || item?.state || item?.invoice_state || item?.invoiceStatus || null;
-
-      const key = id ? `id:${id}` : (code ? `code:${code}` : null);
-      if (!key || seen.has(key)) return;
-
-      seen.add(key);
-      results.push({
-        id,
-        code,
-        occurrence_date: occurrenceDate,
-        status: st
-      });
-    };
-
-    for (const state of statesToTry) {
+    for (const state of states) {
       let page = 1;
       let hasMore = true;
 
       while (hasMore) {
-        try {
-          const params = {
-            state,
-            start: fmtDate(startDate),
-            end: fmtDate(endDate),
-            per_page: 100,
-            page
-          };
+        if (page > maxPages) {
+          console.warn(`⚠️ [CoraGateway] maxPages atingido (state=${state}). Interrompendo para segurança.`);
+          break;
+        }
 
+        // tentamos primeiro per_page, se der ruim tentamos perPage
+        const params = {
+          state,
+          start: fmtStart,
+          end: fmtEnd,
+          per_page: perPage,
+          page
+        };
+
+        try {
           const data = await this._get('/v2/invoices', token, { params });
           const items = data?.items || [];
 
           console.log(`📄 [CoraGateway] state=${state} page=${page} items=${items.length}`);
 
-          for (const item of items) pushItem(item);
+          for (const item of items) {
+            if (item?.id) paidIdsSet.add(String(item.id));
+          }
 
-          if (items.length < 100) hasMore = false;
+          if (items.length < perPage) hasMore = false;
           else page++;
         } catch (error) {
-          hasMore = false;
-
-          // fallback: perPage
+          // fallback param name perPage
           try {
             const paramsFallback = {
               state,
-              start: fmtDate(startDate),
-              end: fmtDate(endDate),
-              perPage: 100,
+              start: fmtStart,
+              end: fmtEnd,
+              perPage: perPage,
               page
             };
 
@@ -293,9 +298,11 @@ class CoraGateway {
 
             console.log(`📄 [CoraGateway] (fallback perPage) state=${state} page=${page} items=${itemsFb.length}`);
 
-            for (const item of itemsFb) pushItem(item);
+            for (const item of itemsFb) {
+              if (item?.id) paidIdsSet.add(String(item.id));
+            }
 
-            if (itemsFb.length < 100) hasMore = false;
+            if (itemsFb.length < perPage) hasMore = false;
             else page++;
           } catch (e2) {
             console.error(`❌ [CoraGateway] Falha também no fallback perPage (state=${state} page=${page})`);
@@ -305,16 +312,9 @@ class CoraGateway {
       }
     }
 
-    console.log(`✅ [CoraGateway] Bulk paid detailed finalizado. total=${results.length} sample=`, results.slice(0, 5));
-    return results;
-  }
-
-  /**
-   * Mantido por compat: retorna IDs pagos
-   */
-  async getPaidInvoices(daysAgo = 90) {
-    const detailed = await this.getPaidInvoicesDetailed(daysAgo);
-    return detailed.map((x) => x.id).filter(Boolean);
+    const allPaidIds = Array.from(paidIdsSet);
+    console.log(`✅ [CoraGateway] Bulk paid sync finalizado. totalPaidIds=${allPaidIds.length} sample=${allPaidIds.slice(0, 5).join(', ')}`);
+    return allPaidIds;
   }
 
   /**
