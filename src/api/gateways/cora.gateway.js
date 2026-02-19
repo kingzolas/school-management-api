@@ -11,22 +11,11 @@ class CoraGateway {
     this.isSandbox = this.fullConfig?.isSandbox === true;
 
     // 2) Seleciona credenciais corretas
-    const credentials = this.isSandbox
-      ? this.fullConfig?.sandbox
-      : this.fullConfig?.production;
+    const credentials = this.isSandbox ? this.fullConfig?.sandbox : this.fullConfig?.production;
 
     // 3) Validação
-    if (
-      !credentials ||
-      !credentials.clientId ||
-      !credentials.certificateContent ||
-      !credentials.privateKeyContent
-    ) {
-      console.error(
-        `❌ [CoraGateway] Credenciais incompletas para o ambiente ${
-          this.isSandbox ? 'SANDBOX' : 'PRODUÇÃO'
-        }.`
-      );
+    if (!credentials || !credentials.clientId || !credentials.certificateContent || !credentials.privateKeyContent) {
+      console.error(`❌ [CoraGateway] Credenciais incompletas para o ambiente ${this.isSandbox ? 'SANDBOX' : 'PRODUÇÃO'}.`);
       this.httpsAgent = null;
       this.clientId = null;
       return;
@@ -45,10 +34,7 @@ class CoraGateway {
 
     // 5) Formata PEM
     const cert = this._formatPem(credentials.certificateContent, ['CERTIFICATE']);
-    const key = this._formatPem(credentials.privateKeyContent, [
-      'PRIVATE KEY',
-      'RSA PRIVATE KEY'
-    ]);
+    const key = this._formatPem(credentials.privateKeyContent, ['PRIVATE KEY', 'RSA PRIVATE KEY']);
 
     if (cert && key) {
       this.httpsAgent = new https.Agent({
@@ -58,9 +44,7 @@ class CoraGateway {
       });
       this.clientId = credentials.clientId;
     } else {
-      console.error(
-        '❌ [CoraGateway] Falha ao formatar PEM. Verifique se as chaves no banco começam com -----BEGIN...'
-      );
+      console.error('❌ [CoraGateway] Falha ao formatar PEM. Verifique se as chaves no banco começam com -----BEGIN...');
       this.httpsAgent = null;
       this.clientId = null;
     }
@@ -86,13 +70,9 @@ class CoraGateway {
     }
 
     if (allowedTypes.length > 0) {
-      const ok = allowedTypes.some((t) =>
-        clean.includes(`-----BEGIN ${t}-----`)
-      );
+      const ok = allowedTypes.some((t) => clean.includes(`-----BEGIN ${t}-----`));
       if (!ok) {
-        console.warn(
-          '⚠️ [CoraGateway] Tipo de PEM diferente do esperado. Prosseguindo mesmo assim.'
-        );
+        console.warn('⚠️ [CoraGateway] Tipo de PEM diferente do esperado. Prosseguindo mesmo assim.');
       }
     }
 
@@ -116,10 +96,7 @@ class CoraGateway {
     }
 
     const now = Date.now();
-    if (
-      this._tokenCache.accessToken &&
-      this._tokenCache.expiresAt > now + 10_000
-    ) {
+    if (this._tokenCache.accessToken && this._tokenCache.expiresAt > now + 10_000) {
       return this._tokenCache.accessToken;
     }
 
@@ -221,8 +198,7 @@ class CoraGateway {
 
     if (withFinalized.length > 0) {
       const success = withFinalized.filter((x) => x.status === 'SUCCESS');
-      const pick =
-        (success.length > 0 ? success[success.length - 1] : withFinalized[withFinalized.length - 1]);
+      const pick = (success.length > 0 ? success[success.length - 1] : withFinalized[withFinalized.length - 1]);
 
       const d = new Date(pick.iso);
       if (!Number.isNaN(d.getTime())) return d.toISOString();
@@ -232,8 +208,9 @@ class CoraGateway {
   }
 
   /**
-   * ✅ BULK DETALHADO: retorna itens com (id, code, occurrence_date, status/state)
-   * Isso permite comparar CORA vs DB por mês (Jan/Fev etc.)
+   * ✅ Busca lista DETALHADA de faturas PAGAS (Bulk Sync)
+   * IMPORTANTE: /v2/invoices aceita state APENAS:
+   * [DRAFT, RECURRENCE_DRAFT, OPEN, PAID, LATE, CANCELLED]
    */
   async getPaidInvoicesDetailed(daysAgo = 90) {
     const token = await this.authenticate();
@@ -244,23 +221,25 @@ class CoraGateway {
 
     const fmtDate = (d) => d.toISOString().split('T')[0];
 
-    // estados comuns (variam conforme API)
-    const statesToTry = ['PAID', 'LIQUIDATED'];
-
-    console.log(
-      `🔵 [CoraGateway] Bulk paid detailed de ${fmtDate(startDate)} até ${fmtDate(endDate)} | states=${statesToTry.join(',')}`
-    );
-
+    const statesToTry = ['PAID'];
     const results = [];
     const seen = new Set();
+
+    console.log(`🔵 [CoraGateway] Bulk paid detailed de ${fmtDate(startDate)} até ${fmtDate(endDate)} | states=${statesToTry.join(',')}`);
 
     const pushItem = (item) => {
       const id = item?.id ? String(item.id) : null;
       const code = item?.code ? String(item.code) : null;
-      const occurrenceDate = item?.occurrence_date || item?.occurrenceDate || item?.due_date || item?.dueDate || null;
+
+      const occurrenceDate =
+        item?.occurrence_date ||
+        item?.occurrenceDate ||
+        item?.due_date ||
+        item?.dueDate ||
+        null;
+
       const st = item?.status || item?.state || item?.invoice_state || item?.invoiceStatus || null;
 
-      // chave de dedupe: id primeiro, depois code
       const key = id ? `id:${id}` : (code ? `code:${code}` : null);
       if (!key || seen.has(key)) return;
 
@@ -273,34 +252,35 @@ class CoraGateway {
       });
     };
 
-    // tentativas de paginação e params: algumas contas aceitam per_page, outras perPage
     for (const state of statesToTry) {
       let page = 1;
       let hasMore = true;
 
       while (hasMore) {
-        const paramsPrimary = {
-          state,
-          start: fmtDate(startDate),
-          end: fmtDate(endDate),
-          per_page: 100,
-          page
-        };
-
         try {
-          const data = await this._get('/v2/invoices', token, { params: paramsPrimary });
+          const params = {
+            state,
+            start: fmtDate(startDate),
+            end: fmtDate(endDate),
+            per_page: 100,
+            page
+          };
+
+          const data = await this._get('/v2/invoices', token, { params });
           const items = data?.items || [];
+
           console.log(`📄 [CoraGateway] state=${state} page=${page} items=${items.length}`);
 
           for (const item of items) pushItem(item);
 
           if (items.length < 100) hasMore = false;
           else page++;
-          continue;
-        } catch (e1) {
-          // fallback 1: perPage
+        } catch (error) {
+          hasMore = false;
+
+          // fallback: perPage
           try {
-            const paramsFb = {
+            const paramsFallback = {
               state,
               start: fmtDate(startDate),
               end: fmtDate(endDate),
@@ -308,39 +288,18 @@ class CoraGateway {
               page
             };
 
-            const dataFb = await this._get('/v2/invoices', token, { params: paramsFb });
+            const dataFb = await this._get('/v2/invoices', token, { params: paramsFallback });
             const itemsFb = dataFb?.items || [];
+
             console.log(`📄 [CoraGateway] (fallback perPage) state=${state} page=${page} items=${itemsFb.length}`);
 
             for (const item of itemsFb) pushItem(item);
 
             if (itemsFb.length < 100) hasMore = false;
             else page++;
-            continue;
           } catch (e2) {
-            // fallback 2: alguns endpoints usam "status" no lugar de "state"
-            try {
-              const paramsFb2 = {
-                status: state,
-                start: fmtDate(startDate),
-                end: fmtDate(endDate),
-                per_page: 100,
-                page
-              };
-
-              const dataFb2 = await this._get('/v2/invoices', token, { params: paramsFb2 });
-              const itemsFb2 = dataFb2?.items || [];
-              console.log(`📄 [CoraGateway] (fallback status) status=${state} page=${page} items=${itemsFb2.length}`);
-
-              for (const item of itemsFb2) pushItem(item);
-
-              if (itemsFb2.length < 100) hasMore = false;
-              else page++;
-              continue;
-            } catch (e3) {
-              console.error(`❌ [CoraGateway] Falha nos fallbacks (state/status=${state} page=${page})`);
-              hasMore = false;
-            }
+            console.error(`❌ [CoraGateway] Falha também no fallback perPage (state=${state} page=${page})`);
+            hasMore = false;
           }
         }
       }
@@ -351,7 +310,7 @@ class CoraGateway {
   }
 
   /**
-   * Mantido por compat: retorna só IDs (id)
+   * Mantido por compat: retorna IDs pagos
    */
   async getPaidInvoices(daysAgo = 90) {
     const detailed = await this.getPaidInvoicesDetailed(daysAgo);

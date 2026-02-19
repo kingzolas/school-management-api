@@ -9,6 +9,7 @@ const NotificationService = require('./notification.service.js');
 const GatewayFactory = require('../gateways/gateway.factory.js');
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
+const https = require('https');
 const { PDFDocument } = require('pdf-lib');
 
 class InvoiceService {
@@ -234,16 +235,37 @@ class InvoiceService {
     return invoice;
   }
 
+  _normalizeProviderStatus(statusRaw) {
+    if (statusRaw === null || statusRaw === undefined) return null;
+
+    if (typeof statusRaw === 'object') {
+      const candidate =
+        statusRaw.status ||
+        statusRaw.state ||
+        statusRaw.invoice_state ||
+        statusRaw.invoiceStatus ||
+        null;
+
+      if (candidate) return String(candidate).trim();
+      return String(statusRaw).trim();
+    }
+
+    return String(statusRaw).trim();
+  }
+
   /**
    * ✅ Agora: pode receber paidAt real do provedor (Cora/MP)
+   * - NUNCA mais usa "agora" como paidAt se o provedor fornecer a data real.
    */
   async handlePaymentWebhook(externalId, providerName, statusRaw, paidAtRaw = null) {
     const hookRunId = `${providerName || 'PROVIDER'}-${Date.now()}`;
+    const normalizedStatus = this._normalizeProviderStatus(statusRaw);
 
     console.log(`\n🔔 [handlePaymentWebhook ${hookRunId}] chamado`, {
       externalId: String(externalId),
       providerName,
       statusRaw: statusRaw ?? null,
+      normalizedStatus: normalizedStatus ?? null,
       paidAtRaw: paidAtRaw ?? null
     });
 
@@ -257,7 +279,7 @@ class InvoiceService {
     }
 
     // MP: se não veio status, busca
-    if ((!statusRaw || statusRaw === null) && String(providerName).toUpperCase().includes('MERCADO_PAGO')) {
+    if ((!normalizedStatus || normalizedStatus === null) && String(providerName).toUpperCase().includes('MERCADO_PAGO')) {
       try {
         const school = await School.findById(invoice.school_id).select('+mercadoPagoConfig.prodAccessToken').lean();
         const mpToken = school?.mercadoPagoConfig?.prodAccessToken;
@@ -269,6 +291,7 @@ class InvoiceService {
           });
 
           statusRaw = res.data?.status || null;
+
           const mpPaidAt = res.data?.date_approved || res.data?.dateApproved || null;
           if (!paidAtRaw && mpPaidAt) paidAtRaw = mpPaidAt;
         }
@@ -282,17 +305,25 @@ class InvoiceService {
     const statusPago = ['approved', 'paid', 'COMPLETED', 'LIQUIDATED', 'PAID'];
     const statusCancelado = ['cancelled', 'rejected', 'CANCELED', 'canceled', 'CANCELLED'];
 
-    if (statusRaw) {
-      const s = String(statusRaw);
+    const finalStatusNormalized = this._normalizeProviderStatus(statusRaw);
+
+    if (finalStatusNormalized) {
+      const s = String(finalStatusNormalized);
       const sl = s.toLowerCase();
 
       if (statusPago.includes(s) || statusPago.includes(sl) || sl === 'paid') {
         novoStatus = 'paid';
       } else if (statusCancelado.includes(s) || statusCancelado.includes(sl)) {
         novoStatus = 'canceled';
+      } else {
+        console.log(`🧩 [handlePaymentWebhook ${hookRunId}] status não mapeado (mantendo status atual)`, {
+          normalizedStatus: s,
+          providerName
+        });
       }
     }
 
+    // ✅ paidAt real (UTC) se fornecido e válido
     let paidAtParsed = null;
     if (paidAtRaw) {
       const d = new Date(paidAtRaw);
@@ -371,11 +402,20 @@ class InvoiceService {
     return await mergedPdf.save();
   }
 
+  _toObjectIdMaybe(id) {
+    try {
+      if (mongoose.Types.ObjectId.isValid(id)) return new mongoose.Types.ObjectId(id);
+      return id;
+    } catch {
+      return id;
+    }
+  }
+
   /**
    * ✅ Sync:
-   * - Bulk Cora marca "paid" (match robusto por id e code)
-   * - Fallback individual busca status + paidAt real
-   * - Imprime comparação por mês (DB vs CORA) para evidenciar desatualização
+   * - Bulk Cora marca "paid" SEM inventar paidAt
+   * - Comparativo correto por mês usando paidAt real (Cora via /v2/invoices/:id)
+   * - Fallback individual (limitado) continua existindo
    */
   async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null) {
     const syncRunId = `sync-${schoolId}-${Date.now()}`;
@@ -398,7 +438,7 @@ class InvoiceService {
     });
 
     const pendingInvoices = await Invoice.find(filter).lean();
-    const stats = { totalChecked: pendingInvoices.length, updatedCount: 0 };
+    const stats = { totalChecked: pendingInvoices.length, updatedCount: 0, details: [] };
 
     const coraPendings = pendingInvoices.filter(i => i.gateway === 'cora');
     const mpPendings = pendingInvoices.filter(i => i.gateway === 'mercadopago');
@@ -409,9 +449,11 @@ class InvoiceService {
       mercadopago: mpPendings.length
     });
 
-    // --- CORA BULK (robusto) ---
+    // --- CORA BULK ---
     let coraGateway = null;
     let bulkPaidDetailed = [];
+    let bulkPaidIdsStr = [];
+
     try {
       const school = await School.findById(schoolId).lean();
       const hasCora = !!(school?.coraConfig?.production?.clientId || school?.coraConfig?.sandbox?.clientId);
@@ -420,46 +462,60 @@ class InvoiceService {
         coraGateway = await GatewayFactory.create(school, 'CORA');
 
         if (typeof coraGateway.getPaidInvoicesDetailed === 'function') {
-          // ✅ 90 dias cobre Jan/Fev (e dá folga)
           bulkPaidDetailed = await coraGateway.getPaidInvoicesDetailed(90);
-
-          const paidIds = bulkPaidDetailed.map(x => x.id).filter(Boolean).map(String);
-          const paidCodes = bulkPaidDetailed.map(x => x.code).filter(Boolean).map(String);
-
-          // codes que parecem ObjectId (24 hex)
-          const codeObjectIds = paidCodes
-            .filter((c) => /^[a-fA-F0-9]{24}$/.test(c))
-            .map((c) => new mongoose.Types.ObjectId(c));
+          bulkPaidIdsStr = Array.isArray(bulkPaidDetailed)
+            ? bulkPaidDetailed.map(x => String(x.id)).filter(Boolean)
+            : [];
 
           console.log(`📦 [${syncRunId}] CORA BULK candidates`, {
-            paidIdsCount: paidIds.length,
-            paidCodesCount: paidCodes.length,
-            codeObjectIdsCount: codeObjectIds.length
+            paidIdsCount: bulkPaidIdsStr.length
           });
 
-          if (paidIds.length > 0 || paidCodes.length > 0 || codeObjectIds.length > 0) {
-            // ✅ Match MAIS FORTE:
-            // - external_id ∈ paidIds
-            // - OU external_id ∈ paidCodes (legado)
-            // - OU _id ∈ paidCodes (quando code é ObjectId antigo)
-            const bulkMatch = {
-              school_id: schoolId,
-              status: { $in: ['pending', 'overdue'] },
-              gateway: 'cora',
-              $or: [
-                ...(paidIds.length ? [{ external_id: { $in: paidIds } }] : []),
-                ...(paidCodes.length ? [{ external_id: { $in: paidCodes } }] : []),
-                ...(codeObjectIds.length ? [{ _id: { $in: codeObjectIds } }] : []),
-              ]
-            };
+          if (bulkPaidIdsStr.length > 0) {
+            const result = await Invoice.updateMany(
+              {
+                school_id: schoolId,
+                status: { $in: ['pending', 'overdue'] },
+                gateway: 'cora',
+                external_id: { $in: bulkPaidIdsStr }
+              },
+              { $set: { status: 'paid' } }
+            );
 
-            const result = await Invoice.updateMany(bulkMatch, { $set: { status: 'paid' } });
-
-            // ✅ compat Mongoose antigo/novo
             const matchedCount = result?.matchedCount ?? result?.n ?? 0;
             const modifiedCount = result?.modifiedCount ?? result?.nModified ?? 0;
 
             console.log(`📦 [${syncRunId}] CORA BULK updateMany`, {
+              matchedCount,
+              modifiedCount
+            });
+
+            if (modifiedCount > 0) stats.updatedCount += modifiedCount;
+          }
+        } else {
+          // fallback compat antigo
+          const paidIds = await coraGateway.getPaidInvoices(90);
+          bulkPaidIdsStr = Array.isArray(paidIds) ? paidIds.map(x => String(x)).filter(Boolean) : [];
+
+          console.log(`📦 [${syncRunId}] CORA BULK candidates (compat)`, {
+            paidIdsCount: bulkPaidIdsStr.length
+          });
+
+          if (bulkPaidIdsStr.length > 0) {
+            const result = await Invoice.updateMany(
+              {
+                school_id: schoolId,
+                status: { $in: ['pending', 'overdue'] },
+                gateway: 'cora',
+                external_id: { $in: bulkPaidIdsStr }
+              },
+              { $set: { status: 'paid' } }
+            );
+
+            const matchedCount = result?.matchedCount ?? result?.n ?? 0;
+            const modifiedCount = result?.modifiedCount ?? result?.nModified ?? 0;
+
+            console.log(`📦 [${syncRunId}] CORA BULK updateMany (compat)`, {
               matchedCount,
               modifiedCount
             });
@@ -520,6 +576,7 @@ class InvoiceService {
             const result = await this.handlePaymentWebhook(inv.external_id, 'CORA-SYNC', info.status, info.paidAt);
             if (result.updated) stats.updatedCount++;
           }
+
           return;
         }
       } catch (e) {
@@ -533,27 +590,27 @@ class InvoiceService {
     }));
 
     /**
-     * ✅ COMPARAÇÃO (PRINT) DB vs CORA por mês — exatamente o que você pediu.
-     * - DB: conta paid por mês usando dueDate (MM/yyyy)
-     * - CORA: conta paid por mês usando occurrence_date retornado no bulk
+     * ✅ Comparativo CORA x DB por mês usando paidAt (correto)
+     * - DB: agrupa por paidAt
+     * - CORA: obtém paidAt real via /v2/invoices/:id para os IDs pagos listados
      */
     try {
-      if (Array.isArray(bulkPaidDetailed) && bulkPaidDetailed.length > 0) {
-        const coraByMonth = {};
-        for (const item of bulkPaidDetailed) {
-          const od = item?.occurrence_date;
-          if (!od) continue;
-          const d = new Date(od);
-          if (Number.isNaN(d.getTime())) continue;
-          const key = `${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
-          coraByMonth[key] = (coraByMonth[key] || 0) + 1;
-        }
+      if (coraGateway && bulkPaidIdsStr.length > 0) {
+        const schoolObjectId = this._toObjectIdMaybe(schoolId);
 
+        // DB byMonth (paidAt)
         const dbAgg = await Invoice.aggregate([
-          { $match: { school_id: mongoose.Types.ObjectId.isValid(schoolId) ? new mongoose.Types.ObjectId(schoolId) : schoolId, gateway: 'cora', status: 'paid' } },
+          {
+            $match: {
+              school_id: schoolObjectId,
+              gateway: 'cora',
+              status: 'paid',
+              paidAt: { $ne: null }
+            }
+          },
           {
             $project: {
-              month: { $dateToString: { format: "%m/%Y", date: "$dueDate" } }
+              month: { $dateToString: { format: "%m/%Y", date: "$paidAt" } }
             }
           },
           { $group: { _id: "$month", count: { $sum: 1 } } },
@@ -563,13 +620,80 @@ class InvoiceService {
         const dbByMonth = {};
         for (const row of dbAgg) dbByMonth[row._id] = row.count;
 
-        // foco Jan/Fev (e arredores) – imprime tudo e você olha os meses
-        console.log(`📊 [${syncRunId}] COMPARATIVO CORA x DB (paid por mês)`);
+        // CORA byMonth (paidAt real)
+        const coraByMonth = {};
+        const MAX_PAIDAT_FETCH = 150; // seguro (no teu caso veio 33)
+        const idsToFetch = bulkPaidIdsStr.slice(0, MAX_PAIDAT_FETCH);
+
+        for (const extId of idsToFetch) {
+          try {
+            const info = await coraGateway.getInvoicePaymentInfo(String(extId));
+            if (!info?.paidAt) continue;
+
+            const d = new Date(info.paidAt);
+            if (Number.isNaN(d.getTime())) continue;
+
+            const key = `${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+            coraByMonth[key] = (coraByMonth[key] || 0) + 1;
+          } catch (e) {
+            // ignora falha individual de paidAt para não quebrar o sync
+          }
+        }
+
+        console.log(`📊 [${syncRunId}] COMPARATIVO CORA x DB (paidAt por mês)`);
         console.log(`📊 [${syncRunId}] DB (paid/cora) byMonth=`, dbByMonth);
-        console.log(`📊 [${syncRunId}] CORA (paid list) byMonth=`, coraByMonth);
+        console.log(`📊 [${syncRunId}] CORA (paidAt fetched) byMonth=`, coraByMonth);
       }
     } catch (e) {
       console.warn(`⚠️ [${syncRunId}] Falha ao gerar comparativo CORA x DB:`, e.message);
+    }
+
+    /**
+     * ✅ Backfill adicional:
+     * Depois do BULK, algumas invoices podem ter virado "paid" sem paidAt.
+     * Completa paidAt real em lote pequeno.
+     */
+    try {
+      if (coraGateway && bulkPaidIdsStr.length > 0) {
+        const MAX_BACKFILL = 50;
+
+        const toBackfill = await Invoice.find({
+          school_id: schoolId,
+          gateway: 'cora',
+          status: 'paid',
+          paidAt: { $in: [null, undefined] },
+          external_id: { $in: bulkPaidIdsStr }
+        })
+          .limit(MAX_BACKFILL)
+          .select('_id external_id')
+          .lean();
+
+        if (toBackfill.length > 0) {
+          console.log(`🧷 [${syncRunId}] CORA backfill paidAt`, {
+            count: toBackfill.length
+          });
+
+          for (const row of toBackfill) {
+            try {
+              const info = await coraGateway.getInvoicePaymentInfo(row.external_id);
+              if (info?.paidAt) {
+                await Invoice.updateOne(
+                  { _id: row._id },
+                  { $set: { paidAt: new Date(info.paidAt) } }
+                );
+              }
+            } catch (e) {
+              console.warn(`⚠️ [${syncRunId}] backfill falhou`, {
+                invoiceId: String(row._id),
+                external_id: String(row.external_id),
+                message: e.message
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`❌ [${syncRunId}] Erro no backfill CORA paidAt:`, e.message);
     }
 
     console.log(`✅ [${syncRunId}] Sync finalizado`, {
@@ -632,6 +756,11 @@ class InvoiceService {
       .lean();
   }
 
+  /**
+   * ✅ DEBUG (TEMPORÁRIO):
+   * Consulta 1 invoice direto na Cora usando external_id
+   * e retorna payload bruto + contexto local.
+   */
   async debugCoraInvoice(externalId, schoolId) {
     const debugRunId = `cora-debug-${schoolId}-${Date.now()}`;
     const startedAt = Date.now();
