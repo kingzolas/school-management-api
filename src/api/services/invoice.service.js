@@ -387,12 +387,13 @@ class InvoiceService {
     const syncRunId = `sync-${schoolId}-${Date.now()}`;
     const startedAt = Date.now();
 
-    const filter = {
-      school_id: schoolId,
-      status: 'pending',
-      gateway: { $in: ['mercadopago', 'cora'] },
-      external_id: { $exists: true, $ne: null }
-    };
+  const filter = {
+  school_id: schoolId,
+  status: { $in: ['pending', 'overdue'] },
+  gateway: { $in: ['mercadopago', 'cora'] },
+  external_id: { $exists: true, $ne: null }
+};
+
 
     if (studentId) filter.student = studentId;
     if (singleInvoiceId) filter._id = singleInvoiceId;
@@ -432,16 +433,16 @@ class InvoiceService {
           if (bulkPaidIdsStr.length > 0) {
             // ✅ Atualiza status SEM inventar paidAt
             const result = await Invoice.updateMany(
-              {
-                school_id: schoolId,
-                status: { $ne: 'paid' },
-                external_id: { $in: bulkPaidIdsStr }
-              },
-              {
-                $set: { status: 'paid' },
-                // não sobrescreve paidAt aqui
-              }
-            );
+  {
+    school_id: schoolId,
+    status: { $in: ['pending', 'overdue'] },
+    external_id: { $in: bulkPaidIdsStr }
+  },
+  {
+    $set: { status: 'paid' },
+  }
+);
+
 
             console.log(`📦 [${syncRunId}] CORA BULK updateMany`, {
               matchedCount: result.matchedCount,
@@ -626,6 +627,70 @@ class InvoiceService {
       .populate('student', 'fullName')
       .lean();
   }
+/**
+ * ✅ DEBUG (TEMPORÁRIO):
+ * Consulta 1 invoice direto na Cora usando external_id
+ * e retorna payload bruto + contexto local.
+ */
+async debugCoraInvoice(externalId, schoolId) {
+  const debugRunId = `cora-debug-${schoolId}-${Date.now()}`;
+  const startedAt = Date.now();
+
+  if (!externalId) throw new Error('externalId é obrigatório');
+
+  const local = await Invoice.findOne({
+    school_id: schoolId,
+    external_id: String(externalId)
+  })
+    .select('_id status paidAt dueDate gateway external_id createdAt updatedAt')
+    .lean();
+
+  const selectString = [
+    'coraConfig.isSandbox',
+    'coraConfig.sandbox.clientId',
+    '+coraConfig.sandbox.certificateContent',
+    '+coraConfig.sandbox.privateKeyContent',
+    'coraConfig.production.clientId',
+    '+coraConfig.production.certificateContent',
+    '+coraConfig.production.privateKeyContent',
+    'name'
+  ].join(' ');
+
+  const school = await School.findById(schoolId).select(selectString).lean();
+  if (!school) throw new Error('Escola não encontrada');
+
+  const coraGateway = await GatewayFactory.create(school, 'CORA');
+
+  try {
+    const paymentInfo = await coraGateway.getInvoicePaymentInfo(String(externalId));
+
+    return {
+      ok: true,
+      debugRunId,
+      externalId: String(externalId),
+      environment: school?.coraConfig?.isSandbox ? 'sandbox' : 'production',
+      localInvoice: local || null,
+      cora: paymentInfo,
+      durationMs: Date.now() - startedAt
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      debugRunId,
+      externalId: String(externalId),
+      environment: school?.coraConfig?.isSandbox ? 'sandbox' : 'production',
+      localInvoice: local || null,
+      durationMs: Date.now() - startedAt,
+      error: {
+        message: e.message,
+        name: e.name,
+        stack: e.stack
+      }
+    };
+  }
+}
+
+
 }
 
 module.exports = new InvoiceService();

@@ -179,6 +179,27 @@ class InvoiceController {
       next(error);
     }
   }
+
+  /**
+ * ✅ DEBUG (TEMPORÁRIO)
+ * Consulta um boleto/fatura diretamente na Cora pelo external_id.
+ */
+async debugCora(req, res) {
+  try {
+    const schoolId = req.user.school_id;
+    const { externalId } = req.params;
+
+    const data = await InvoiceService.debugCoraInvoice(externalId, schoolId);
+    return res.status(200).json(data);
+  } catch (error) {
+    console.error('❌ ERRO no InvoiceController.debugCora:', error.message);
+    return res.status(400).json({
+      ok: false,
+      message: error.message || 'Falha ao consultar a Cora.',
+    });
+  }
+}
+
 }
 
 module.exports = new InvoiceController();
