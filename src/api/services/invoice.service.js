@@ -234,10 +234,6 @@ class InvoiceService {
     return invoice;
   }
 
-  /**
-   * ✅ Agora: pode receber paidAt real do provedor (Cora/MP)
-   * - NUNCA mais usa "agora" como paidAt se o provedor fornecer a data real.
-   */
   async handlePaymentWebhook(externalId, providerName, statusRaw, paidAtRaw = null) {
     const hookRunId = `${providerName || 'PROVIDER'}-${Date.now()}`;
 
@@ -257,7 +253,6 @@ class InvoiceService {
       return { processed: false, updated: false, reason: 'not_found' };
     }
 
-    // MP: se não veio status, busca
     if ((!statusRaw || statusRaw === null) && String(providerName).toUpperCase().includes('MERCADO_PAGO')) {
       try {
         const school = await School.findById(invoice.school_id).select('+mercadoPagoConfig.prodAccessToken').lean();
@@ -295,7 +290,6 @@ class InvoiceService {
       }
     }
 
-    // ✅ paidAt real (UTC) se fornecido e válido
     let paidAtParsed = null;
     if (paidAtRaw) {
       const d = new Date(paidAtRaw);
@@ -382,12 +376,6 @@ class InvoiceService {
     return `${mm}/${yyyy}`;
   }
 
-  /**
-   * ✅ Sync:
-   * - CORA bulk (por vencimento): agora busca desde o menor dueDate pendente do DB (com limite seguro)
-   * - fallback individual: valida status + paidAt (limitado)
-   * - backfill paidAt para quem ficou paid sem paidAt
-   */
   async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null) {
     const syncRunId = `sync-${schoolId}-${Date.now()}`;
     const startedAt = Date.now();
@@ -442,8 +430,6 @@ class InvoiceService {
         coraGateway = await GatewayFactory.create(school, 'CORA');
 
         if (typeof coraGateway.getPaidInvoices === 'function') {
-          // ✅ Aqui é a correção principal:
-          // A listagem da Cora é "por data de vencimento". Então precisamos buscar desde o menor dueDate pendente no DB.
           let minDue = null;
           for (const inv of coraPendings) {
             if (!inv?.dueDate) continue;
@@ -452,7 +438,6 @@ class InvoiceService {
             if (!minDue || d.getTime() < minDue.getTime()) minDue = d;
           }
 
-          // Limite de segurança: no máximo 3 anos pra trás (evita consulta infinita em base gigante)
           const floor = new Date();
           floor.setFullYear(floor.getFullYear() - 3);
 
@@ -470,7 +455,7 @@ class InvoiceService {
             endDate,
             states: ['PAID'],
             perPage: 100,
-            maxPages: 800
+            maxPages: 1000
           });
 
           bulkPaidIdsStr = Array.isArray(paidIds) ? paidIds.map(x => String(x)) : [];
@@ -480,7 +465,6 @@ class InvoiceService {
           });
 
           if (bulkPaidIdsStr.length > 0) {
-            // ✅ Atualiza status SEM inventar paidAt
             const result = await Invoice.updateMany(
               {
                 school_id: schoolId,
@@ -516,9 +500,7 @@ class InvoiceService {
       console.error(`❌ [${syncRunId}] Erro lendo token MP:`, e.message);
     }
 
-    // --- FALLBACK INDIVIDUAL (MP + CORA) ---
-    // ✅ Mantemos limite, mas aumentamos um pouco para melhorar cobertura.
-    // Se sua base for grande, o BULK já resolve quase tudo; o individual é para exceções e paidAt real.
+    // --- FALLBACK INDIVIDUAL ---
     const MAX_INDIVIDUAL_CHECKS = 250;
     const toCheck = pendingInvoices.slice(0, MAX_INDIVIDUAL_CHECKS);
 
@@ -526,7 +508,6 @@ class InvoiceService {
       try {
         if (!inv.external_id) return;
 
-        // MP
         if (inv.gateway === 'mercadopago' && mpToken) {
           const res = await axios.get(`https://api.mercadopago.com/v1/payments/${inv.external_id}`, {
             headers: { Authorization: `Bearer ${mpToken}` },
@@ -541,7 +522,6 @@ class InvoiceService {
           return;
         }
 
-        // CORA
         if (inv.gateway === 'cora' && coraGateway) {
           const info = await coraGateway.getInvoicePaymentInfo(inv.external_id);
 
@@ -568,76 +548,6 @@ class InvoiceService {
         });
       }
     }));
-
-    /**
-     * ✅ Backfill adicional:
-     * depois do BULK, algumas invoices podem ter virado "paid" sem paidAt.
-     * Vamos completar paidAt real em lote pequeno para evitar excesso de chamadas.
-     */
-    try {
-      if (coraGateway && bulkPaidIdsStr.length > 0) {
-        const MAX_BACKFILL = 120;
-
-        const toBackfill = await Invoice.find({
-          school_id: schoolId,
-          gateway: 'cora',
-          status: 'paid',
-          paidAt: { $in: [null, undefined] },
-          external_id: { $in: bulkPaidIdsStr }
-        })
-          .limit(MAX_BACKFILL)
-          .select('_id external_id')
-          .lean();
-
-        if (toBackfill.length > 0) {
-          console.log(`🧷 [${syncRunId}] CORA backfill paidAt`, {
-            count: toBackfill.length
-          });
-
-          for (const row of toBackfill) {
-            try {
-              const info = await coraGateway.getInvoicePaymentInfo(row.external_id);
-              if (info?.paidAt) {
-                await Invoice.updateOne(
-                  { _id: row._id },
-                  { $set: { paidAt: new Date(info.paidAt) } }
-                );
-              }
-            } catch (e) {
-              console.warn(`⚠️ [${syncRunId}] backfill falhou`, {
-                invoiceId: String(row._id),
-                external_id: String(row.external_id),
-                message: e.message
-              });
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.error(`❌ [${syncRunId}] Erro no backfill CORA paidAt:`, e.message);
-    }
-
-    // ✅ Comparativo simples (DB paid/cora) por mês (usando paidAt)
-    try {
-      const dbPaid = await Invoice.find({
-        school_id: schoolId,
-        gateway: 'cora',
-        status: 'paid',
-        paidAt: { $ne: null }
-      }).select('paidAt').lean();
-
-      const dbByMonth = {};
-      for (const r of dbPaid) {
-        const key = this._fmtMonthKeyFromDate(r.paidAt);
-        if (!key) continue;
-        dbByMonth[key] = (dbByMonth[key] || 0) + 1;
-      }
-
-      console.log(`📊 [${syncRunId}] COMPARATIVO CORA x DB (paidAt por mês)`);
-      console.log(`📊 [${syncRunId}] DB (paid/cora) byMonth=`, dbByMonth);
-    } catch (e) {
-      console.warn(`⚠️ [${syncRunId}] falha no comparativo DB:`, e.message);
-    }
 
     console.log(`✅ [${syncRunId}] Sync finalizado`, {
       totalChecked: stats.totalChecked,
@@ -699,11 +609,6 @@ class InvoiceService {
       .lean();
   }
 
-  /**
-   * ✅ DEBUG (TEMPORÁRIO):
-   * Consulta 1 invoice direto na Cora usando external_id
-   * e retorna payload bruto + contexto local.
-   */
   async debugCoraInvoice(externalId, schoolId) {
     const debugRunId = `cora-debug-${schoolId}-${Date.now()}`;
     const startedAt = Date.now();

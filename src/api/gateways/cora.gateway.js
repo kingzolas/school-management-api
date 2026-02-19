@@ -173,20 +173,14 @@ class CoraGateway {
     }
   }
 
-  /**
-   * ✅ Extrai paidAt REAL do JSON completo da invoice:
-   * prioridade: payments[].finalized_at -> paid_at -> null
-   */
   _extractPaidAtFromInvoice(data) {
     if (!data) return null;
 
-    // 1) paid_at (quando existir)
     if (data.paid_at) {
       const d = new Date(data.paid_at);
       if (!Number.isNaN(d.getTime())) return d.toISOString();
     }
 
-    // 2) payments[].finalized_at (melhor e mais comum)
     const payments = Array.isArray(data.payments) ? data.payments : [];
 
     const withFinalized = payments
@@ -212,14 +206,51 @@ class CoraGateway {
     return new Date(d).toISOString().split('T')[0];
   }
 
+  _getTotalPagesFromListResponse(data) {
+    if (!data) return null;
+    // formatos comuns (variam por API)
+    const p =
+      data.pagination ||
+      data.meta?.pagination ||
+      data.page_info ||
+      data.pageInfo ||
+      null;
+
+    const totalPages =
+      p?.total_pages ||
+      p?.totalPages ||
+      data.total_pages ||
+      data.totalPages ||
+      null;
+
+    if (totalPages && Number(totalPages) > 0) return Number(totalPages);
+    return null;
+  }
+
+  _getPerPageFromListResponse(data) {
+    if (!data) return null;
+    const p =
+      data.pagination ||
+      data.meta?.pagination ||
+      data.page_info ||
+      data.pageInfo ||
+      null;
+
+    const per =
+      p?.per_page ||
+      p?.perPage ||
+      data.per_page ||
+      data.perPage ||
+      null;
+
+    if (per && Number(per) > 0) return Number(per);
+    return null;
+  }
+
   /**
    * ✅ Busca lista de faturas PAGAS (Bulk Sync)
-   *
-   * IMPORTANTE:
-   * A listagem da Cora (Consulta de boletos) é baseada em DATA DE VENCIMENTO (occurrence_date),
-   * então se você filtrar apenas "últimos X dias", boletos com vencimento antigo pagos agora podem ficar de fora.
-   *
-   * Por isso, este método aceita { startDate, endDate } para você buscar desde o menor vencimento pendente no DB.
+   * A Cora pode ignorar per_page e retornar sempre 20 por página.
+   * Então a paginação NÃO pode parar com base em "items.length < perPage".
    */
   async getPaidInvoices(options = {}) {
     const token = await this.authenticate();
@@ -227,11 +258,9 @@ class CoraGateway {
     const {
       startDate = null,
       endDate = null,
-      // states válidos segundo o erro do próprio endpoint: [DRAFT, RECURRENCE_DRAFT, OPEN, PAID, LATE, CANCELLED]
-      // Para pagos, use PAID.
       states = ['PAID'],
       perPage = 100,
-      maxPages = 500 // trava de segurança
+      maxPages = 1000
     } = options || {};
 
     const end = endDate ? new Date(endDate) : new Date();
@@ -239,7 +268,6 @@ class CoraGateway {
     let start = null;
     if (startDate) start = new Date(startDate);
     else {
-      // fallback: 90 dias, mas o ideal é passar startDate vindo do menor dueDate pendente no DB
       start = new Date();
       start.setDate(start.getDate() - 90);
     }
@@ -253,16 +281,13 @@ class CoraGateway {
 
     for (const state of states) {
       let page = 1;
-      let hasMore = true;
+      let totalPages = null;
 
-      while (hasMore) {
-        if (page > maxPages) {
-          console.warn(`⚠️ [CoraGateway] maxPages atingido (state=${state}). Interrompendo para segurança.`);
-          break;
-        }
+      // proteção contra loop por repetição de página
+      const pageFingerprints = new Set();
 
-        // tentamos primeiro per_page, se der ruim tentamos perPage
-        const params = {
+      while (page <= maxPages) {
+        const paramsPrimary = {
           state,
           start: fmtStart,
           end: fmtEnd,
@@ -270,18 +295,11 @@ class CoraGateway {
           page
         };
 
+        let data = null;
+        let usedFallback = false;
+
         try {
-          const data = await this._get('/v2/invoices', token, { params });
-          const items = data?.items || [];
-
-          console.log(`📄 [CoraGateway] state=${state} page=${page} items=${items.length}`);
-
-          for (const item of items) {
-            if (item?.id) paidIdsSet.add(String(item.id));
-          }
-
-          if (items.length < perPage) hasMore = false;
-          else page++;
+          data = await this._get('/v2/invoices', token, { params: paramsPrimary });
         } catch (error) {
           // fallback param name perPage
           try {
@@ -292,34 +310,55 @@ class CoraGateway {
               perPage: perPage,
               page
             };
-
-            const dataFb = await this._get('/v2/invoices', token, { params: paramsFallback });
-            const itemsFb = dataFb?.items || [];
-
-            console.log(`📄 [CoraGateway] (fallback perPage) state=${state} page=${page} items=${itemsFb.length}`);
-
-            for (const item of itemsFb) {
-              if (item?.id) paidIdsSet.add(String(item.id));
-            }
-
-            if (itemsFb.length < perPage) hasMore = false;
-            else page++;
+            data = await this._get('/v2/invoices', token, { params: paramsFallback });
+            usedFallback = true;
           } catch (e2) {
-            console.error(`❌ [CoraGateway] Falha também no fallback perPage (state=${state} page=${page})`);
-            hasMore = false;
+            console.error(`❌ [CoraGateway] Falha GET /v2/invoices (state=${state} page=${page})`);
+            break;
           }
         }
+
+        const items = data?.items || [];
+        if (totalPages === null) totalPages = this._getTotalPagesFromListResponse(data);
+
+        const respPerPage = this._getPerPageFromListResponse(data);
+        const fingerprint = `${state}|${page}|${items.map(i => i?.id).filter(Boolean).slice(0, 10).join(',')}`;
+        if (pageFingerprints.has(fingerprint)) {
+          console.warn(`⚠️ [CoraGateway] Página repetida detectada (state=${state} page=${page}). Interrompendo para evitar loop.`);
+          break;
+        }
+        pageFingerprints.add(fingerprint);
+
+        console.log(`📄 [CoraGateway] state=${state} page=${page} items=${items.length} ${usedFallback ? '(fallback perPage)' : ''}`, {
+          totalPages: totalPages || null,
+          respPerPage: respPerPage || null
+        });
+
+        for (const item of items) {
+          if (item?.id) paidIdsSet.add(String(item.id));
+        }
+
+        // ✅ Condições de parada CORRETAS:
+        // 1) se API informa totalPages e chegamos no final
+        if (totalPages && page >= totalPages) break;
+
+        // 2) se não informa totalPages: continua enquanto vier itens; para apenas quando vier 0
+        if (!totalPages && items.length === 0) break;
+
+        // avança página
+        page += 1;
+      }
+
+      if (page > maxPages) {
+        console.warn(`⚠️ [CoraGateway] maxPages atingido (state=${state}). Interrompendo para segurança.`);
       }
     }
 
     const allPaidIds = Array.from(paidIdsSet);
-    console.log(`✅ [CoraGateway] Bulk paid sync finalizado. totalPaidIds=${allPaidIds.length} sample=${allPaidIds.slice(0, 5).join(', ')}`);
+    console.log(`✅ [CoraGateway] Bulk paid sync finalizado. totalPaidIds=${allPaidIds.length} sample=${allPaidIds.slice(0, 10).join(', ')}`);
     return allPaidIds;
   }
 
-  /**
-   * Busca invoice completa (necessário pra paidAt real)
-   */
   async getInvoice(externalId) {
     const token = await this.authenticate();
     const data = await this._get(`/v2/invoices/${externalId}`, token);
@@ -332,9 +371,6 @@ class CoraGateway {
     return data;
   }
 
-  /**
-   * Retorna status + paidAt real (quando pago)
-   */
   async getInvoicePaymentInfo(externalId) {
     const data = await this.getInvoice(externalId);
 
@@ -356,9 +392,6 @@ class CoraGateway {
     return { status, paidAt, raw: data };
   }
 
-  /**
-   * Mantido por compat: retorna só status
-   */
   async getInvoiceStatus(externalId) {
     const token = await this.authenticate();
     const data = await this._get(`/v2/invoices/${externalId}`, token);
