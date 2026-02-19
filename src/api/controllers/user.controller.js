@@ -173,6 +173,19 @@ class UserController {
             handleError(res, error, 'UserController.inactivate');
         }
     }
+    async reactivate(req, res, next) {
+  try {
+    const schoolId = req.user.school_id;
+    const userId = req.params.id;
+    if (!schoolId) return res.status(403).json({ message: 'Usuário não está associado a uma escola.' });
+
+    const user = await UserService.reactivateUser(userId, schoolId);
+    res.status(200).json({ message: 'Usuário reativado com sucesso', user });
+  } catch (error) {
+    handleError(res, error, 'UserController.reactivate');
+  }
+}
+
 
     async updateFcmToken(req, res, next) {
         try {

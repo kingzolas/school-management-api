@@ -24,6 +24,27 @@ class UserService {
      * Injeta 'schoolId' nos registros para garantir o vínculo.
      * [CORREÇÃO] Removemos transações ACID para compatibilidade com MongoDB Standalone (Local e Render).
      */
+async reactivateUser(id, schoolId) {
+  const user = await User.findOneAndUpdate(
+    { _id: id, school_id: schoolId },
+    { status: 'Ativo' },
+    { new: true }
+  )
+    .select('-password')
+    .populate({
+      path: 'staffProfiles',
+      populate: { path: 'enabledSubjects', model: 'Subject' }
+    });
+
+  if (!user) {
+    throw new Error('Usuário não encontrado ou não pertence a esta escola.');
+  }
+
+  appEmitter.emit('user:updated', user);
+  return user;
+}
+
+
     async createStaff(fullData, schoolId, file) { // Adicionei 'file' caso precise tratar upload aqui
         // Separa os dados
         const userData = {};
@@ -171,19 +192,25 @@ class UserService {
      * Inativa um usuário da escola.
      */
     async inactivateUser(id, schoolId) {
-        const user = await User.findOneAndUpdate(
-            { _id: id, school_id: schoolId }, // Filtro seguro
-            { status: 'Inativo' },
-            { new: true }
-        ).select('-password').populate('staffProfiles');
+  // 1) Atualiza status
+  const updated = await User.findOneAndUpdate(
+    { _id: id, school_id: schoolId },
+    { status: 'Inativo' },
+    { new: true }
+  ).select('_id'); // só pra validar que existe
 
-        if (!user) {
-            throw new Error('Usuário não encontrado ou não pertence a esta escola.');
-        }
+  if (!updated) {
+    throw new Error('Usuário não encontrado ou não pertence a esta escola.');
+  }
 
-        appEmitter.emit('user:updated', user); 
-        return user;
-    }
+  // 2) Busca “do jeito padrão do sistema” (igual getUserById)
+  const fullyPopulatedUser = await this.getUserById(id, schoolId);
+
+  // 3) Emite e retorna sempre no mesmo formato
+  appEmitter.emit('user:updated', fullyPopulatedUser);
+  return fullyPopulatedUser;
+}
+
 }
 
 module.exports = new UserService();

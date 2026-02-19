@@ -41,5 +41,7 @@ router.get('/', userController.getAll);
 router.get('/:id', userController.getById);
 router.patch('/:id', userController.update);
 router.patch('/:id/inactivate', userController.inactivate);
+router.patch('/:id/reactivate', userController.reactivate);
+
 
 module.exports = router;
