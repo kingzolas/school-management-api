@@ -6,14 +6,15 @@ class NotificationController {
    * GET /logs
    * Busca os logs de notificação
    * [CORRIGIDO]: Agora aceita 'limit' para permitir ver todos os erros de uma vez.
+   * [NOVO]: aceita filtro por dia via query: ?date=YYYY-MM-DD
    */
   async getLogs(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       // Extrai o limit da query (o service trata se vier undefined ou 0)
-      const { status, page, limit } = req.query;
+      const { status, page, limit, date } = req.query;
 
-      const result = await NotificationService.getLogs(schoolId, status, page, limit);
+      const result = await NotificationService.getLogs(schoolId, status, page, limit, date);
       
       res.status(200).json(result);
     } catch (error) {
@@ -25,12 +26,14 @@ class NotificationController {
    * POST /retry-all
    * [NOVO] Reenvia todas as falhas do dia
    * Esse método estava faltando e causando o erro no server.js
+   * [NOVO]: aceita filtro por dia via query: ?date=YYYY-MM-DD
    */
   async retryAllFailed(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
+      const { date } = req.query;
       
-      const result = await NotificationService.retryAllFailed(schoolId);
+      const result = await NotificationService.retryAllFailed(schoolId, date);
       
       res.status(200).json({ success: true, ...result });
     } catch (error) {
@@ -41,11 +44,14 @@ class NotificationController {
   /**
    * GET /stats
    * Retorna os contadores totais do dia (Para os Cards do topo)
+   * [NOVO]: aceita filtro por dia via query: ?date=YYYY-MM-DD
    */
   async getDashboardStats(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
-      const stats = await NotificationService.getDailyStats(schoolId);
+      const { date } = req.query;
+
+      const stats = await NotificationService.getDailyStats(schoolId, date);
       res.status(200).json(stats);
     } catch (error) {
       next(error);

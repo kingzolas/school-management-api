@@ -45,15 +45,100 @@ class NotificationService {
         this.isProcessing = false;
     }
 
-    /**
-     * [CORRIGIDO] Estatísticas em Tempo Real
-     */
-    async getDailyStats(schoolId) {
-        const startOfDay = new Date();
+    // ✅ NOVO: utilitário para intervalo do dia
+    _getDayRange(dateStr) {
+        // dateStr esperado: "YYYY-MM-DD"
+        // se inválido/ausente, usa hoje
+        let base = new Date();
+        if (dateStr) {
+            const parsed = new Date(dateStr);
+            if (!isNaN(parsed.getTime())) base = parsed;
+        }
+
+        const startOfDay = new Date(base);
         startOfDay.setHours(0, 0, 0, 0);
 
-        const endOfDay = new Date();
+        const endOfDay = new Date(base);
         endOfDay.setHours(23, 59, 59, 999);
+
+        return { startOfDay, endOfDay };
+    }
+
+    // ✅ NOVO: normaliza erros em código + mensagem amigável
+    _normalizeWhatsappError(error) {
+        const httpStatus = error?.response?.status;
+        const apiExistsFalse = error?.response?.data?.response?.message?.[0]?.exists === false;
+
+        const raw =
+            error?.response?.data
+                ? JSON.stringify(error.response.data).slice(0, 2000)
+                : (error?.message ? String(error.message).slice(0, 2000) : 'Erro desconhecido');
+
+        // 1) Número inválido / sem WhatsApp (padrão Evolution costuma trazer exists:false)
+        if (apiExistsFalse) {
+            return {
+                code: 'PHONE_NO_WHATSAPP',
+                message: 'Número inválido ou sem WhatsApp.',
+                httpStatus: httpStatus || 400,
+                raw,
+            };
+        }
+
+        // 2) WhatsApp desconectado
+        const msg = (error?.message || '').toLowerCase();
+        if (msg.includes('whatsapp desconectado')) {
+            return {
+                code: 'WHATSAPP_DISCONNECTED',
+                message: 'WhatsApp desconectado. Conecte novamente em Configurações.',
+                httpStatus: httpStatus || 503,
+                raw,
+            };
+        }
+
+        // 3) Timeout / rede
+        if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('network')) {
+            return {
+                code: 'NETWORK_TIMEOUT',
+                message: 'Falha de conexão/timeout ao enviar. Tente novamente mais tarde.',
+                httpStatus: httpStatus || 408,
+                raw,
+            };
+        }
+
+        // 4) 400/404 genérico (mantém simples para o usuário)
+        if (httpStatus === 400) {
+            return {
+                code: 'BAD_REQUEST',
+                message: 'Não foi possível enviar. Verifique o número e tente novamente.',
+                httpStatus,
+                raw,
+            };
+        }
+
+        if (httpStatus === 404) {
+            return {
+                code: 'NOT_FOUND',
+                message: 'Não foi possível enviar. Contato/número não encontrado.',
+                httpStatus,
+                raw,
+            };
+        }
+
+        // 5) fallback
+        return {
+            code: 'UNKNOWN',
+            message: error?.message || 'Falha ao enviar mensagem.',
+            httpStatus: httpStatus || null,
+            raw,
+        };
+    }
+
+    /**
+     * [CORRIGIDO] Estatísticas em Tempo Real
+     * [NOVO] Aceita date=YYYY-MM-DD para stats por dia
+     */
+    async getDailyStats(schoolId, dateStr) {
+        const { startOfDay, endOfDay } = this._getDayRange(dateStr);
 
         let objectIdSchool;
         try {
@@ -66,8 +151,9 @@ class NotificationService {
         const stats = await NotificationLog.aggregate([
             {
                 $match: {
-                    school_id: objectIdSchool, 
-                    updatedAt: { $gte: startOfDay, $lte: endOfDay }
+                    school_id: objectIdSchool,
+                    // ✅ ALTERADO: por dia (mais previsível pro usuário)
+                    createdAt: { $gte: startOfDay, $lte: endOfDay }
                 }
             },
             {
@@ -285,17 +371,24 @@ class NotificationService {
                     log.status = 'sent';
                     log.sent_at = new Date();
                     log.error_message = null;
+
+                    // ✅ NOVO: limpa campos de erro ao sucesso (não apaga histórico da msg)
+                    log.error_code = null;
+                    log.error_http_status = null;
+                    log.error_raw = null;
+
                     console.log(`✅ [Zap] Enviado: ${log.tutor_name}`);
 
                 } catch (error) {
-                    let friendlyError = error.message;
-                    if (error.response?.data?.response?.message?.[0]?.exists === false) {
-                        friendlyError = "Número inválido/Sem WhatsApp.";
-                    }
-                    console.error(`❌ [Zap] Falha: ${log.tutor_name}`, friendlyError);
+                    const normalized = this._normalizeWhatsappError(error);
+
+                    console.error(`❌ [Zap] Falha: ${log.tutor_name}`, normalized.message);
                     
                     log.status = 'failed';
-                    log.error_message = friendlyError;
+                    log.error_message = normalized.message;
+                    log.error_code = normalized.code;
+                    log.error_http_status = normalized.httpStatus;
+                    log.error_raw = normalized.raw;
                     log.attempts += 1;
                 }
                 
@@ -315,9 +408,9 @@ class NotificationService {
         if (invoice.status === 'paid' || invoice.status === 'canceled') throw new Error("Fatura já paga/cancelada.");
 
         const school = await School.findById(log.school_id).select('name whatsapp').lean();
-        const nomeEscola = school.name || "Escola";
+        const nomeEscola = school?.name || "Escola";
 
-        if (!school.whatsapp || school.whatsapp.status !== 'connected') {
+        if (!school?.whatsapp || school.whatsapp.status !== 'connected') {
             console.log(`⚠️ [Zap] Banco desconectado. Verificando API...`);
             const isReallyConnected = await whatsappService.ensureConnection(log.school_id);
             if (!isReallyConnected) {
@@ -331,15 +424,35 @@ class NotificationService {
         const diff = (venc - hoje) / (1000 * 60 * 60 * 24);
 
         let list = TEMPLATES_HOJE;
-        if (diff > 0) list = TEMPLATES_FUTURO;
-        else if (diff < 0) list = TEMPLATES_ATRASO;
+        let templateGroup = 'HOJE';
 
-        const text = list[Math.floor(Math.random() * list.length)]
+        if (diff > 0) { 
+            list = TEMPLATES_FUTURO;
+            templateGroup = 'FUTURO';
+        }
+        else if (diff < 0) { 
+            list = TEMPLATES_ATRASO;
+            templateGroup = 'ATRASO';
+        }
+
+        // ✅ NOVO: seleciona template e salva qual foi usado
+        const templateIndex = Math.floor(Math.random() * list.length);
+
+        const text = list[templateIndex]
             .replace('{escola}', nomeEscola)
             .replace('{nome}', log.tutor_name.split(' ')[0])
             .replace('{descricao}', invoice.description)
             .replace('{valor}', (invoice.value/100).toFixed(2).replace('.',','))
-            .replace('{vencimento}', venc.toLocaleDateString('pt-BR', {timeZone: 'UTC'}));
+            .replace('{vencimento}', venc.toLocaleDateString('pt-BR', {timeZone: 'UTC' }));
+
+        // ✅ NOVO: salva a mensagem montada no log (para auditoria e UI)
+        // Salva ANTES do envio para garantir rastreio mesmo em erro
+        log.template_group = templateGroup;
+        log.template_index = templateIndex;
+        log.message_text = text;
+        log.message_preview = text.length > 140 ? `${text.slice(0, 140)}...` : text;
+        await log.save();
+        if (appEmitter) appEmitter.emit('notification:updated', log);
 
         // 1. Envia Texto
         await whatsappService.sendText(log.school_id, log.target_phone, text);
@@ -374,10 +487,17 @@ class NotificationService {
 
     // --- MÉTODOS ALTERADOS/ADICIONADOS ---
 
-    async getLogs(schoolId, status, page = 1, limit = 20) {
+    /**
+     * [ALTERADO] agora aceita "date" (YYYY-MM-DD) para filtrar logs do dia
+     */
+    async getLogs(schoolId, status, page = 1, limit = 20, dateStr) {
         const query = { school_id: schoolId };
         if (status && status !== 'Todos') query.status = status;
-        
+
+        // ✅ NOVO: filtro por dia (padrão: hoje)
+        const { startOfDay, endOfDay } = this._getDayRange(dateStr);
+        query.createdAt = { $gte: startOfDay, $lte: endOfDay };
+
         let dbQuery = NotificationLog.find(query).sort({ createdAt: -1 });
 
         // MODIFICAÇÃO: Permite limit=0 ou 'all' para trazer tudo
@@ -399,26 +519,30 @@ class NotificationService {
 
     /**
      * [NOVO] Reenviar todas as falhas do dia
+     * [ALTERADO] aceita date=YYYY-MM-DD
      */
-    async retryAllFailed(schoolId) {
-        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
+    async retryAllFailed(schoolId, dateStr) {
+        const { startOfDay, endOfDay } = this._getDayRange(dateStr);
 
-        // Busca logs que falharam HOJE
+        // Busca logs que falharam NO DIA
         const failedLogs = await NotificationLog.find({
             school_id: schoolId,
             status: 'failed',
-            updatedAt: { $gte: startOfDay, $lte: endOfDay }
+            createdAt: { $gte: startOfDay, $lte: endOfDay }
         });
 
         if (failedLogs.length === 0) {
-            return { count: 0, message: "Nenhuma falha encontrada hoje." };
+            return { count: 0, message: "Nenhuma falha encontrada no dia selecionado." };
         }
 
         let count = 0;
         for (const log of failedLogs) {
             log.status = 'queued';
-            log.error_message = null; 
+            log.error_message = null;
+            log.error_code = null;
+            log.error_http_status = null;
+            log.error_raw = null;
+
             log.scheduled_for = new Date(); 
             
             await log.save();

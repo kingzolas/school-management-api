@@ -36,7 +36,18 @@ const NotificationLogSchema = new mongoose.Schema({
   scheduled_for: { type: Date, default: Date.now },
   sent_at: { type: Date },
   attempts: { type: Number, default: 0 },
-  error_message: { type: String }
+  error_message: { type: String },
+
+  // ✅ NOVO: persistência do template/mensagem para auditoria e UI
+  template_group: { type: String },         // "HOJE" | "FUTURO" | "ATRASO"
+  template_index: { type: Number },         // índice do template escolhido
+  message_text: { type: String },           // texto final enviado (com variáveis resolvidas)
+  message_preview: { type: String },        // preview curto para lista (ex: 140 chars)
+
+  // ✅ NOVO: erro amigável + código
+  error_code: { type: String },             // ex: PHONE_NO_WHATSAPP, WHATSAPP_DISCONNECTED, NETWORK_TIMEOUT...
+  error_http_status: { type: Number },      // status HTTP se existir
+  error_raw: { type: String }               // payload/stack curta para debug (limitado no service)
 }, {
   timestamps: true
 });
