@@ -14,7 +14,7 @@ router.post(
 // --- ROTA DE REENVIO DE WHATSAPP ---
 // Importante: Definida antes de /:id para não conflitar
 router.post(
-  '/:id/resend', 
+  '/:id/resend',
   invoiceController.resendWhatsapp
 );
 
@@ -31,10 +31,10 @@ router.get('/mp/:paymentId', invoiceController.checkMpStatus);
 // ESTA ROTA TEM QUE VIR ANTES DE /:id
 // Se vier depois, o express acha que "sync-pending" é um ID
 router.get('/sync-pending', invoiceController.syncPending);
+
 // ✅ DEBUG CORA (TEMPORÁRIO)
 // IMPORTANTE: antes do "/:id"
 router.get('/debug/cora/:externalId', invoiceController.debugCora);
-
 
 // Rotas Específicas
 router.get('/student/:studentId', invoiceController.getByStudent);

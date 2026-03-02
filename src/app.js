@@ -41,6 +41,8 @@ const analyticsRoutes = require('./api/routes/analytics.routes');
 
 const notificationRoutes = require('./api/routes/notification.routes.js');
 
+const invoiceCompensationRoutes = require('./api/routes/invoiceCompensation.routes.js');
+
 const app = express();
 
 // Configuração CORS
@@ -104,5 +106,7 @@ app.use('/api/grades', gradeRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 app.use('/api/releases', releaseRoutes);
+
+app.use('/api/invoice-compensations', invoiceCompensationRoutes);
 
 module.exports = app;
