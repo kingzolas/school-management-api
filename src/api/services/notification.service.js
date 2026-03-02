@@ -7,6 +7,9 @@ const whatsappService = require('./whatsapp.service');
 const cron = require('node-cron');
 const mongoose = require('mongoose');
 
+// ✅ NOVO: serviço de compensação/HOLD
+const invoiceCompensationService = require('./invoiceCompensation.service');
+
 // --- IMPORTAÇÃO SEGURA DO EVENT EMITTER ---
 let appEmitter;
 try {
@@ -127,15 +130,35 @@ class NotificationService {
     };
   }
 
-  // ✅ NOVO: valida barcode (heurística prática de boleto)
+  // ✅ valida barcode (heurística prática de boleto)
   _isLikelyValidBarcode(barcode) {
     if (!barcode) return false;
     const s = String(barcode).trim();
-    // boleto costuma ser 44 dígitos (código de barras), linha digitável 47/48
     const digitsOnly = s.replace(/\D/g, '');
     if (digitsOnly.length >= 44) return true;
     if (digitsOnly.length >= 47) return true;
     return false;
+  }
+
+  /**
+   * ✅ NOVO: verifica se a invoice está com HOLD ativo (compensação ativa e dentro de hold_until)
+   * Se retornar truthy -> NÃO cobrar/enviar
+   */
+  async _isInvoiceOnHold(invoice) {
+    try {
+      if (!invoice?._id || !invoice?.school_id) return false;
+
+      const comp = await invoiceCompensationService.getCompensationByInvoice({
+        school_id: invoice.school_id,
+        invoice_id: invoice._id
+      });
+
+      return !!comp;
+    } catch (e) {
+      // Se der erro aqui, NÃO travamos a fila inteira.
+      console.error("⚠️ Erro ao checar HOLD de compensação:", e?.message || e);
+      return false;
+    }
   }
 
   async getDailyStats(schoolId, dateStr) {
@@ -211,6 +234,10 @@ class NotificationService {
     for (const inv of invoices) {
       const check = this._checkEligibilityForDate(inv.dueDate, simData);
       if (check.shouldSend) {
+        // ✅ NÃO conta se estiver em HOLD
+        const onHold = await this._isInvoiceOnHold(inv);
+        if (onHold) continue;
+
         forecast.total_expected++;
         forecast.breakdown[check.type]++;
       }
@@ -307,16 +334,22 @@ class NotificationService {
 
         for (const inv of invoices) {
           const check = this._checkEligibilityForDate(inv.dueDate, new Date());
+          if (!check.shouldSend) continue;
 
-          if (check.shouldSend) {
-            const sentToday = await NotificationLog.exists({
-              invoice_id: inv._id,
-              createdAt: { $gte: hojeStart }
-            });
+          // ✅ NOVO: se estiver em HOLD, não entra na fila
+          const onHold = await this._isInvoiceOnHold(inv);
+          if (onHold) {
+            console.log(`⛔ [HOLD] Ignorando invoice ${String(inv._id)} (em compensação/hold).`);
+            continue;
+          }
 
-            if (!sentToday) {
-              await this._prepareAndQueue(inv, check.type);
-            }
+          const sentToday = await NotificationLog.exists({
+            invoice_id: inv._id,
+            createdAt: { $gte: hojeStart }
+          });
+
+          if (!sentToday) {
+            await this._prepareAndQueue(inv, check.type);
           }
         }
       }
@@ -347,6 +380,48 @@ class NotificationService {
     }
   }
 
+    /**
+   * ✅ NOVO: reenfileirar manualmente uma invoice
+   * - aplica a mesma regra de HOLD do cron
+   */
+  async enqueueInvoiceManually({ schoolId, invoice, type = 'manual' }) {
+    const onHold = await this._isInvoiceOnHold(invoice);
+    if (onHold) {
+      return {
+        ok: false,
+        reason: 'HOLD_ACTIVE',
+        message: 'Cobrança bloqueada: invoice está em compensação/HOLD ativo.'
+      };
+    }
+
+    let name, phone;
+    if (invoice.tutor) {
+      name = invoice.tutor.fullName;
+      phone = invoice.tutor.phoneNumber || invoice.tutor.telefone;
+    } else if (invoice.student) {
+      name = invoice.student.fullName;
+      phone = invoice.student.phoneNumber;
+    }
+
+    if (!name || !phone) {
+      return { ok: false, reason: 'MISSING_CONTACT', message: 'Tutor/aluno sem telefone válido.' };
+    }
+
+    await this.queueNotification({
+      schoolId,
+      invoiceId: invoice._id,
+      studentName: invoice.student?.fullName || 'Aluno',
+      tutorName: name,
+      phone,
+      type
+    });
+
+    // opcional: já dispara processamento
+    // this.processQueue();
+
+    return { ok: true, message: 'Invoice reenfileirada com sucesso.' };
+  }
+
   async processQueue() {
     if (this.isProcessing) return;
     this.isProcessing = true;
@@ -364,7 +439,6 @@ class NotificationService {
       for (const log of logs) {
         log.status = 'processing';
         await log.save();
-
         if (appEmitter) appEmitter.emit('notification:updated', log);
 
         try {
@@ -372,17 +446,36 @@ class NotificationService {
           console.log(`⏳ Aguardando ${Math.floor(delay / 1000)}s...`);
           await new Promise(r => setTimeout(r, delay));
 
-          await this._sendSingleNotification(log);
+          // ✅ agora pode retornar { skipped:true, ... } (por HOLD)
+          const result = await this._sendSingleNotification(log);
 
-          log.status = 'sent';
-          log.sent_at = new Date();
-          log.error_message = null;
+          if (result?.skipped) {
+            // ✅ Não marca como failed — finaliza como sent para não reprocessar
+            log.status = 'sent';
+            log.sent_at = new Date();
+            log.error_message = null;
 
-          log.error_code = null;
-          log.error_http_status = null;
-          log.error_raw = null;
+            // usa campos existentes para auditoria do motivo
+            log.error_code = 'SKIPPED_HOLD';
+            log.error_http_status = 200;
+            log.error_raw = JSON.stringify({
+              skipped: true,
+              reason: result.reason,
+              hold_until: result.hold_until || null
+            }).slice(0, 2000);
 
-          console.log(`✅ [Zap] Enviado: ${log.tutor_name}`);
+            console.log(`⛔ [HOLD] SKIP envio (${log.tutor_name}) -> ${result.reason || 'HOLD ativo'}`);
+          } else {
+            log.status = 'sent';
+            log.sent_at = new Date();
+            log.error_message = null;
+
+            log.error_code = null;
+            log.error_http_status = null;
+            log.error_raw = null;
+
+            console.log(`✅ [Zap] Enviado: ${log.tutor_name}`);
+          }
 
         } catch (error) {
           const normalized = this._normalizeWhatsappError(error);
@@ -412,6 +505,16 @@ class NotificationService {
     if (!invoice) throw new Error("Fatura não encontrada.");
     if (invoice.status === 'paid' || invoice.status === 'canceled') throw new Error("Fatura já paga/cancelada.");
 
+    // ✅ NOVO: trava final — se está em HOLD, não envia
+    // (mesmo que tenha entrado na fila antes)
+    const onHold = await this._isInvoiceOnHold(invoice);
+    if (onHold) {
+      return {
+        skipped: true,
+        reason: 'Invoice está com compensação/HOLD ativo. Cobrança bloqueada até o fim do hold.',
+      };
+    }
+
     const school = await School.findById(log.school_id).select('name whatsapp').lean();
     const nomeEscola = school?.name || "Escola";
 
@@ -439,7 +542,6 @@ class NotificationService {
       templateGroup = 'ATRASO';
     }
 
-    // ✅ seleciona template e salva qual foi usado
     const templateIndex = Math.floor(Math.random() * list.length);
 
     const text = list[templateIndex]
@@ -449,21 +551,14 @@ class NotificationService {
       .replace('{valor}', (invoice.value / 100).toFixed(2).replace('.', ','))
       .replace('{vencimento}', venc.toLocaleDateString('pt-BR', { timeZone: 'UTC' }));
 
-    // ✅ salva a msg montada
     log.template_group = templateGroup;
     log.template_index = templateIndex;
     log.message_text = text;
     log.message_preview = text.length > 140 ? `${text.slice(0, 140)}...` : text;
 
-    // =========================================================
-    // ✅ NOVO: Snapshot ANTES de enviar (auditoria + prova)
-    // =========================================================
+    // Snapshot
     log.sent_gateway = invoice.gateway || null;
-
-    // Para Cora, o identificador do boleto normalmente é external_id (id da invoice na Cora).
-    // Se no seu model existir "gateway_charge_id", você pode trocar para invoice.gateway_charge_id.
     log.sent_gateway_charge_id = invoice.external_id ? String(invoice.external_id) : null;
-
     log.sent_boleto_url = invoice.boleto_url || null;
     log.sent_barcode = invoice.boleto_barcode || null;
 
@@ -486,8 +581,6 @@ class NotificationService {
 
     // 2) CORA: envia boleto
     if (invoice.gateway === 'cora' && invoice.boleto_url) {
-      // ✅ FIX PRINCIPAL: filename único por invoice
-      // Isso reduz drasticamente cache/reuso de mídia no provider.
       const safeName = (log.student_name || 'Aluno')
         .split(' ')[0]
         .replace(/[^a-zA-Z0-9]/g, '_');
@@ -509,14 +602,12 @@ class NotificationService {
         await whatsappService.sendText(log.school_id, log.target_phone, `📄 Baixe aqui: ${invoice.boleto_url}`);
       }
 
-      // ✅ Validação antes de mandar barcode (stop the bleeding)
       if (invoice.boleto_barcode) {
         const okBarcode = this._isLikelyValidBarcode(invoice.boleto_barcode);
 
         if (okBarcode) {
           await whatsappService.sendText(log.school_id, log.target_phone, String(invoice.boleto_barcode).trim());
         } else {
-          // registra que não enviou barcode por suspeita
           log.error_code = log.error_code || 'BARCODE_INVALID_SUSPECT';
           log.error_message = log.error_message || 'Barcode com formato suspeito; envio bloqueado para evitar pagamento errado.';
           await log.save();
@@ -591,7 +682,6 @@ class NotificationService {
       log.scheduled_for = new Date();
 
       await log.save();
-
       if (appEmitter) appEmitter.emit('notification:updated', log);
 
       count++;

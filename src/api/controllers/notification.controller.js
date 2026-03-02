@@ -1,21 +1,24 @@
 const NotificationService = require('../services/notification.service');
+const Invoice = require('../models/invoice.model');
 
 class NotificationController {
-  
+
   /**
    * GET /logs
-   * Busca os logs de notificação
-   * [CORRIGIDO]: Agora aceita 'limit' para permitir ver todos os erros de uma vez.
-   * [NOVO]: aceita filtro por dia via query: ?date=YYYY-MM-DD
    */
   async getLogs(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
-      // Extrai o limit da query (o service trata se vier undefined ou 0)
       const { status, page, limit, date } = req.query;
 
-      const result = await NotificationService.getLogs(schoolId, status, page, limit, date);
-      
+      const result = await NotificationService.getLogs(
+        schoolId,
+        status,
+        page,
+        limit,
+        date
+      );
+
       res.status(200).json(result);
     } catch (error) {
       next(error);
@@ -24,17 +27,14 @@ class NotificationController {
 
   /**
    * POST /retry-all
-   * [NOVO] Reenvia todas as falhas do dia
-   * Esse método estava faltando e causando o erro no server.js
-   * [NOVO]: aceita filtro por dia via query: ?date=YYYY-MM-DD
    */
   async retryAllFailed(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const { date } = req.query;
-      
+
       const result = await NotificationService.retryAllFailed(schoolId, date);
-      
+
       res.status(200).json({ success: true, ...result });
     } catch (error) {
       next(error);
@@ -43,8 +43,6 @@ class NotificationController {
 
   /**
    * GET /stats
-   * Retorna os contadores totais do dia (Para os Cards do topo)
-   * [NOVO]: aceita filtro por dia via query: ?date=YYYY-MM-DD
    */
   async getDashboardStats(req, res, next) {
     try {
@@ -60,16 +58,15 @@ class NotificationController {
 
   /**
    * GET /forecast
-   * Previsão de Cobrança
    */
   async getForecast(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
-      
+
       let targetDate = new Date();
       if (req.query.date) {
         targetDate = new Date(req.query.date);
-        targetDate.setHours(12,0,0,0); 
+        targetDate.setHours(12, 0, 0, 0);
       } else {
         targetDate.setDate(targetDate.getDate() + 1);
       }
@@ -88,17 +85,65 @@ class NotificationController {
   async triggerManualRun(req, res, next) {
     try {
       console.log('⚡ [API] Trigger Manual acionado pelo painel...');
-      // Não usamos await no processQueue para não travar a requisição, 
-      // mas usamos no scan para garantir que a fila foi populada antes de processar.
       await NotificationService.scanAndQueueInvoices();
-      NotificationService.processQueue(); 
-      
-      res.status(200).json({ 
-        success: true, 
-        message: 'Varredura e processamento iniciados manualmente.' 
+      NotificationService.processQueue();
+
+      res.status(200).json({
+        success: true,
+        message: 'Varredura e processamento iniciados manualmente.'
       });
     } catch (error) {
       console.error("Erro no trigger:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * ✅ NOVO: POST /enqueue
+   * Reenfileirar manualmente UMA fatura (botão "Reenviar WhatsApp" no app)
+   * Body: { invoiceId, type? }
+   *
+   * Regras:
+   * - invoice deve existir, ser da escola
+   * - invoice não pode estar paga/cancelada
+   * - ✅ se estiver em HOLD (compensação ativa), NÃO enfileira
+   */
+  async enqueueInvoice(req, res, next) {
+    try {
+      const schoolId = req.user.schoolId || req.user.school_id;
+      const { invoiceId, type } = req.body;
+
+      if (!invoiceId) {
+        return res.status(400).json({ success: false, error: 'INVOICE_ID_REQUIRED' });
+      }
+
+      const inv = await Invoice.findOne({
+        _id: invoiceId,
+        school_id: schoolId
+      }).populate('student').populate('tutor');
+
+      if (!inv) {
+        return res.status(404).json({ success: false, error: 'INVOICE_NOT_FOUND' });
+      }
+
+      if (inv.status === 'paid' || inv.status === 'canceled') {
+        return res.status(400).json({ success: false, error: 'INVOICE_NOT_ELIGIBLE' });
+      }
+
+      // ✅ Bloqueio centralizado no service (HOLD)
+      const result = await NotificationService.enqueueInvoiceManually({
+        schoolId,
+        invoice: inv,
+        type: type || 'manual'
+      });
+
+      // result: { ok: true } ou { ok:false, reason:'HOLD_ACTIVE' ... }
+      if (!result.ok) {
+        return res.status(200).json({ success: false, ...result });
+      }
+
+      return res.status(200).json({ success: true, ...result });
+    } catch (error) {
       next(error);
     }
   }
@@ -110,7 +155,7 @@ class NotificationController {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const config = await NotificationService.getConfig(schoolId);
-      res.status(200).json(config || {}); 
+      res.status(200).json(config || {});
     } catch (error) {
       next(error);
     }

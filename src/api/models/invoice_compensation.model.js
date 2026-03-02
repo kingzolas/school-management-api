@@ -16,7 +16,7 @@ const invoiceCompensationSchema = new Schema(
       index: true
     },
 
-    // Invoice que está pendente, mas NÃO deve ser cobrada (ex: Fevereiro)
+    // Invoice que está pendente, mas NÃO deve ser cobrada agora (ex: Fevereiro)
     target_invoice: {
       type: Schema.Types.ObjectId,
       ref: 'Invoice',
@@ -24,13 +24,32 @@ const invoiceCompensationSchema = new Schema(
       index: true
     },
 
-    // Invoice que foi paga por engano e “compensa” a target (ex: Julho)
+    // Invoice que foi paga por engano (ex: Março pago em Fevereiro)
     source_invoice: {
       type: Schema.Types.ObjectId,
       ref: 'Invoice',
       required: true,
       index: true
     },
+
+    /**
+     * ✅ NOVO: até quando bloquear a cobrança da TARGET
+     * Regra do seu cenário:
+     * - bloquear até o vencimento do boleto pago errado (SOURCE.dueDate)
+     */
+    hold_until: {
+      type: Date,
+      required: true,
+      index: true
+    },
+
+    /**
+     * ✅ NOVO: chaves prontas para “identificação rápida” (CAIXA/COMPETÊNCIA)
+     * - cash_month: mês do pagamento (paidAt) da SOURCE (ex: 02/2026)
+     * - competence_month: mês de referência da TARGET (dueDate) (ex: 03/2026)
+     */
+    cash_month: { type: String, trim: true, index: true },        // "MM/YYYY"
+    competence_month: { type: String, trim: true, index: true },  // "MM/YYYY"
 
     reason: { type: String, required: true, trim: true },
     notes: { type: String, trim: true },
@@ -43,7 +62,7 @@ const invoiceCompensationSchema = new Schema(
 
     status: {
       type: String,
-      enum: ['active', 'resolved', 'canceled'],
+      enum: ['active', 'expired', 'resolved', 'canceled'],
       default: 'active',
       index: true
     },
@@ -54,7 +73,7 @@ const invoiceCompensationSchema = new Schema(
   { timestamps: true }
 );
 
-// Evita 2 compensações ativas na mesma invoice target
+// ✅ Evita 2 HOLDS ativos para a mesma invoice target
 invoiceCompensationSchema.index(
   { school_id: 1, target_invoice: 1, status: 1 },
   { unique: true, partialFilterExpression: { status: 'active' } }

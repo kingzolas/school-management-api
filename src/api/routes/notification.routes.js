@@ -29,5 +29,6 @@ router.get('/forecast', NotificationController.getForecast);
 // Configuração
 router.get('/config', NotificationController.getConfig);
 router.post('/config', NotificationController.saveConfig);
+router.post('/enqueue', NotificationController.enqueueInvoice);
 
 module.exports = router;
