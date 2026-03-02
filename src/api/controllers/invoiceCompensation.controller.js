@@ -25,18 +25,22 @@ function mapError(res, err) {
 
 exports.create = async (req, res) => {
   try {
-    const school_id = req.user.school_id;  // seu middleware
-    const created_by = req.user._id;
+    if (!req.user) {
+      return res.status(401).json({ ok: false, error: 'Usuário não autenticado.' });
+    }
+
+    // ✅ Ajustado para pegar do jeito que seu middleware entrega
+    const school_id = req.user.schoolId || req.user.school_id;  
+    const created_by = req.user._id || req.user.id;
+
+    if (!school_id) {
+      return res.status(400).json({ ok: false, error: 'ID da escola não encontrado no token do usuário.' });
+    }
 
     const comp = await service.createCompensation({
       school_id,
       created_by,
       ...req.body
-      /**
-       * req.body pode conter (opcional):
-       * - hold_until (Date)
-       * se não vier, o service calcula com base na SOURCE.dueDate
-       */
     });
 
     return res.status(201).json({ ok: true, data: comp });
@@ -47,7 +51,9 @@ exports.create = async (req, res) => {
 
 exports.list = async (req, res) => {
   try {
-    const school_id = req.user.school_id;
+    if (!req.user) return res.status(401).json({ ok: false, error: 'Não autenticado.' });
+
+    const school_id = req.user.schoolId || req.user.school_id;
     const { status, student } = req.query;
 
     const data = await service.listCompensations({ school_id, status, student });
@@ -59,8 +65,10 @@ exports.list = async (req, res) => {
 
 exports.resolve = async (req, res) => {
   try {
-    const school_id = req.user.school_id;
-    const resolved_by = req.user._id;
+    if (!req.user) return res.status(401).json({ ok: false, error: 'Não autenticado.' });
+
+    const school_id = req.user.schoolId || req.user.school_id;
+    const resolved_by = req.user._id || req.user.id;
 
     const data = await service.resolveCompensation({
       school_id,
@@ -76,8 +84,10 @@ exports.resolve = async (req, res) => {
 
 exports.cancel = async (req, res) => {
   try {
-    const school_id = req.user.school_id;
-    const resolved_by = req.user._id;
+    if (!req.user) return res.status(401).json({ ok: false, error: 'Não autenticado.' });
+
+    const school_id = req.user.schoolId || req.user.school_id;
+    const resolved_by = req.user._id || req.user.id;
 
     const data = await service.cancelCompensation({
       school_id,

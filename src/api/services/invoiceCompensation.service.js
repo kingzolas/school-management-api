@@ -21,11 +21,6 @@ function endOfDay(d) {
   return x;
 }
 
-/**
- * ✅ Regra do propósito real:
- * - Criar um HOLD na TARGET até "hold_until"
- * - Default de hold_until: vencimento da SOURCE (boleto pago errado)
- */
 async function createCompensation({
   school_id,
   student,
@@ -34,9 +29,8 @@ async function createCompensation({
   reason,
   notes,
   created_by,
-  hold_until // opcional (se não vier, calcula)
+  hold_until 
 }) {
-  // 1) valida invoices existem e pertencem à mesma escola/aluno
   const [target, source] = await Promise.all([
     Invoice.findOne({ _id: target_invoice, school_id, student }),
     Invoice.findOne({ _id: source_invoice, school_id, student })
@@ -49,25 +43,18 @@ async function createCompensation({
     throw new Error('TARGET_SOURCE_CANNOT_BE_SAME');
   }
 
-  // 2) não faz sentido bloquear invoice cancelada
   if (target.status === 'canceled') throw new Error('TARGET_INVOICE_CANCELED');
   if (source.status === 'canceled') throw new Error('SOURCE_INVOICE_CANCELED');
 
-  // 3) target deve ser “cobrável” (pending/overdue). Se já está paga, não faz sentido hold.
   if (target.status === 'paid') throw new Error('TARGET_INVOICE_ALREADY_PAID');
-
-  // 4) fonte precisa estar paga (foi o “pagou errado”)
   if (source.status !== 'paid') throw new Error('SOURCE_INVOICE_NOT_PAID');
 
-  // 5) calcula hold_until padrão: vencimento da source (boleto pago errado)
-  //    (você pode trocar pra "fim do mês" depois, se quiser)
   let holdUntilDate = hold_until ? new Date(hold_until) : null;
   if (!holdUntilDate || isNaN(holdUntilDate.getTime())) {
     if (!source.dueDate) throw new Error('SOURCE_INVOICE_DUEDATE_REQUIRED');
     holdUntilDate = endOfDay(source.dueDate);
   }
 
-  // 6) cria HOLD
   const comp = await InvoiceCompensation.create({
     school_id,
     student,
@@ -87,7 +74,6 @@ async function createCompensation({
 
 async function _expireDueHolds({ school_id }) {
   const now = new Date();
-  // expira o que já passou do hold_until
   await InvoiceCompensation.updateMany(
     {
       school_id,
@@ -99,7 +85,6 @@ async function _expireDueHolds({ school_id }) {
 }
 
 async function listCompensations({ school_id, status, student }) {
-  // ✅ auto-expire antes de listar (pra UI sempre bater)
   await _expireDueHolds({ school_id });
 
   const query = { school_id };
@@ -114,14 +99,8 @@ async function listCompensations({ school_id, status, student }) {
     .sort({ createdAt: -1 });
 }
 
-/**
- * ✅ Usado pelo disparo de cobrança:
- * Se existir HOLD ativo e hold_until >= hoje => não cobrar
- */
 async function getCompensationByInvoice({ school_id, invoice_id }) {
-  // garante expiração
   await _expireDueHolds({ school_id });
-
   const now = new Date();
 
   return InvoiceCompensation.findOne({
@@ -136,7 +115,6 @@ async function resolveCompensation({ school_id, id, resolved_by }) {
   const comp = await InvoiceCompensation.findOne({ _id: id, school_id });
   if (!comp) throw new Error('COMPENSATION_NOT_FOUND');
 
-  // se já expirou, ainda pode resolver (vira encerramento manual)
   if (!['active', 'expired'].includes(comp.status)) {
     throw new Error('COMPENSATION_NOT_ACTIVE');
   }

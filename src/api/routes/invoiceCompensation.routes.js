@@ -1,8 +1,11 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/invoiceCompensation.controller');
-// const auth = require('../middlewares/auth'); // adapte
 
-// router.use(auth);
+// ✅ CORREÇÃO AQUI: Importando a função específica 'verifyToken' do seu middleware
+const { verifyToken } = require('../middlewares/auth.middleware'); 
+
+// Aplica a proteção em todas as rotas abaixo
+router.use(verifyToken);
 
 router.post('/', ctrl.create);
 router.get('/', ctrl.list);

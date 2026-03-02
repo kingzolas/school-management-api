@@ -33,9 +33,8 @@ const invoiceCompensationSchema = new Schema(
     },
 
     /**
-     * ✅ NOVO: até quando bloquear a cobrança da TARGET
-     * Regra do seu cenário:
-     * - bloquear até o vencimento do boleto pago errado (SOURCE.dueDate)
+     * até quando bloquear a cobrança da TARGET
+     * Regra do seu cenário: bloquear até o vencimento do boleto pago errado (SOURCE.dueDate)
      */
     hold_until: {
       type: Date,
@@ -44,9 +43,7 @@ const invoiceCompensationSchema = new Schema(
     },
 
     /**
-     * ✅ NOVO: chaves prontas para “identificação rápida” (CAIXA/COMPETÊNCIA)
-     * - cash_month: mês do pagamento (paidAt) da SOURCE (ex: 02/2026)
-     * - competence_month: mês de referência da TARGET (dueDate) (ex: 03/2026)
+     * chaves prontas para “identificação rápida” (CAIXA/COMPETÊNCIA)
      */
     cash_month: { type: String, trim: true, index: true },        // "MM/YYYY"
     competence_month: { type: String, trim: true, index: true },  // "MM/YYYY"
