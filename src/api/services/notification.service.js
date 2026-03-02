@@ -1,4 +1,3 @@
-// src/api/services/notification.service.js
 const NotificationLog = require('../models/notification-log.model');
 const Invoice = require('../models/invoice.model');
 const School = require('../models/school.model');
@@ -7,7 +6,7 @@ const whatsappService = require('./whatsapp.service');
 const cron = require('node-cron');
 const mongoose = require('mongoose');
 
-// ✅ NOVO: serviço de compensação/HOLD
+// Serviço de compensação/HOLD
 const invoiceCompensationService = require('./invoiceCompensation.service');
 
 // --- IMPORTAÇÃO SEGURA DO EVENT EMITTER ---
@@ -27,21 +26,22 @@ const AVISO_LIQUIDACAO =
   "\n\n_Obs: Se você já realizou o pagamento, por favor desconsidere esta mensagem. O banco pode levar até 3 dias úteis para processar a baixa em nosso sistema._";
 
 const TEMPLATES_FUTURO = [
-  `Olá {nome}! Tudo bem? 😊\nA *{escola}* está enviando a fatura referente a: *{descricao}*.\nEla vence em {vencimento}, mas já estamos adiantando para sua organização.\nValor: R$ {valor}.${AVISO_LIQUIDACAO}`,
-  `Oi {nome}! A mensalidade de *{descricao}* da *{escola}* já está disponível para pagamento.\nVencimento: {vencimento}.\nSegue abaixo os dados:${AVISO_LIQUIDACAO}`,
-  `{escola} Informa: Fatura disponível.\n📝 Referência: {descricao}\n💲 Total: R$ {valor}\n🗓️ Vencimento: {vencimento}.${AVISO_LIQUIDACAO}`
+  `{saudacao} {nome}! Tudo bem? 😊\nPassando pra deixar o boleto da *{escola}* ({descricao}) já liberado pra você. Ele vence dia {vencimento}, mas sabemos que muita gente gosta de se organizar logo no início do mês!\nValor: R$ {valor}.${AVISO_LIQUIDACAO}`,
+  `{saudacao}, {nome}! A mensalidade de *{descricao}* já está disponível no nosso sistema. 📚 Pra facilitar sua rotina, segue abaixo o código para pagamento (vence dia {vencimento}).${AVISO_LIQUIDACAO}`,
+  `Oi {nome}, {saudacao}! A *{escola}* está enviando a fatura de *{descricao}*. Fique à vontade para pagar quando for melhor para você até o dia {vencimento}.${AVISO_LIQUIDACAO}`,
+  `{saudacao}! Como estão as coisas por aí, {nome}? Seu boleto da *{escola}* ({descricao}) já foi gerado. Seguem os dados abaixo para sua organização financeira. 🚀${AVISO_LIQUIDACAO}`
 ];
 
 const TEMPLATES_HOJE = [
-  `Bom dia {nome}! A *{escola}* lembra que sua mensalidade vence *HOJE* ({vencimento}).\nValor: R$ {valor}.\nSegue o link para pagamento:${AVISO_LIQUIDACAO}`,
-  `Olá {nome}, hoje é o dia do vencimento da fatura da *{escola}*.\nReferente a: {descricao}\nTotal: R$ {valor}.\n\nSegue o código/link para pagamento rápido:${AVISO_LIQUIDACAO}`,
-  `Oi! A *{escola}* passa para lembrar do pagamento de *{descricao}* que vence hoje. Copie o código ou acesse o link abaixo:${AVISO_LIQUIDACAO}`
+  `{saudacao} {nome}! Um lembrete rápido da *{escola}*: a mensalidade de *{descricao}* vence *HOJE*! 🗓️ Deixei o link e o código aqui embaixo pra facilitar pra você.${AVISO_LIQUIDACAO}`,
+  `Oi {nome}! Hoje é o dia do vencimento da sua fatura da *{escola}* (R$ {valor}). 🏫 Qualquer dúvida, estamos à disposição por aqui mesmo!${AVISO_LIQUIDACAO}`,
+  `{saudacao}, {nome}! Passando pra lembrar que a fatura de *{descricao}* vence hoje. Para evitar juros amanhã, utilize os dados abaixo para pagamento rápido. ✨${AVISO_LIQUIDACAO}`
 ];
 
 const TEMPLATES_ATRASO = [
-  `Olá {nome}, a *{escola}* notou que a fatura de *{descricao}* (vencida em {vencimento}) ainda consta como pendente.\nPodemos ajudar? Segue o link atualizado:${AVISO_LIQUIDACAO}`,
-  `Oi {nome}! A mensalidade de {descricao} na *{escola}* passou do vencimento ({vencimento}).\nValor original: R$ {valor}.\nSegue os dados para regularização:${AVISO_LIQUIDACAO}`,
-  `Lembrete *{escola}*: Consta em aberto a fatura de *{descricao}*.\nPara evitar juros, utilize o link abaixo para atualizar seu boleto:${AVISO_LIQUIDACAO}`
+  `{saudacao} {nome}, tudo bem? Notamos que a fatura de *{descricao}* da *{escola}* consta em aberto há {dias_atraso} dia(s). Aconteceu algum imprevisto? Segue o link atualizado caso precise. 🙏${AVISO_LIQUIDACAO}`,
+  `Oi {nome}! A mensalidade da *{escola}* ({descricao}) acabou passando do vencimento no dia {vencimento} (estamos com {dias_atraso} dias de atraso). Para te ajudar a regularizar, geramos a linha digitável abaixo. Qualquer dificuldade, me chama!${AVISO_LIQUIDACAO}`,
+  `{saudacao}! A *{escola}* informa que não identificamos o pagamento referente a *{descricao}*. Para evitar mais acréscimos (atraso de {dias_atraso} dias), o link abaixo já está atualizado. 🤝${AVISO_LIQUIDACAO}`
 ];
 
 class NotificationService {
@@ -49,7 +49,14 @@ class NotificationService {
     this.isProcessing = false;
   }
 
-  // ✅ utilitário para intervalo do dia
+  // ✅ SAUDAÇÃO DINÂMICA
+  _getSaudacao() {
+    const h = new Date().getHours();
+    if (h >= 5 && h < 12) return 'Bom dia';
+    if (h >= 12 && h < 18) return 'Boa tarde';
+    return 'Boa noite';
+  }
+
   _getDayRange(dateStr) {
     let base = new Date();
     if (dateStr) {
@@ -66,7 +73,6 @@ class NotificationService {
     return { startOfDay, endOfDay };
   }
 
-  // ✅ normaliza erros
   _normalizeWhatsappError(error) {
     const httpStatus = error?.response?.status;
     const apiExistsFalse = error?.response?.data?.response?.message?.[0]?.exists === false;
@@ -130,7 +136,6 @@ class NotificationService {
     };
   }
 
-  // ✅ valida barcode (heurística prática de boleto)
   _isLikelyValidBarcode(barcode) {
     if (!barcode) return false;
     const s = String(barcode).trim();
@@ -140,10 +145,6 @@ class NotificationService {
     return false;
   }
 
-  /**
-   * ✅ NOVO: verifica se a invoice está com HOLD ativo (compensação ativa e dentro de hold_until)
-   * Se retornar truthy -> NÃO cobrar/enviar
-   */
   async _isInvoiceOnHold(invoice) {
     try {
       if (!invoice?._id || !invoice?.school_id) return false;
@@ -155,7 +156,6 @@ class NotificationService {
 
       return !!comp;
     } catch (e) {
-      // Se der erro aqui, NÃO travamos a fila inteira.
       console.error("⚠️ Erro ao checar HOLD de compensação:", e?.message || e);
       return false;
     }
@@ -227,19 +227,19 @@ class NotificationService {
       breakdown: {
         due_today: 0,
         overdue: 0,
-        reminder: 0
+        reminder: 0,
+        new_invoice: 0
       }
     };
 
     for (const inv of invoices) {
       const check = this._checkEligibilityForDate(inv.dueDate, simData);
       if (check.shouldSend) {
-        // ✅ NÃO conta se estiver em HOLD
         const onHold = await this._isInvoiceOnHold(inv);
         if (onHold) continue;
 
         forecast.total_expected++;
-        forecast.breakdown[check.type]++;
+        if(forecast.breakdown[check.type] !== undefined) forecast.breakdown[check.type]++;
       }
     }
 
@@ -252,6 +252,11 @@ class NotificationService {
 
     const diffTime = venc - ref;
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    // ✅ REGRA DO DIA 1º: Se hoje for dia 1 e a fatura vence no mesmo mês
+    if (ref.getDate() === 1 && diffDays > 0 && diffDays <= 31 && venc.getMonth() === ref.getMonth()) {
+      return { shouldSend: true, type: 'new_invoice' };
+    }
 
     if (diffDays === 3) return { shouldSend: true, type: 'reminder' };
     if (diffDays === 0) return { shouldSend: true, type: 'due_today' };
@@ -321,13 +326,21 @@ class NotificationService {
         const futuroStart = new Date(); futuroStart.setDate(futuroStart.getDate() + 3); futuroStart.setHours(0, 0, 0, 0);
         const futuroEnd = new Date(); futuroEnd.setDate(futuroEnd.getDate() + 3); futuroEnd.setHours(23, 59, 59, 999);
 
+        // ✅ Adiciona limite até fim do mês se for dia 1º
+        const orConditions = [
+          { dueDate: { $gte: limitPassado, $lte: hojeEnd } },
+          { dueDate: { $gte: futuroStart, $lte: futuroEnd } }
+        ];
+
+        if (now.getDate() === 1) {
+          const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+          orConditions.push({ dueDate: { $gte: hojeStart, $lte: monthEnd } });
+        }
+
         const invoices = await Invoice.find({
           school_id: schoolId,
           status: 'pending',
-          $or: [
-            { dueDate: { $gte: limitPassado, $lte: hojeEnd } },
-            { dueDate: { $gte: futuroStart, $lte: futuroEnd } }
-          ]
+          $or: orConditions
         }).populate('student').populate('tutor');
 
         console.log(`📊 Escola ${schoolId}: ${invoices.length} faturas potenciais.`);
@@ -336,7 +349,6 @@ class NotificationService {
           const check = this._checkEligibilityForDate(inv.dueDate, new Date());
           if (!check.shouldSend) continue;
 
-          // ✅ NOVO: se estiver em HOLD, não entra na fila
           const onHold = await this._isInvoiceOnHold(inv);
           if (onHold) {
             console.log(`⛔ [HOLD] Ignorando invoice ${String(inv._id)} (em compensação/hold).`);
@@ -356,6 +368,38 @@ class NotificationService {
     } catch (e) {
       console.error("❌ Erro varredura:", e);
     }
+  }
+
+  // ✅ NOVO: GATILHO MANUAL DO MÊS (Para resolver o dia 2, 3, etc)
+  async queueMonthInvoicesManually(schoolId) {
+    const hojeStart = new Date(); hojeStart.setHours(0, 0, 0, 0);
+    const startOfMonth = new Date(hojeStart.getFullYear(), hojeStart.getMonth(), 1);
+    const monthEnd = new Date(hojeStart.getFullYear(), hojeStart.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const invoices = await Invoice.find({
+      school_id: schoolId,
+      status: 'pending',
+      dueDate: { $gte: hojeStart, $lte: monthEnd }
+    }).populate('student').populate('tutor');
+
+    let count = 0;
+    for (const inv of invoices) {
+      const onHold = await this._isInvoiceOnHold(inv);
+      if (onHold) continue;
+
+      // Garante que não manda se já mandou ALGUM aviso esse mês pra essa fatura (evita spam)
+      const alreadySentThisMonth = await NotificationLog.exists({
+        invoice_id: inv._id,
+        status: { $in: ['queued', 'processing', 'sent'] },
+        createdAt: { $gte: startOfMonth }
+      });
+
+      if (!alreadySentThisMonth) {
+        await this._prepareAndQueue(inv, 'new_invoice');
+        count++;
+      }
+    }
+    return count;
   }
 
   async _prepareAndQueue(invoice, type) {
@@ -380,10 +424,6 @@ class NotificationService {
     }
   }
 
-    /**
-   * ✅ NOVO: reenfileirar manualmente uma invoice
-   * - aplica a mesma regra de HOLD do cron
-   */
   async enqueueInvoiceManually({ schoolId, invoice, type = 'manual' }) {
     const onHold = await this._isInvoiceOnHold(invoice);
     if (onHold) {
@@ -416,9 +456,6 @@ class NotificationService {
       type
     });
 
-    // opcional: já dispara processamento
-    // this.processQueue();
-
     return { ok: true, message: 'Invoice reenfileirada com sucesso.' };
   }
 
@@ -446,16 +483,13 @@ class NotificationService {
           console.log(`⏳ Aguardando ${Math.floor(delay / 1000)}s...`);
           await new Promise(r => setTimeout(r, delay));
 
-          // ✅ agora pode retornar { skipped:true, ... } (por HOLD)
           const result = await this._sendSingleNotification(log);
 
           if (result?.skipped) {
-            // ✅ Não marca como failed — finaliza como sent para não reprocessar
             log.status = 'sent';
             log.sent_at = new Date();
             log.error_message = null;
 
-            // usa campos existentes para auditoria do motivo
             log.error_code = 'SKIPPED_HOLD';
             log.error_http_status = 200;
             log.error_raw = JSON.stringify({
@@ -505,8 +539,6 @@ class NotificationService {
     if (!invoice) throw new Error("Fatura não encontrada.");
     if (invoice.status === 'paid' || invoice.status === 'canceled') throw new Error("Fatura já paga/cancelada.");
 
-    // ✅ NOVO: trava final — se está em HOLD, não envia
-    // (mesmo que tenha entrado na fila antes)
     const onHold = await this._isInvoiceOnHold(invoice);
     if (onHold) {
       return {
@@ -529,15 +561,19 @@ class NotificationService {
 
     const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
     const venc = new Date(invoice.dueDate); venc.setHours(0, 0, 0, 0);
-    const diff = (venc - hoje) / (1000 * 60 * 60 * 24);
+    const diffDays = Math.ceil((venc - hoje) / (1000 * 60 * 60 * 24));
+    
+    // DADOS DINÂMICOS
+    const diasAtraso = diffDays < 0 ? Math.abs(diffDays) : 0;
+    const saudacao = this._getSaudacao();
 
     let list = TEMPLATES_HOJE;
     let templateGroup = 'HOJE';
 
-    if (diff > 0) {
+    if (diffDays > 0) {
       list = TEMPLATES_FUTURO;
       templateGroup = 'FUTURO';
-    } else if (diff < 0) {
+    } else if (diffDays < 0) {
       list = TEMPLATES_ATRASO;
       templateGroup = 'ATRASO';
     }
@@ -545,11 +581,13 @@ class NotificationService {
     const templateIndex = Math.floor(Math.random() * list.length);
 
     const text = list[templateIndex]
-      .replace('{escola}', nomeEscola)
-      .replace('{nome}', (log.tutor_name || '').split(' ')[0] || 'Olá')
-      .replace('{descricao}', invoice.description)
-      .replace('{valor}', (invoice.value / 100).toFixed(2).replace('.', ','))
-      .replace('{vencimento}', venc.toLocaleDateString('pt-BR', { timeZone: 'UTC' }));
+      .replace(/{escola}/g, nomeEscola)
+      .replace(/{nome}/g, (log.tutor_name || '').split(' ')[0] || 'Olá')
+      .replace(/{descricao}/g, invoice.description)
+      .replace(/{valor}/g, (invoice.value / 100).toFixed(2).replace('.', ','))
+      .replace(/{vencimento}/g, venc.toLocaleDateString('pt-BR', { timeZone: 'UTC' }))
+      .replace(/{saudacao}/g, saudacao)
+      .replace(/{dias_atraso}/g, diasAtraso);
 
     log.template_group = templateGroup;
     log.template_index = templateIndex;

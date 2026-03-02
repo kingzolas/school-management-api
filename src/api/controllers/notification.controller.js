@@ -99,14 +99,35 @@ class NotificationController {
   }
 
   /**
-   * ✅ NOVO: POST /enqueue
+   * ✅ NOVO: POST /trigger-month
+   * Aciona o envio de todos os boletos pendentes do MÊS atual
+   */
+  async triggerMonthInvoices(req, res, next) {
+    try {
+      const schoolId = req.user.schoolId || req.user.school_id;
+      const count = await NotificationService.queueMonthInvoicesManually(schoolId);
+      
+      // Inicia a fila logo em seguida
+      NotificationService.processQueue();
+
+      res.status(200).json({
+        success: true,
+        message: `${count} faturas do mês foram adicionadas à fila e começarão a ser enviadas.`
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /enqueue
    * Reenfileirar manualmente UMA fatura (botão "Reenviar WhatsApp" no app)
    * Body: { invoiceId, type? }
    *
    * Regras:
    * - invoice deve existir, ser da escola
    * - invoice não pode estar paga/cancelada
-   * - ✅ se estiver em HOLD (compensação ativa), NÃO enfileira
+   * - se estiver em HOLD (compensação ativa), NÃO enfileira
    */
   async enqueueInvoice(req, res, next) {
     try {
@@ -130,7 +151,7 @@ class NotificationController {
         return res.status(400).json({ success: false, error: 'INVOICE_NOT_ELIGIBLE' });
       }
 
-      // ✅ Bloqueio centralizado no service (HOLD)
+      // Bloqueio centralizado no service (HOLD)
       const result = await NotificationService.enqueueInvoiceManually({
         schoolId,
         invoice: inv,

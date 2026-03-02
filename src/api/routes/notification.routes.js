@@ -18,10 +18,13 @@ router.use(verifyToken);
 // Monitoramento
 router.get('/logs', NotificationController.getLogs);
 
-// [NOVO] Rota de reenvio em massa
+// Rota de reenvio em massa
 router.post('/retry-all', NotificationController.retryAllFailed);
 
 router.post('/trigger', NotificationController.triggerManualRun);
+
+// ✅ NOVA ROTA: Gatilho de liberação em massa do mês
+router.post('/trigger-month', NotificationController.triggerMonthInvoices);
 
 router.get('/stats', NotificationController.getDashboardStats);
 router.get('/forecast', NotificationController.getForecast);
