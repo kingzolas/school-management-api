@@ -118,6 +118,12 @@ class InvoiceService {
         boleto_url: !!result?.boleto_url
       });
 
+      // =======================================================================
+      // [CORREÇÃO CRÍTICA]: Prioriza a Linha Digitável (47 dígitos) ao invés do 
+      // Código de Barras (44 dígitos). O Frontend e os Bancos precisam da linha digitável.
+      // =======================================================================
+      const bestBarcode = result.boleto_digitable || result.digitable_line || result.digitable || result.boleto_barcode;
+
       const newInvoice = new Invoice({
         _id: tempId,
         student: studentId,
@@ -130,7 +136,7 @@ class InvoiceService {
         gateway: result.gateway,
         external_id: result.external_id,
         boleto_url: result.boleto_url,
-        boleto_barcode: result.boleto_barcode,
+        boleto_barcode: bestBarcode, // Salva a Linha Digitável correta aqui!
         pix_code: result.pix_code,
         pix_qr_base64: result.pix_qr_base64,
         mp_payment_id: result.gateway === 'mercadopago' ? result.external_id : undefined,
