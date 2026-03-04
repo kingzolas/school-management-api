@@ -20,7 +20,8 @@ class AuthStudentService {
         console.log(`✅ [Service] Aluno encontrado: ${student.fullName} (ID: ${student._id})`);
 
         // 2. Verifica se o aluno está ativo
-        if (!student.isActive) {
+        // [ALTERADO] Blindagem: verifica tanto isActive (booleano) quanto status (string)
+        if (student.isActive === false || student.status === 'Inativo') {
             console.log('❌ [Service] Aluno inativo.');
             throw new Error('Matrícula inativa. Contate a escola.');
         }
@@ -29,7 +30,6 @@ class AuthStudentService {
         // 🧠 LÓGICA DE PRIMEIRO ACESSO (AUTO-SETUP)
         // ==============================================================================
         
-        // Vamos logar o estado das credenciais para entender a lógica
         console.log('Estado das credenciais:', student.accessCredentials);
 
         if (!student.accessCredentials || !student.accessCredentials.passwordHash) {
@@ -43,9 +43,15 @@ class AuthStudentService {
                 const salt = await bcrypt.genSalt(10);
                 const newHash = await bcrypt.hash(password, salt);
 
-                if (!student.accessCredentials) student.accessCredentials = {};
+                if (!student.accessCredentials) {
+                    student.accessCredentials = {};
+                }
+                
                 student.accessCredentials.passwordHash = newHash;
                 student.accessCredentials.firstAccess = true;
+                
+                // [ALTERADO] OBRIGATÓRIO: Avisa o Mongoose que o sub-documento mudou
+                student.markModified('accessCredentials');
                 
                 await student.save();
                 console.log('✅ [Service] Senha padrão configurada e salva.');
@@ -90,7 +96,7 @@ class AuthStudentService {
                 id: student._id,
                 fullName: student.fullName,
                 enrollmentNumber: student.enrollmentNumber,
-                profilePictureUrl: student.profilePictureUrl, // Nota: No model você usa Buffer (profilePicture.data), verifique se aqui deveria ser uma URL gerada ou base64
+                profilePictureUrl: student.profilePictureUrl, 
                 school: {
                     id: student.school_id._id,
                     name: student.school_id.name
