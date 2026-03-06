@@ -5,6 +5,34 @@ const School = require('../models/school.model');
 const appEmitter = require('../../loaders/eventEmitter');
 
 class WebhookController {
+  _safeJson(value) {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return '[unserializable]';
+    }
+  }
+
+  _normalizeText(value) {
+    if (value === null || value === undefined) return '';
+    const text = String(value).trim();
+    return text;
+  }
+
+  _firstNonEmpty(values = []) {
+    for (const value of values) {
+      const normalized = this._normalizeText(value);
+      if (normalized) return normalized;
+    }
+    return '';
+  }
+
+  _asArray(value) {
+    if (Array.isArray(value)) return value;
+    if (value === null || value === undefined) return [];
+    return [value];
+  }
+
   _extractMessageText(data = {}) {
     const directCandidates = [
       data?.message?.conversation,
@@ -13,91 +41,180 @@ class WebhookController {
       data?.message?.videoMessage?.caption,
       data?.message?.documentMessage?.caption,
       data?.message?.buttonsResponseMessage?.selectedButtonId,
+      data?.message?.buttonsResponseMessage?.selectedDisplayText,
       data?.message?.listResponseMessage?.title,
       data?.message?.listResponseMessage?.singleSelectReply?.selectedRowId,
       data?.message?.templateButtonReplyMessage?.selectedId,
       data?.message?.templateButtonReplyMessage?.selectedDisplayText,
       data?.message?.interactiveResponseMessage?.body?.text,
       data?.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson,
+      data?.text,
+      data?.body,
+      data?.content,
+      data?.caption,
+      data?.senderName,
     ];
 
-    for (const candidate of directCandidates) {
-      if (candidate && String(candidate).trim()) {
-        return String(candidate).trim();
-      }
-    }
+    const direct = this._firstNonEmpty(directCandidates);
+    if (direct) return direct;
 
-    const updateCandidates = Array.isArray(data?.update)
-      ? data.update
-      : data?.update
-        ? [data.update]
-        : [];
+    const nestedContainers = [
+      ...this._asArray(data?.update),
+      ...this._asArray(data?.messages),
+      ...this._asArray(data?.messageUpdate),
+      ...this._asArray(data?.messageUpdates),
+    ];
 
-    for (const item of updateCandidates) {
-      const nestedCandidates = [
+    for (const item of nestedContainers) {
+      const nested = this._firstNonEmpty([
         item?.message?.conversation,
         item?.message?.extendedTextMessage?.text,
         item?.message?.imageMessage?.caption,
         item?.message?.videoMessage?.caption,
         item?.message?.documentMessage?.caption,
         item?.message?.buttonsResponseMessage?.selectedButtonId,
+        item?.message?.buttonsResponseMessage?.selectedDisplayText,
         item?.message?.listResponseMessage?.title,
         item?.message?.listResponseMessage?.singleSelectReply?.selectedRowId,
         item?.message?.templateButtonReplyMessage?.selectedId,
         item?.message?.templateButtonReplyMessage?.selectedDisplayText,
         item?.message?.interactiveResponseMessage?.body?.text,
         item?.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson,
-      ];
+        item?.text,
+        item?.body,
+        item?.content,
+        item?.caption,
+      ]);
 
-      for (const candidate of nestedCandidates) {
-        if (candidate && String(candidate).trim()) {
-          return String(candidate).trim();
-        }
-      }
+      if (nested) return nested;
     }
 
     return '';
   }
 
-  _extractRemoteJid(data = {}) {
-    if (data?.key) {
-      return (
-        data?.key?.remoteJidAlt ||
-        data?.key?.remoteJid ||
-        data?.key?.participant ||
-        ''
-      );
-    }
+  _extractRemoteJid(data = {}, sender = '') {
+    const direct = this._firstNonEmpty([
+      data?.key?.remoteJidAlt,
+      data?.key?.remoteJid,
+      data?.key?.participant,
+      data?.remoteJidAlt,
+      data?.remoteJid,
+      data?.participant,
+      data?.jid,
+      data?.from,
+      data?.sender,
+      sender,
+    ]);
 
-    const updateCandidates = Array.isArray(data?.update)
-      ? data.update
-      : data?.update
-        ? [data.update]
-        : [];
+    if (direct) return direct;
 
-    for (const item of updateCandidates) {
-      const jid =
-        item?.key?.remoteJidAlt ||
-        item?.key?.remoteJid ||
-        item?.key?.participant ||
-        '';
+    const nestedContainers = [
+      ...this._asArray(data?.update),
+      ...this._asArray(data?.messages),
+      ...this._asArray(data?.messageUpdate),
+      ...this._asArray(data?.messageUpdates),
+    ];
 
-      if (jid) return jid;
+    for (const item of nestedContainers) {
+      const nested = this._firstNonEmpty([
+        item?.key?.remoteJidAlt,
+        item?.key?.remoteJid,
+        item?.key?.participant,
+        item?.remoteJidAlt,
+        item?.remoteJid,
+        item?.participant,
+        item?.jid,
+        item?.from,
+        item?.sender,
+      ]);
+
+      if (nested) return nested;
     }
 
     return '';
   }
 
   _isFromMe(data = {}) {
-    if (data?.key?.fromMe) return true;
+    if (data?.key?.fromMe === true) return true;
+    if (data?.fromMe === true) return true;
 
-    const updateCandidates = Array.isArray(data?.update)
-      ? data.update
-      : data?.update
-        ? [data.update]
-        : [];
+    const nestedContainers = [
+      ...this._asArray(data?.update),
+      ...this._asArray(data?.messages),
+      ...this._asArray(data?.messageUpdate),
+      ...this._asArray(data?.messageUpdates),
+    ];
 
-    return updateCandidates.some((item) => item?.key?.fromMe === true);
+    return nestedContainers.some(
+      (item) => item?.key?.fromMe === true || item?.fromMe === true
+    );
+  }
+
+  _extractPhoneFromRemoteJid(remoteJid = '') {
+    return String(remoteJid || '')
+      .replace(/@.*/, '')
+      .replace(/\D/g, '');
+  }
+
+  _extractPhoneFallback(data = {}, sender = '') {
+    const candidates = [
+      data?.sender,
+      data?.from,
+      data?.jid,
+      sender,
+      data?.participant,
+      data?.remoteJid,
+      data?.remoteJidAlt,
+      data?.key?.remoteJid,
+      data?.key?.remoteJidAlt,
+      data?.key?.participant,
+    ];
+
+    for (const item of [
+      ...this._asArray(data?.update),
+      ...this._asArray(data?.messages),
+      ...this._asArray(data?.messageUpdate),
+      ...this._asArray(data?.messageUpdates),
+    ]) {
+      candidates.push(
+        item?.sender,
+        item?.from,
+        item?.jid,
+        item?.participant,
+        item?.remoteJid,
+        item?.remoteJidAlt,
+        item?.key?.remoteJid,
+        item?.key?.remoteJidAlt,
+        item?.key?.participant
+      );
+    }
+
+    for (const candidate of candidates) {
+      const phone = this._extractPhoneFromRemoteJid(candidate);
+      if (phone) return phone;
+    }
+
+    return '';
+  }
+
+  async _resolveSchoolByInstance(resolvedInstanceName, hookRunId) {
+    let school = await School.findOne({
+      'whatsapp.instanceName': resolvedInstanceName,
+    }).select('_id name whatsapp');
+
+    if (!school && String(resolvedInstanceName).startsWith('school_')) {
+      const possibleSchoolId = String(resolvedInstanceName).replace('school_', '');
+
+      try {
+        school = await School.findById(possibleSchoolId).select('_id name whatsapp');
+      } catch (fallbackError) {
+        console.warn(
+          `⚠️ [${hookRunId}] Falha no fallback por _id para ${resolvedInstanceName}: ${fallbackError.message}`
+        );
+      }
+    }
+
+    return school;
   }
 
   /**
@@ -126,24 +243,11 @@ class WebhookController {
 
       if (!resolvedInstanceName) {
         console.warn(`⚠️ [${hookRunId}] Webhook WhatsApp sem instanceName identificável.`);
+        console.warn(`🧪 [${hookRunId}] Body completo: ${this._safeJson(req.body)}`);
         return;
       }
 
-      let school = await School.findOne({
-        'whatsapp.instanceName': resolvedInstanceName,
-      }).select('_id name whatsapp');
-
-      if (!school && String(resolvedInstanceName).startsWith('school_')) {
-        const possibleSchoolId = String(resolvedInstanceName).replace('school_', '');
-
-        try {
-          school = await School.findById(possibleSchoolId).select('_id name whatsapp');
-        } catch (fallbackError) {
-          console.warn(
-            `⚠️ [${hookRunId}] Falha no fallback por _id para ${resolvedInstanceName}: ${fallbackError.message}`
-          );
-        }
-      }
+      const school = await this._resolveSchoolByInstance(resolvedInstanceName, hookRunId);
 
       if (!school) {
         console.warn(
@@ -201,7 +305,10 @@ class WebhookController {
         return;
       }
 
-      const validMessageEvents = ['messages.upsert', 'messages.update'];
+      const validMessageEvents = [
+        'messages.upsert',
+        'messages.update',
+      ];
 
       if (!validMessageEvents.includes(event)) {
         console.log(
@@ -219,19 +326,24 @@ class WebhookController {
         return;
       }
 
-      const remoteJid = this._extractRemoteJid(data);
+      const remoteJid = this._extractRemoteJid(data, sender);
 
       console.log(
         `📱 [${hookRunId}] remoteJid bruto | remoteJid=${remoteJid || 'N/A'}`
       );
 
-      const phone = String(remoteJid)
-        .replace(/@.*/, '')
-        .replace(/\D/g, '');
+      let phone = this._extractPhoneFromRemoteJid(remoteJid);
+
+      if (!phone) {
+        phone = this._extractPhoneFallback(data, sender);
+      }
 
       if (!phone) {
         console.warn(
           `⚠️ [${hookRunId}] Webhook WhatsApp sem telefone identificável | schoolId=${school._id} | instance=${resolvedInstanceName}`
+        );
+        console.warn(
+          `🧪 [${hookRunId}] Payload data sem telefone: ${this._safeJson(data)}`
         );
         return;
       }
@@ -245,6 +357,9 @@ class WebhookController {
       if (!messageText || !String(messageText).trim()) {
         console.warn(
           `⚠️ [${hookRunId}] Mensagem sem texto processável | schoolId=${school._id} | phone=${phone}`
+        );
+        console.warn(
+          `🧪 [${hookRunId}] Payload data sem texto: ${this._safeJson(data)}`
         );
         return;
       }
