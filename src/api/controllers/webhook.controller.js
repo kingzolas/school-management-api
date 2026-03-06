@@ -15,8 +15,7 @@ class WebhookController {
 
   _normalizeText(value) {
     if (value === null || value === undefined) return '';
-    const text = String(value).trim();
-    return text;
+    return String(value).trim();
   }
 
   _firstNonEmpty(values = []) {
@@ -27,14 +26,8 @@ class WebhookController {
     return '';
   }
 
-  _asArray(value) {
-    if (Array.isArray(value)) return value;
-    if (value === null || value === undefined) return [];
-    return [value];
-  }
-
   _extractMessageText(data = {}) {
-    const directCandidates = [
+    return this._firstNonEmpty([
       data?.message?.conversation,
       data?.message?.extendedTextMessage?.text,
       data?.message?.imageMessage?.caption,
@@ -47,53 +40,15 @@ class WebhookController {
       data?.message?.templateButtonReplyMessage?.selectedId,
       data?.message?.templateButtonReplyMessage?.selectedDisplayText,
       data?.message?.interactiveResponseMessage?.body?.text,
-      data?.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson,
       data?.text,
       data?.body,
       data?.content,
       data?.caption,
-      data?.senderName,
-    ];
-
-    const direct = this._firstNonEmpty(directCandidates);
-    if (direct) return direct;
-
-    const nestedContainers = [
-      ...this._asArray(data?.update),
-      ...this._asArray(data?.messages),
-      ...this._asArray(data?.messageUpdate),
-      ...this._asArray(data?.messageUpdates),
-    ];
-
-    for (const item of nestedContainers) {
-      const nested = this._firstNonEmpty([
-        item?.message?.conversation,
-        item?.message?.extendedTextMessage?.text,
-        item?.message?.imageMessage?.caption,
-        item?.message?.videoMessage?.caption,
-        item?.message?.documentMessage?.caption,
-        item?.message?.buttonsResponseMessage?.selectedButtonId,
-        item?.message?.buttonsResponseMessage?.selectedDisplayText,
-        item?.message?.listResponseMessage?.title,
-        item?.message?.listResponseMessage?.singleSelectReply?.selectedRowId,
-        item?.message?.templateButtonReplyMessage?.selectedId,
-        item?.message?.templateButtonReplyMessage?.selectedDisplayText,
-        item?.message?.interactiveResponseMessage?.body?.text,
-        item?.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson,
-        item?.text,
-        item?.body,
-        item?.content,
-        item?.caption,
-      ]);
-
-      if (nested) return nested;
-    }
-
-    return '';
+    ]);
   }
 
   _extractRemoteJid(data = {}, sender = '') {
-    const direct = this._firstNonEmpty([
+    return this._firstNonEmpty([
       data?.key?.remoteJidAlt,
       data?.key?.remoteJid,
       data?.key?.participant,
@@ -105,96 +60,12 @@ class WebhookController {
       data?.sender,
       sender,
     ]);
-
-    if (direct) return direct;
-
-    const nestedContainers = [
-      ...this._asArray(data?.update),
-      ...this._asArray(data?.messages),
-      ...this._asArray(data?.messageUpdate),
-      ...this._asArray(data?.messageUpdates),
-    ];
-
-    for (const item of nestedContainers) {
-      const nested = this._firstNonEmpty([
-        item?.key?.remoteJidAlt,
-        item?.key?.remoteJid,
-        item?.key?.participant,
-        item?.remoteJidAlt,
-        item?.remoteJid,
-        item?.participant,
-        item?.jid,
-        item?.from,
-        item?.sender,
-      ]);
-
-      if (nested) return nested;
-    }
-
-    return '';
   }
 
-  _isFromMe(data = {}) {
-    if (data?.key?.fromMe === true) return true;
-    if (data?.fromMe === true) return true;
-
-    const nestedContainers = [
-      ...this._asArray(data?.update),
-      ...this._asArray(data?.messages),
-      ...this._asArray(data?.messageUpdate),
-      ...this._asArray(data?.messageUpdates),
-    ];
-
-    return nestedContainers.some(
-      (item) => item?.key?.fromMe === true || item?.fromMe === true
-    );
-  }
-
-  _extractPhoneFromRemoteJid(remoteJid = '') {
+  _extractPhone(remoteJid = '') {
     return String(remoteJid || '')
       .replace(/@.*/, '')
       .replace(/\D/g, '');
-  }
-
-  _extractPhoneFallback(data = {}, sender = '') {
-    const candidates = [
-      data?.sender,
-      data?.from,
-      data?.jid,
-      sender,
-      data?.participant,
-      data?.remoteJid,
-      data?.remoteJidAlt,
-      data?.key?.remoteJid,
-      data?.key?.remoteJidAlt,
-      data?.key?.participant,
-    ];
-
-    for (const item of [
-      ...this._asArray(data?.update),
-      ...this._asArray(data?.messages),
-      ...this._asArray(data?.messageUpdate),
-      ...this._asArray(data?.messageUpdates),
-    ]) {
-      candidates.push(
-        item?.sender,
-        item?.from,
-        item?.jid,
-        item?.participant,
-        item?.remoteJid,
-        item?.remoteJidAlt,
-        item?.key?.remoteJid,
-        item?.key?.remoteJidAlt,
-        item?.key?.participant
-      );
-    }
-
-    for (const candidate of candidates) {
-      const phone = this._extractPhoneFromRemoteJid(candidate);
-      if (phone) return phone;
-    }
-
-    return '';
   }
 
   async _resolveSchoolByInstance(resolvedInstanceName, hookRunId) {
@@ -260,6 +131,9 @@ class WebhookController {
         `🏫 [${hookRunId}] Escola resolvida | schoolId=${school._id} | nome=${school.name || 'Sem nome'} | instance=${resolvedInstanceName}`
       );
 
+      // ------------------------------------------------------------
+      // EVENTO: connection.update
+      // ------------------------------------------------------------
       if (event === 'connection.update') {
         const state = data?.state || 'disconnected';
 
@@ -290,6 +164,9 @@ class WebhookController {
         return;
       }
 
+      // ------------------------------------------------------------
+      // EVENTO: qrcode.updated
+      // ------------------------------------------------------------
       if (event === 'qrcode.updated') {
         await School.findByIdAndUpdate(school._id, {
           'whatsapp.instanceName': resolvedInstanceName,
@@ -305,12 +182,10 @@ class WebhookController {
         return;
       }
 
-      const validMessageEvents = [
-        'messages.upsert',
-        'messages.update',
-      ];
-
-      if (!validMessageEvents.includes(event)) {
+      // ------------------------------------------------------------
+      // PROCESSA SOMENTE NOVA MENSAGEM
+      // ------------------------------------------------------------
+      if (event !== 'messages.upsert') {
         console.log(
           `ℹ️ [${hookRunId}] Evento WhatsApp ignorado | event=${event} | instance=${resolvedInstanceName}`
         );
@@ -318,10 +193,16 @@ class WebhookController {
       }
 
       console.log(
-        `💬 [${hookRunId}] Evento de mensagem detectado | event=${event} | schoolId=${school._id} | instance=${resolvedInstanceName}`
+        `💬 [${hookRunId}] messages.upsert detectado | schoolId=${school._id} | instance=${resolvedInstanceName}`
       );
 
-      if (this._isFromMe(data)) {
+      if (!data?.key) {
+        console.warn(`⚠️ [${hookRunId}] messages.upsert sem data.key`);
+        console.warn(`🧪 [${hookRunId}] Payload data: ${this._safeJson(data)}`);
+        return;
+      }
+
+      if (data?.key?.fromMe === true) {
         console.log(`↩️ [${hookRunId}] Mensagem enviada pela própria instância. Ignorando.`);
         return;
       }
@@ -332,11 +213,7 @@ class WebhookController {
         `📱 [${hookRunId}] remoteJid bruto | remoteJid=${remoteJid || 'N/A'}`
       );
 
-      let phone = this._extractPhoneFromRemoteJid(remoteJid);
-
-      if (!phone) {
-        phone = this._extractPhoneFallback(data, sender);
-      }
+      const phone = this._extractPhone(remoteJid);
 
       if (!phone) {
         console.warn(
@@ -351,7 +228,7 @@ class WebhookController {
       const messageText = this._extractMessageText(data);
 
       console.log(
-        `📝 [${hookRunId}] Conteúdo da mensagem | schoolId=${school._id} | phone=${phone} | text=${messageText || 'VAZIO'}`
+        `📝 [${hookRunId}] Mensagem recebida | schoolId=${school._id} | phone=${phone} | text="${messageText || 'VAZIO'}"`
       );
 
       if (!messageText || !String(messageText).trim()) {
@@ -372,7 +249,7 @@ class WebhookController {
       });
 
       console.log(
-        `🤖 [${hookRunId}] Encaminhando mensagem para o bot | schoolId=${school._id} | instance=${resolvedInstanceName} | phone=${phone} | text=${messageText}`
+        `🤖 [${hookRunId}] Encaminhando mensagem para o bot | schoolId=${school._id} | instance=${resolvedInstanceName} | phone=${phone} | text="${messageText}"`
       );
 
       await WhatsappBotService.handleIncomingMessage({

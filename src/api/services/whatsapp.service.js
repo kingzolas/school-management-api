@@ -74,7 +74,6 @@ class WhatsappService {
         webhookBase64: true,
         events: [
           'MESSAGES_UPSERT',
-          'MESSAGES_UPDATE',
           'QRCODE_UPDATED',
           'CONNECTION_UPDATE',
         ],
@@ -294,7 +293,7 @@ class WhatsappService {
     };
 
     try {
-      console.log(`📤 [Zap] Enviando texto | Instância: ${instanceName} | Número: ${number}`);
+      console.log(`📤 [Zap] Enviando texto | Instância: ${instanceName} | Número: ${number} | Texto: "${message}"`);
 
       await axios.post(url, payload, {
         headers: this._getHeaders(),
