@@ -67,16 +67,16 @@ class WhatsappService {
     const url = `${this.apiUrl}/webhook/set/${instanceName}`;
 
     const payload = {
-      enabled: true,
-      url: this.webhookUrl,
-      webhookByEvents: false,
-      webhookBase64: false,
-      events: [
-        'MESSAGES_UPSERT',
-        'QRCODE_UPDATED',
-        'CONNECTION_UPDATE',
-      ],
-    };
+  enabled: true,
+  url: this.webhookUrl,
+  webhookByEvents: false,
+  webhookBase64: true,
+  events: [
+    'MESSAGES_UPSERT',
+    'QRCODE_UPDATED',
+    'CONNECTION_UPDATE',
+  ],
+};
 
     try {
       const response = await axios.post(url, payload, {
@@ -86,15 +86,20 @@ class WhatsappService {
       console.log(`🔗 [Zap] Webhook configurado com sucesso para ${instanceName}`);
       return response.data;
     } catch (error) {
-      const errorData = error.response?.data || error.message;
-      console.error(`❌ [Zap] Falha ao configurar webhook da instância ${instanceName}:`, errorData);
+  const errorData = error.response?.data || null;
 
-      throw new Error(
-        `Falha ao configurar webhook da instância ${instanceName}: ${
-          error.response?.data?.message || error.message
-        }`
-      );
-    }
+  console.error(`❌ [Zap] Falha ao configurar webhook da instância ${instanceName}:`);
+  console.error('status:', error.response?.status);
+  console.error('data:', JSON.stringify(errorData, null, 2));
+
+  throw new Error(
+    `Falha ao configurar webhook da instância ${instanceName}: ${
+      error.response?.data?.message
+        ? JSON.stringify(error.response.data.message)
+        : error.message
+    }`
+  );
+}
   }
 
   async connectSchool(schoolId) {
