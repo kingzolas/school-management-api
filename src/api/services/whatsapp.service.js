@@ -70,8 +70,12 @@ class WhatsappService {
       webhook: {
         enabled: true,
         url: this.webhookUrl,
+        // Compatibilidade com Evolution API V1
         webhookByEvents: false,
-        webhookBase64: true,
+        webhookBase64: false, // Alterado para false para evitar travamentos de memória
+        // Compatibilidade com Evolution API V2
+        byEvents: false,
+        base64: false,        // Alterado para false
         events: [
           'MESSAGES_UPSERT',
           'QRCODE_UPDATED',
@@ -85,7 +89,7 @@ class WhatsappService {
         headers: this._getHeaders(),
       });
 
-      console.log(`🔗 [Zap] Webhook configurado com sucesso para ${instanceName}`);
+      console.log(`🔗 [Zap] Webhook configurado com sucesso para ${instanceName} | Base64: OFF`);
       return response.data;
     } catch (error) {
       const errorData = error.response?.data || null;

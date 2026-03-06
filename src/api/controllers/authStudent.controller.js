@@ -1,5 +1,4 @@
 const authStudentService = require('../services/authStudent.service');
-const tempAccessTokenService = require('../services/tempAccessToken.service');
 
 class AuthStudentController {
   async login(req, res) {
@@ -50,13 +49,14 @@ class AuthStudentController {
         });
       }
 
-      const result = await tempAccessTokenService.consumeStudentPortalToken(token);
+      // [AJUSTADO] Agora chamamos o serviço de auth para unificar o payload gerado
+      const result = await authStudentService.loginWithMagicLink(token);
 
       console.log('✅ [Controller] Acesso temporário validado com sucesso.');
 
       return res.status(200).json({
         success: true,
-        token: result.authToken,
+        token: result.token,
         student: result.student,
       });
     } catch (error) {

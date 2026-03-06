@@ -8,16 +8,20 @@ const tempAccessTokenService = require('./tempAccessToken.service');
 class WhatsappBotService {
   constructor() {
     this.sessionTtlMinutes = 20;
+    
+    // --- CACHE ANTI-DUPLICAÇÃO ---
+    this.recentMessages = new Map();
 
     this.globalCommands = {
-      cancel: ['cancelar', 'sair', 'parar'],
-      back: ['voltar'],
-      menu: ['menu'],
+      cancel: ['cancelar', 'sair', 'parar', 'encerrar'],
+      back: ['voltar', 'anterior'],
+      menu: ['menu', 'inicio', 'início'],
       restart: ['reiniciar', 'recomecar', 'recomeçar'],
-      help: ['ajuda'],
-      handoff: ['atendimento', 'humano', 'secretaria'],
+      help: ['ajuda', 'opcoes', 'opções'],
+      handoff: ['atendimento', 'humano', 'secretaria', 'atendente', 'escola'],
     };
 
+    // Palavras que engatilham o fluxo do portal financeiro direto
     this.entryKeywords = [
       'boleto',
       'mensalidade',
@@ -28,13 +32,7 @@ class WhatsappBotService {
       'pagar',
       'financeiro',
       'fatura',
-      'pix',
-      'oi',
-      'ola',
-      'olá',
-      'bom dia',
-      'boa tarde',
-      'boa noite',
+      'pix'
     ];
   }
 
@@ -91,48 +89,67 @@ class WhatsappBotService {
     return this.globalCommands[commandName].includes(normalized);
   }
 
+  // ==============================================================================
+  // 🗣️ TEXTOS E MENSAGENS DO BOT
+  // ==============================================================================
+
+  getGreeting() {
+    // Garante que o fuso horário base seja o de Brasília (UTC-3)
+    const utc = new Date().getTime() + (new Date().getTimezoneOffset() * 60000);
+    const brazilTime = new Date(utc + (3600000 * -3));
+    const hour = brazilTime.getHours();
+
+    if (hour >= 5 && hour < 12) return 'Bom dia';
+    if (hour >= 12 && hour < 18) return 'Boa tarde';
+    return 'Boa noite';
+  }
+
   buildMenuMessage() {
     return [
-      'Olá! Posso te ajudar com o acesso ao portal do aluno.',
+      '*Como posso te ajudar hoje?*',
+      'Responda com o número da opção desejada:',
       '',
-      'Responda com:',
-      '1 - Acessar portal do aluno',
-      '2 - Falar com a escola',
+      '1️⃣ - Acessar Portal do Aluno (Boletos e Mensalidades)',
+      '2️⃣ - Falar com a Escola (Atendimento Humano)',
       '',
-      'Você também pode usar: menu, voltar, cancelar, ajuda ou atendimento.',
+      '💡 _Dica: Digite *cancelar* a qualquer momento para encerrar este atendimento._'
     ].join('\n');
   }
 
   buildHelpMessage() {
     return [
-      'Posso te ajudar com o acesso ao portal do aluno.',
+      '🤖 *Menu de Ajuda - Academy Hub*',
       '',
-      'Comandos disponíveis:',
-      'menu - ver opções principais',
-      'voltar - retornar uma etapa',
-      'cancelar - encerrar atendimento',
-      'reiniciar - começar de novo',
-      'atendimento - falar com a escola',
+      'Você pode digitar as seguintes palavras a qualquer momento:',
+      '🔸 *menu* - Para ver as opções principais',
+      '🔸 *voltar* - Para retornar à etapa anterior',
+      '🔸 *cancelar* - Para encerrar o nosso atendimento',
+      '🔸 *atendimento* - Para ser transferido para a secretaria da escola'
     ].join('\n');
   }
 
   buildCpfPrompt() {
     return [
-      'Informe o CPF do responsável cadastrado na escola.',
-      'Pode enviar apenas os 11 números, com ou sem pontuação.',
+      '🔎 *Acesso ao Portal do Aluno*',
+      '',
+      'Por favor, informe o *CPF do responsável* financeiro cadastrado na escola.',
+      '_Você pode digitar apenas os 11 números, com ou sem pontuação._',
+      '',
+      '↩️ _Digite *voltar* para ver o menu principal ou *cancelar* para sair._'
     ].join('\n');
   }
 
   buildSelectionMessage(options) {
-    const lines = ['Encontrei mais de um aluno vinculado a este CPF:'];
+    const lines = ['Encontrei os seguintes alunos vinculados a este CPF:', ''];
 
     options.forEach((option, index) => {
-      lines.push(`${index + 1} - ${option.fullName}`);
+      lines.push(`*${index + 1}* - ${option.fullName}`);
     });
 
     lines.push('');
-    lines.push('Responda apenas com o número do aluno que deseja acessar.');
-    lines.push('Se quiser, digite voltar para informar outro CPF.');
+    lines.push('👉 *Responda apenas com o número* correspondente ao aluno que deseja acessar.');
+    lines.push('');
+    lines.push('↩️ _Digite *voltar* para informar outro CPF ou *cancelar* para sair._');
 
     return lines.join('\n');
   }
@@ -141,6 +158,10 @@ class WhatsappBotService {
     const safeBase = String(baseUrl || '').replace(/\/$/, '');
     return `${safeBase}/auth/student/access-by-token?token=${encodeURIComponent(rawToken)}`;
   }
+
+  // ==============================================================================
+  // ⚙️ GERENCIAMENTO DE SESSÃO E FLUXO
+  // ==============================================================================
 
   async getOrCreateSession({ schoolId, phone }) {
     const now = new Date();
@@ -164,9 +185,12 @@ class WhatsappBotService {
         status: 'active',
         current_step: 'awaiting_main_option',
         previous_step: null,
+        attempt_count: 0, // Garante que a contagem comece do zero
         expires_at: new Date(now.getTime() + this.sessionTtlMinutes * 60 * 1000),
         last_interaction_at: now,
       });
+    } else if (typeof session.attempt_count !== 'number') {
+      session.attempt_count = 0;
     }
 
     return session;
@@ -179,10 +203,20 @@ class WhatsappBotService {
   }
 
   async sendAndPersist({ schoolId, phone, message, session = null }) {
-    await whatsappService.sendText(schoolId, phone, message);
+    let finalMessage = message;
+
+    // 🌟 A MÁGICA ACONTECE AQUI:
+    // Se for a primeira interação do usuário nesta sessão, injetamos a apresentação
+    if (session && session.attempt_count === 1) {
+      const greeting = this.getGreeting();
+      const presentation = `${greeting}! 🤖 Sou o assistente virtual do software *Academy Hub*.\n\n`;
+      finalMessage = presentation + finalMessage;
+    }
+
+    await whatsappService.sendText(schoolId, phone, finalMessage);
 
     if (session) {
-      session.last_bot_message = message;
+      session.last_bot_message = finalMessage;
       await this.touchSession(session);
     }
   }
@@ -196,7 +230,8 @@ class WhatsappBotService {
     session.student_options = [];
     session.invalid_cpf_attempts = 0;
     session.invalid_selection_attempts = 0;
-    session.attempt_count = 0;
+    // NOTA: propositalmente não zeramos o attempt_count aqui,
+    // para evitar que o bot se apresente duas vezes na mesma conversa se o usuário usar o comando "reiniciar"
     await this.touchSession(session);
   }
 
@@ -297,7 +332,8 @@ class WhatsappBotService {
       return this.sendAndPersist({
         schoolId,
         phone,
-        message: 'Certo. Encaminhe sua solicitação para a secretaria da escola.',
+        message: 'Certo! Vou transferir você para a equipe da escola.\n\nPor favor, aguarde um momento e já envie a sua solicitação.',
+        session,
       });
     }
 
@@ -321,7 +357,7 @@ class WhatsappBotService {
           schoolId,
           phone,
           message:
-            'Não foi possível validar o CPF. Digite reiniciar para tentar novamente ou atendimento para falar com a escola.',
+            'Ainda não consegui validar o CPF.\n\nVocê pode digitar *reiniciar* para tentar de novo desde o começo, ou *atendimento* para falar diretamente com a escola.',
           session,
         });
       }
@@ -330,7 +366,7 @@ class WhatsappBotService {
         schoolId,
         phone,
         message:
-          'Não consegui identificar um CPF válido. Envie apenas os 11 números do CPF do responsável.',
+          'Não consegui identificar um CPF válido na sua mensagem. Por favor, envie apenas os 11 números do CPF do responsável.',
         session,
       });
     }
@@ -347,7 +383,7 @@ class WhatsappBotService {
         schoolId,
         phone,
         message:
-          'Não encontramos um responsável com esse CPF nesta escola. Verifique os números e tente novamente.',
+          'Poxa, não encontrei nenhum aluno vinculado a este CPF nesta escola.\n\nVerifique se os números estão corretos e envie novamente. Se precisar, digite *cancelar*.',
         session,
       });
     }
@@ -396,7 +432,7 @@ class WhatsappBotService {
           schoolId,
           phone,
           message:
-            'Estou com dificuldade para identificar o aluno desejado. Digite voltar para informar outro CPF ou atendimento para falar com a escola.',
+            'Ainda não consegui identificar a sua escolha.\n\nDigite *voltar* para informar outro CPF ou *atendimento* para falar com a secretaria.',
           session,
         });
       }
@@ -404,7 +440,7 @@ class WhatsappBotService {
       return this.sendAndPersist({
         schoolId,
         phone,
-        message: `Não entendi qual aluno você deseja acessar. Responda apenas com um número de 1 a ${options.length}.`,
+        message: `Por favor, responda apenas com um número de *1* a *${options.length}* correspondente ao aluno na lista.`,
         session,
       });
     }
@@ -437,7 +473,7 @@ class WhatsappBotService {
         schoolId,
         phone,
         message:
-          'O portal do aluno não está configurado no momento. Entre em contato com a escola.',
+          '⚠️ O acesso automático ao portal não está configurado no momento.\n\nVou transferir você para a secretaria da escola para te auxiliarem com isso.',
       });
     }
 
@@ -457,10 +493,12 @@ class WhatsappBotService {
       schoolId,
       phone,
       message: [
-        `Pronto! O acesso ao portal do aluno ${selected.fullName} foi liberado.`,
+        `Tudo pronto! 🎉 O acesso para o aluno *${selected.fullName}* foi gerado.`,
+        '',
+        'Acesse pelo link abaixo:',
         accessLink,
         '',
-        'Este link expira em 20 minutos.',
+        '⏱️ _Este link é seguro e expira automaticamente em 20 minutos._'
       ].join('\n'),
     });
   }
@@ -471,24 +509,38 @@ class WhatsappBotService {
 
     if (!normalized) return;
 
+    // --- SISTEMA ANTI-DUPLICAÇÃO (DEBOUNCE) ---
+    const dedupKey = `${schoolId}:${phone}:${normalized}`;
+    const now = Date.now();
+    const lastSeen = this.recentMessages.get(dedupKey);
+
+    if (lastSeen && (now - lastSeen) < 1500) {
+      console.log(`♻️ [Anti-Duplicação] Mensagem ignorada: ${normalized}`);
+      return;
+    }
+    
+    this.recentMessages.set(dedupKey, now);
+    if (this.recentMessages.size > 200) this.recentMessages.clear();
+    // ------------------------------------------
+
     const session = await this.getOrCreateSession({ schoolId, phone });
     session.last_user_message = rawText;
     session.attempt_count += 1;
     await this.touchSession(session);
 
+    // --- Tratamento de Comandos Globais ---
     if (this.isGlobalCommand(normalized, 'cancel')) {
       await this.cancelSession(session);
-
       return this.sendAndPersist({
         schoolId,
         phone,
-        message: 'Atendimento encerrado. Quando quiser, envie uma nova mensagem.',
+        message: 'Atendimento encerrado. O Academy Hub agradece o seu contato! 👋\n\nQuando precisar de algo, é só mandar um "Oi".',
+        // Propositalmente não envio a variável 'session' aqui para não correr o risco de ele se apresentar ao dar Tchau.
       });
     }
 
     if (this.isGlobalCommand(normalized, 'restart')) {
       await this.resetSession(session);
-
       return this.sendAndPersist({
         schoolId,
         phone,
@@ -501,7 +553,6 @@ class WhatsappBotService {
       session.previous_step = session.current_step;
       session.current_step = 'awaiting_main_option';
       await this.touchSession(session);
-
       return this.sendAndPersist({
         schoolId,
         phone,
@@ -523,11 +574,11 @@ class WhatsappBotService {
       session.status = 'handoff_requested';
       session.current_step = 'completed';
       await session.save();
-
       return this.sendAndPersist({
         schoolId,
         phone,
-        message: 'Certo. Encaminhe sua solicitação para a secretaria da escola.',
+        message: 'Certo! Vou transferir você para a equipe da escola.\n\nPor favor, aguarde um momento e já envie a sua solicitação.',
+        session,
       });
     }
 
@@ -560,30 +611,16 @@ class WhatsappBotService {
       });
     }
 
+    // --- Fluxo Principal ---
     if (session.current_step === 'awaiting_cpf') {
-      return this.handleCpfStep({
-        session,
-        schoolId,
-        phone,
-        rawText,
-      });
+      return this.handleCpfStep({ session, schoolId, phone, rawText });
     }
 
     if (session.current_step === 'awaiting_student_selection') {
-      return this.handleStudentSelectionStep({
-        session,
-        schoolId,
-        phone,
-        normalized,
-      });
+      return this.handleStudentSelectionStep({ session, schoolId, phone, normalized });
     }
 
-    return this.handleMainOption({
-      session,
-      schoolId,
-      phone,
-      normalized,
-    });
+    return this.handleMainOption({ session, schoolId, phone, normalized });
   }
 }
 

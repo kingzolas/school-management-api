@@ -2,6 +2,9 @@ const Student = require('../models/student.model');
 const bcrypt = require('bcryptjs'); 
 const jwt = require('jsonwebtoken');
 
+// [ADICIONADO] Precisamos importar o serviço de tokens aqui para o Magic Link
+const tempAccessTokenService = require('../services/tempAccessToken.service');
+
 class AuthStudentService {
 
     async login(enrollmentNumber, password) {
@@ -20,7 +23,6 @@ class AuthStudentService {
         console.log(`✅ [Service] Aluno encontrado: ${student.fullName} (ID: ${student._id})`);
 
         // 2. Verifica se o aluno está ativo
-        // [ALTERADO] Blindagem: verifica tanto isActive (booleano) quanto status (string)
         if (student.isActive === false || student.status === 'Inativo') {
             console.log('❌ [Service] Aluno inativo.');
             throw new Error('Matrícula inativa. Contate a escola.');
@@ -29,7 +31,6 @@ class AuthStudentService {
         // ==============================================================================
         // 🧠 LÓGICA DE PRIMEIRO ACESSO (AUTO-SETUP)
         // ==============================================================================
-        
         console.log('Estado das credenciais:', student.accessCredentials);
 
         if (!student.accessCredentials || !student.accessCredentials.passwordHash) {
@@ -50,7 +51,6 @@ class AuthStudentService {
                 student.accessCredentials.passwordHash = newHash;
                 student.accessCredentials.firstAccess = true;
                 
-                // [ALTERADO] OBRIGATÓRIO: Avisa o Mongoose que o sub-documento mudou
                 student.markModified('accessCredentials');
                 
                 await student.save();
@@ -90,6 +90,66 @@ class AuthStudentService {
             'accessCredentials.firstAccess': false 
         });
 
+        return {
+            token,
+            student: {
+                id: student._id,
+                fullName: student.fullName,
+                enrollmentNumber: student.enrollmentNumber,
+                profilePictureUrl: student.profilePictureUrl, 
+                school: {
+                    id: student.school_id._id,
+                    name: student.school_id.name
+                },
+                role: 'student'
+            }
+        };
+    }
+
+    // ==============================================================================
+    // 🔗 LÓGICA DE ACESSO VIA MAGIC LINK (WHATSAPP)
+    // ==============================================================================
+    async loginWithMagicLink(magicToken) {
+        console.log(`🔗 [Service] Processando Magic Link para token: ${magicToken}`);
+
+        // 1. Consome o token temporário do banco de dados (destrói para não ser usado 2x)
+        const tokenData = await tempAccessTokenService.consumeStudentPortalToken(magicToken);
+        
+        if (!tokenData || !tokenData.studentId) {
+            throw new Error('Link expirado ou já utilizado. Solicite um novo acesso.');
+        }
+
+        // 2. Busca os dados do aluno populando a escola
+        const student = await Student.findById(tokenData.studentId)
+            .populate('school_id', 'name logoUrl');
+
+        if (!student) {
+            throw new Error('Aluno vinculado a este link não foi encontrado.');
+        }
+
+        // 3. Verifica se o aluno está ativo
+        if (student.isActive === false || student.status === 'Inativo') {
+            console.log('❌ [Service] Aluno inativo tentando usar Magic Link.');
+            throw new Error('Matrícula inativa. Contate a escola.');
+        }
+
+        console.log(`✅ [Service] Aluno autenticado via Magic Link: ${student.fullName}`);
+
+        // 4. Gera o Token JWT de 30 dias exatamente como no login normal
+        const payload = {
+            id: student._id,
+            role: 'student',
+            school_id: student.school_id._id
+        };
+
+        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '30d' });
+
+        // 5. Atualiza telemetria de login (mas NÃO altera a senha de primeiro acesso)
+        await Student.findByIdAndUpdate(student._id, {
+            'accessCredentials.lastLogin': new Date()
+        });
+
+        // 6. Retorna a exata mesma estrutura que o App Flutter espera
         return {
             token,
             student: {

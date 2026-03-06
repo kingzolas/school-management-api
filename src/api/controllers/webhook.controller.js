@@ -131,10 +131,13 @@ class WebhookController {
         `🏫 [${hookRunId}] Escola resolvida | schoolId=${school._id} | nome=${school.name || 'Sem nome'} | instance=${resolvedInstanceName}`
       );
 
+      // Normaliza o nome do evento para evitar bugs de case sensitivity (V1 vs V2)
+      const evtNormalizado = String(event || '').toLowerCase();
+
       // ------------------------------------------------------------
       // EVENTO: connection.update
       // ------------------------------------------------------------
-      if (event === 'connection.update') {
+      if (evtNormalizado === 'connection.update') {
         const state = data?.state || 'disconnected';
 
         const update = {
@@ -167,7 +170,7 @@ class WebhookController {
       // ------------------------------------------------------------
       // EVENTO: qrcode.updated
       // ------------------------------------------------------------
-      if (event === 'qrcode.updated') {
+      if (evtNormalizado === 'qrcode.updated') {
         await School.findByIdAndUpdate(school._id, {
           'whatsapp.instanceName': resolvedInstanceName,
           'whatsapp.status': 'qr_pending',
@@ -185,7 +188,7 @@ class WebhookController {
       // ------------------------------------------------------------
       // PROCESSA SOMENTE NOVA MENSAGEM
       // ------------------------------------------------------------
-      if (event !== 'messages.upsert') {
+      if (evtNormalizado !== 'messages.upsert') {
         console.log(
           `ℹ️ [${hookRunId}] Evento WhatsApp ignorado | event=${event} | instance=${resolvedInstanceName}`
         );
@@ -267,6 +270,7 @@ class WebhookController {
     }
   }
 
+  // ... (Mantenha o restante dos métodos handleMpWebhook, handleCoraWebhook, _emitEvents exatamente iguais)
   /**
    * [MERCADO PAGO] Webhook
    */
