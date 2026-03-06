@@ -40,24 +40,50 @@ class WhatsappService {
     return 'disconnected';
   }
 
-  async _updateSchoolWhatsappState(schoolId, patch = {}) {
-    const now = new Date();
-
-    const payload = {
-      'whatsapp.instanceName': patch.instanceName ?? this._getInstanceName(schoolId),
-      'whatsapp.lastSyncAt': patch.lastSyncAt ?? now,
-    };
-
-    if (patch.status !== undefined) payload['whatsapp.status'] = patch.status;
-    if (patch.qrCode !== undefined) payload['whatsapp.qrCode'] = patch.qrCode;
-    if (patch.connectedPhone !== undefined) payload['whatsapp.connectedPhone'] = patch.connectedPhone;
-    if (patch.profileName !== undefined) payload['whatsapp.profileName'] = patch.profileName;
-    if (patch.lastError !== undefined) payload['whatsapp.lastError'] = patch.lastError;
-    if (patch.lastConnectedAt !== undefined) payload['whatsapp.lastConnectedAt'] = patch.lastConnectedAt;
-    if (patch.lastDisconnectedAt !== undefined) payload['whatsapp.lastDisconnectedAt'] = patch.lastDisconnectedAt;
-
-    await School.findByIdAndUpdate(schoolId, payload);
+  async setInstanceWebhook(instanceName) {
+  if (!this.webhookUrl) {
+    throw new Error('EVOLUTION_WEBHOOK_URL não configurada no ambiente.');
   }
+
+  const url = `${this.apiUrl}/webhook/set/${instanceName}`;
+
+  const payload = {
+    webhook: {
+      enabled: true,
+      url: this.webhookUrl,
+      webhookByEvents: false,
+      webhookBase64: true,
+      events: [
+        'MESSAGES_UPSERT',
+        'QRCODE_UPDATED',
+        'CONNECTION_UPDATE',
+      ],
+    },
+  };
+
+  try {
+    const response = await axios.post(url, payload, {
+      headers: this._getHeaders(),
+    });
+
+    console.log(`🔗 [Zap] Webhook configurado com sucesso para ${instanceName}`);
+    return response.data;
+  } catch (error) {
+    const errorData = error.response?.data || null;
+
+    console.error(`❌ [Zap] Falha ao configurar webhook da instância ${instanceName}:`);
+    console.error('status:', error.response?.status);
+    console.error('data:', JSON.stringify(errorData, null, 2));
+
+    throw new Error(
+      `Falha ao configurar webhook da instância ${instanceName}: ${
+        error.response?.data?.message
+          ? JSON.stringify(error.response.data.message)
+          : error.message
+      }`
+    );
+  }
+}
 
   async setInstanceWebhook(instanceName) {
     if (!this.webhookUrl) {
@@ -66,16 +92,18 @@ class WhatsappService {
 
     const url = `${this.apiUrl}/webhook/set/${instanceName}`;
 
-    const payload = {
-  enabled: true,
-  url: this.webhookUrl,
-  webhookByEvents: false,
-  webhookBase64: true,
-  events: [
-    'MESSAGES_UPSERT',
-    'QRCODE_UPDATED',
-    'CONNECTION_UPDATE',
-  ],
+ const payload = {
+  webhook: {
+    enabled: true,
+    url: this.webhookUrl,
+    webhookByEvents: false,
+    webhookBase64: true,
+    events: [
+      'MESSAGES_UPSERT',
+      'QRCODE_UPDATED',
+      'CONNECTION_UPDATE',
+    ],
+  },
 };
 
     try {
