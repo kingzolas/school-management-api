@@ -23,10 +23,18 @@ class TempAccessTokenService {
   async createStudentPortalToken({ schoolId, tutorId = null, studentId, requestedPhone }) {
     const rawToken = this._generateRawToken();
     const tokenHash = this._hashToken(rawToken);
-
     const expiresAt = new Date(Date.now() + this.ttlMinutes * 60 * 1000);
 
-    await TempAccessToken.create({
+    console.log('🔐 [TempToken] Criando token temporário...');
+    console.log(`📌 [TempToken] schoolId=${schoolId}`);
+    console.log(`📌 [TempToken] tutorId=${tutorId || 'N/A'}`);
+    console.log(`📌 [TempToken] studentId=${studentId}`);
+    console.log(`📌 [TempToken] requestedPhone=${requestedPhone || 'N/A'}`);
+    console.log(`📌 [TempToken] rawToken=${rawToken}`);
+    console.log(`📌 [TempToken] tokenHash=${tokenHash}`);
+    console.log(`📌 [TempToken] expiresAt=${expiresAt.toISOString()}`);
+
+    const created = await TempAccessToken.create({
       school_id: schoolId,
       tutor_id: tutorId,
       student_id: studentId,
@@ -37,6 +45,8 @@ class TempAccessTokenService {
       purpose: 'student_portal_access',
       created_by: 'whatsapp_bot',
     });
+
+    console.log(`✅ [TempToken] Token salvo com sucesso | id=${created._id}`);
 
     return {
       rawToken,
@@ -51,6 +61,10 @@ class TempAccessTokenService {
 
     const tokenHash = this._hashToken(rawToken);
 
+    console.log('🔓 [TempToken] Consumindo token...');
+    console.log(`📌 [TempToken] rawToken recebido=${rawToken}`);
+    console.log(`📌 [TempToken] tokenHash calculado=${tokenHash}`);
+
     const tokenDoc = await TempAccessToken.findOne({
       token_hash: tokenHash,
       purpose: 'student_portal_access',
@@ -58,8 +72,37 @@ class TempAccessTokenService {
     });
 
     if (!tokenDoc) {
+      console.warn('❌ [TempToken] Nenhum token ativo encontrado para este hash.');
+
+      const tokenWithOtherStatus = await TempAccessToken.findOne({
+        token_hash: tokenHash,
+        purpose: 'student_portal_access',
+      }).select('_id status expires_at used_at school_id student_id tutor_id createdAt');
+
+      if (tokenWithOtherStatus) {
+        console.warn('⚠️ [TempToken] Token encontrado com outro status:');
+        console.warn({
+          id: tokenWithOtherStatus._id,
+          status: tokenWithOtherStatus.status,
+          expires_at: tokenWithOtherStatus.expires_at,
+          used_at: tokenWithOtherStatus.used_at,
+          school_id: tokenWithOtherStatus.school_id,
+          student_id: tokenWithOtherStatus.student_id,
+          tutor_id: tokenWithOtherStatus.tutor_id,
+          createdAt: tokenWithOtherStatus.createdAt,
+        });
+      } else {
+        console.warn('⚠️ [TempToken] Nenhum documento encontrado nem com outro status.');
+      }
+
       throw new Error('Token inválido ou já utilizado.');
     }
+
+    console.log(`✅ [TempToken] Token encontrado | id=${tokenDoc._id} | status=${tokenDoc.status}`);
+    console.log(`📌 [TempToken] expires_at=${tokenDoc.expires_at?.toISOString?.() || tokenDoc.expires_at}`);
+    console.log(`📌 [TempToken] school_id=${tokenDoc.school_id}`);
+    console.log(`📌 [TempToken] student_id=${tokenDoc.student_id}`);
+    console.log(`📌 [TempToken] tutor_id=${tokenDoc.tutor_id || 'N/A'}`);
 
     if (tokenDoc.expires_at.getTime() < Date.now()) {
       tokenDoc.status = 'expired';

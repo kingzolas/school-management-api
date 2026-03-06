@@ -110,61 +110,21 @@ class AuthStudentService {
     // 🔗 LÓGICA DE ACESSO VIA MAGIC LINK (WHATSAPP)
     // ==============================================================================
     async loginWithMagicLink(magicToken) {
-        console.log(`🔗 [Service] Processando Magic Link para token: ${magicToken}`);
+    console.log(`🔗 [Service] Processando Magic Link para token: ${magicToken}`);
 
-        // 1. Consome o token temporário do banco de dados (destrói para não ser usado 2x)
-        const tokenData = await tempAccessTokenService.consumeStudentPortalToken(magicToken);
-        
-        if (!tokenData || !tokenData.studentId) {
-            throw new Error('Link expirado ou já utilizado. Solicite um novo acesso.');
-        }
+    const tokenData = await tempAccessTokenService.consumeStudentPortalToken(magicToken);
 
-        // 2. Busca os dados do aluno populando a escola
-        const student = await Student.findById(tokenData.studentId)
-            .populate('school_id', 'name logoUrl');
-
-        if (!student) {
-            throw new Error('Aluno vinculado a este link não foi encontrado.');
-        }
-
-        // 3. Verifica se o aluno está ativo
-        if (student.isActive === false || student.status === 'Inativo') {
-            console.log('❌ [Service] Aluno inativo tentando usar Magic Link.');
-            throw new Error('Matrícula inativa. Contate a escola.');
-        }
-
-        console.log(`✅ [Service] Aluno autenticado via Magic Link: ${student.fullName}`);
-
-        // 4. Gera o Token JWT de 30 dias exatamente como no login normal
-        const payload = {
-            id: student._id,
-            role: 'student',
-            school_id: student.school_id._id
-        };
-
-        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '30d' });
-
-        // 5. Atualiza telemetria de login (mas NÃO altera a senha de primeiro acesso)
-        await Student.findByIdAndUpdate(student._id, {
-            'accessCredentials.lastLogin': new Date()
-        });
-
-        // 6. Retorna a exata mesma estrutura que o App Flutter espera
-        return {
-            token,
-            student: {
-                id: student._id,
-                fullName: student.fullName,
-                enrollmentNumber: student.enrollmentNumber,
-                profilePictureUrl: student.profilePictureUrl, 
-                school: {
-                    id: student.school_id._id,
-                    name: student.school_id.name
-                },
-                role: 'student'
-            }
-        };
+    if (!tokenData || !tokenData.authToken || !tokenData.student) {
+        throw new Error('Link expirado ou já utilizado. Solicite um novo acesso.');
     }
+
+    console.log(`✅ [Service] Aluno autenticado via Magic Link: ${tokenData.student.fullName}`);
+
+    return {
+        token: tokenData.authToken,
+        student: tokenData.student
+    };
+}
 }
 
 module.exports = new AuthStudentService();
