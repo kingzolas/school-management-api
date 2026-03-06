@@ -23,8 +23,6 @@ class WhatsappController {
       } else if (result.status === 'qrcode' || result.status === 'qr' || result.qrCode) {
         update['whatsapp.status'] = 'qr_pending';
         update['whatsapp.qrCode'] = result.qrCode || null;
-      } else if (result.status === 'connecting') {
-        update['whatsapp.status'] = 'connecting';
       } else {
         update['whatsapp.status'] = 'connecting';
       }
@@ -122,7 +120,6 @@ class WhatsappController {
     try {
       const schoolId = req.user.school_id;
       const isConnected = await whatsappService.ensureConnection(schoolId);
-
       const now = new Date();
 
       await School.findByIdAndUpdate(schoolId, {

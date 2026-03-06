@@ -1,367 +1,436 @@
-const InvoiceService = require('../services/invoice.service');
-const NegotiationService = require('../services/negotiation.service');
-const WhatsappBotService = require('../services/whatsappBot.service');
+const axios = require('axios');
 const School = require('../models/school.model');
-const appEmitter = require('../../loaders/eventEmitter');
 
-class WebhookController {
-  /**
-   * [WHATSAPP] Webhook da Evolution API
-   */
-  async handleWhatsappWebhook(req, res) {
-    const hookRunId = `wa-${Date.now()}`;
+class WhatsappService {
+  constructor() {
+    this.apiUrl = process.env.EVOLUTION_API_URL;
+    this.apiKey = process.env.EVOLUTION_API_KEY;
+    this.webhookUrl = process.env.EVOLUTION_WEBHOOK_URL;
+  }
+
+  _getInstanceName(schoolId) {
+    return `school_${schoolId}`;
+  }
+
+  _getHeaders() {
+    return {
+      apikey: this.apiKey,
+    };
+  }
+
+  _normalizePhone(phone) {
+    let number = String(phone || '').replace(/\D/g, '');
+
+    if (!number.startsWith('55') && (number.length === 10 || number.length === 11)) {
+      number = `55${number}`;
+    }
+
+    return number;
+  }
+
+  _mapEvolutionStateToDbStatus(state, hasQrCode = false) {
+    const normalized = String(state || '').toLowerCase();
+
+    if (normalized === 'open') return 'connected';
+    if (normalized === 'connecting') return 'connecting';
+    if (normalized === 'close' || normalized === 'closed') return 'disconnected';
+    if (normalized === 'disconnected') return 'disconnected';
+    if (normalized === 'qrcode' || normalized === 'qr' || hasQrCode) return 'qr_pending';
+
+    return 'disconnected';
+  }
+
+  async _updateSchoolWhatsappState(schoolId, patch = {}) {
+    const now = new Date();
+
+    const payload = {
+      'whatsapp.instanceName': patch.instanceName ?? this._getInstanceName(schoolId),
+      'whatsapp.lastSyncAt': patch.lastSyncAt ?? now,
+    };
+
+    if (patch.status !== undefined) payload['whatsapp.status'] = patch.status;
+    if (patch.qrCode !== undefined) payload['whatsapp.qrCode'] = patch.qrCode;
+    if (patch.connectedPhone !== undefined) payload['whatsapp.connectedPhone'] = patch.connectedPhone;
+    if (patch.profileName !== undefined) payload['whatsapp.profileName'] = patch.profileName;
+    if (patch.lastError !== undefined) payload['whatsapp.lastError'] = patch.lastError;
+    if (patch.lastConnectedAt !== undefined) payload['whatsapp.lastConnectedAt'] = patch.lastConnectedAt;
+    if (patch.lastDisconnectedAt !== undefined) payload['whatsapp.lastDisconnectedAt'] = patch.lastDisconnectedAt;
+
+    await School.findByIdAndUpdate(schoolId, payload);
+  }
+
+  async setInstanceWebhook(instanceName) {
+    if (!this.webhookUrl) {
+      throw new Error('EVOLUTION_WEBHOOK_URL não configurada no ambiente.');
+    }
+
+    const url = `${this.apiUrl}/webhook/set/${instanceName}`;
+
+    const payload = {
+      webhook: {
+        enabled: true,
+        url: this.webhookUrl,
+        webhookByEvents: false,
+        webhookBase64: true,
+        events: [
+          'MESSAGES_UPSERT',
+          'QRCODE_UPDATED',
+          'CONNECTION_UPDATE',
+        ],
+      },
+    };
 
     try {
-      res.status(200).json({ status: 'recebido' });
+      const response = await axios.post(url, payload, {
+        headers: this._getHeaders(),
+      });
 
-      const { event, data, instance, instanceName, sender } = req.body || {};
+      console.log(`🔗 [Zap] Webhook configurado com sucesso para ${instanceName}`);
+      return response.data;
+    } catch (error) {
+      const errorData = error.response?.data || null;
 
-      const resolvedInstanceName =
-        instance ||
-        instanceName ||
-        data?.instance ||
-        data?.qrcode?.instance ||
-        req.body?.instance ||
-        req.body?.instanceName ||
-        null;
+      console.error(`❌ [Zap] Falha ao configurar webhook da instância ${instanceName}:`);
+      console.error('status:', error.response?.status);
+      console.error('data:', JSON.stringify(errorData, null, 2));
 
-      console.log(
-        `📩 [${hookRunId}] Webhook WhatsApp recebido | event=${event || 'N/A'} | instance=${resolvedInstanceName || 'N/A'}`
+      throw new Error(
+        `Falha ao configurar webhook da instância ${instanceName}: ${
+          error.response?.data?.message
+            ? JSON.stringify(error.response.data.message)
+            : error.message
+        }`
       );
+    }
+  }
 
-      if (!resolvedInstanceName) {
-        console.warn(`⚠️ [${hookRunId}] Webhook WhatsApp sem instanceName identificável.`);
-        return;
+  async connectSchool(schoolId) {
+    const instanceName = this._getInstanceName(schoolId);
+    const connectUrl = `${this.apiUrl}/instance/connect/${instanceName}`;
+
+    console.log(`🔌 [Zap] Iniciando processo de conexão para: ${instanceName}`);
+
+    await this._updateSchoolWhatsappState(schoolId, {
+      instanceName,
+      status: 'connecting',
+      lastError: null,
+    });
+
+    try {
+      let currentStatus = 'disconnected';
+
+      try {
+        const statusData = await this.getConnectionStatus(instanceName);
+        currentStatus = statusData.status;
+      } catch (err) {
+        console.warn(`⚠️ [Zap] Erro ao checar status prévio: ${err.message}`);
       }
 
-      let school = await School.findOne({
-        'whatsapp.instanceName': resolvedInstanceName,
-      }).select('_id name whatsapp');
+      if (currentStatus === 'open') {
+        console.log(`✅ [Zap] Instância ${instanceName} já estava conectada.`);
 
-      // fallback por _id embutido em school_<id>
-      if (!school && String(resolvedInstanceName).startsWith('school_')) {
-        const possibleSchoolId = String(resolvedInstanceName).replace('school_', '');
+        await this.setInstanceWebhook(instanceName);
 
-        try {
-          school = await School.findById(possibleSchoolId).select('_id name whatsapp');
-        } catch (fallbackError) {
-          console.warn(
-            `⚠️ [${hookRunId}] Falha no fallback por _id para ${resolvedInstanceName}: ${fallbackError.message}`
-          );
-        }
-      }
-
-      if (!school) {
-        console.warn(
-          `⚠️ [${hookRunId}] Nenhuma escola encontrada para a instância: ${resolvedInstanceName}`
-        );
-        return;
-      }
-
-      console.log(
-        `🏫 [${hookRunId}] Escola resolvida | schoolId=${school._id} | nome=${school.name || 'Sem nome'} | instance=${resolvedInstanceName}`
-      );
-
-      // ------------------------------------------------------------
-      // EVENTO: connection.update
-      // ------------------------------------------------------------
-      if (event === 'connection.update') {
-        const state = data?.state || 'disconnected';
-
-        const update = {
-          'whatsapp.instanceName': resolvedInstanceName,
-          'whatsapp.lastSyncAt': new Date(),
-          'whatsapp.lastError': null,
-        };
-
-        if (state === 'open') {
-          update['whatsapp.status'] = 'connected';
-          update['whatsapp.qrCode'] = null;
-          update['whatsapp.connectedPhone'] = data?.wuid || sender || null;
-          update['whatsapp.profileName'] = data?.profileName || null;
-          update['whatsapp.lastConnectedAt'] = new Date();
-        } else if (state === 'connecting') {
-          update['whatsapp.status'] = 'connecting';
-        } else {
-          update['whatsapp.status'] = 'disconnected';
-          update['whatsapp.lastDisconnectedAt'] = new Date();
-        }
-
-        await School.findByIdAndUpdate(school._id, update);
-
-        console.log(
-          `🔄 [${hookRunId}] connection.update processado | schoolId=${school._id} | state=${state}`
-        );
-        return;
-      }
-
-      // ------------------------------------------------------------
-      // EVENTO: qrcode.updated
-      // ------------------------------------------------------------
-      if (event === 'qrcode.updated') {
-        await School.findByIdAndUpdate(school._id, {
-          'whatsapp.instanceName': resolvedInstanceName,
-          'whatsapp.status': 'qr_pending',
-          'whatsapp.qrCode': data?.qrcode?.base64 || null,
-          'whatsapp.lastSyncAt': new Date(),
-          'whatsapp.lastError': null,
+        await this._updateSchoolWhatsappState(schoolId, {
+          instanceName,
+          status: 'connected',
+          qrCode: null,
+          lastConnectedAt: new Date(),
+          lastError: null,
         });
 
-        console.log(
-          `🧾 [${hookRunId}] qrcode.updated processado | schoolId=${school._id} | instance=${resolvedInstanceName}`
-        );
-        return;
+        return {
+          status: 'open',
+          instanceName,
+          qrCode: null,
+        };
       }
 
-      // ------------------------------------------------------------
-      // Ignora outros eventos
-      // ------------------------------------------------------------
-      if (event !== 'messages.upsert') {
-        console.log(
-          `ℹ️ [${hookRunId}] Evento WhatsApp ignorado | event=${event} | instance=${resolvedInstanceName}`
-        );
-        return;
+      if (currentStatus !== 'disconnected') {
+        console.log(`🧹 [Zap] Limpando estado sujo (${currentStatus})...`);
+
+        try {
+          await this.logoutSchool(schoolId, { preserveInstanceName: true });
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        } catch (cleanupError) {
+          console.warn(`⚠️ [Zap] Falha ao limpar estado anterior: ${cleanupError.message}`);
+        }
       }
 
-      console.log(
-        `💬 [${hookRunId}] messages.upsert detectado | schoolId=${school._id} | instance=${resolvedInstanceName}`
-      );
+      console.log(`🚀 [Zap] Solicitando nova conexão...`);
 
-      if (!data?.key) {
-        console.warn(`⚠️ [${hookRunId}] messages.upsert sem data.key`);
-        return;
-      }
-
-      if (data.key.fromMe) {
-        console.log(`↩️ [${hookRunId}] Mensagem enviada pela própria instância. Ignorando.`);
-        return;
-      }
-
-      const remoteJid =
-        data?.key?.remoteJidAlt ||
-        data?.key?.remoteJid ||
-        data?.key?.participant ||
-        '';
-
-      console.log(
-        `📱 [${hookRunId}] remoteJid bruto | remoteJidAlt=${data?.key?.remoteJidAlt || 'N/A'} | remoteJid=${data?.key?.remoteJid || 'N/A'}`
-      );
-
-      const phone = String(remoteJid)
-        .replace(/@.*/, '')
-        .replace(/\D/g, '');
-
-      if (!phone) {
-        console.warn(
-          `⚠️ [${hookRunId}] Webhook WhatsApp sem telefone identificável | schoolId=${school._id} | instance=${resolvedInstanceName}`
-        );
-        return;
-      }
-
-      const messageText =
-        data?.message?.conversation ||
-        data?.message?.extendedTextMessage?.text ||
-        data?.message?.imageMessage?.caption ||
-        data?.message?.videoMessage?.caption ||
-        data?.message?.documentMessage?.caption ||
-        data?.message?.buttonsResponseMessage?.selectedButtonId ||
-        data?.message?.listResponseMessage?.title ||
-        data?.message?.listResponseMessage?.singleSelectReply?.selectedRowId ||
-        '';
-
-      console.log(
-        `📝 [${hookRunId}] Conteúdo da mensagem | schoolId=${school._id} | phone=${phone} | text=${messageText || 'VAZIO'}`
-      );
-
-      if (!messageText || !String(messageText).trim()) {
-        console.warn(
-          `⚠️ [${hookRunId}] Mensagem sem texto processável | schoolId=${school._id} | phone=${phone}`
-        );
-        return;
-      }
-
-      await School.findByIdAndUpdate(school._id, {
-        'whatsapp.instanceName': resolvedInstanceName,
-        'whatsapp.status': 'connected',
-        'whatsapp.lastSyncAt': new Date(),
-        'whatsapp.lastError': null,
+      const response = await axios.get(connectUrl, {
+        headers: this._getHeaders(),
       });
 
-      console.log(
-        `🤖 [${hookRunId}] Encaminhando mensagem para o bot | schoolId=${school._id} | instance=${resolvedInstanceName} | phone=${phone} | text=${messageText}`
-      );
+      await this.setInstanceWebhook(instanceName);
 
-      await WhatsappBotService.handleIncomingMessage({
-        schoolId: school._id,
-        phone,
-        messageText,
+      const qrCode =
+        response.data?.base64 ||
+        response.data?.qrcode?.base64 ||
+        response.data?.qrcode ||
+        null;
+
+      const nextStatus = qrCode ? 'qr_pending' : 'connecting';
+
+      await this._updateSchoolWhatsappState(schoolId, {
+        instanceName,
+        status: nextStatus,
+        qrCode,
+        lastError: null,
       });
 
-      console.log(
-        `✅ [${hookRunId}] Mensagem processada pelo bot | schoolId=${school._id} | phone=${phone}`
-      );
+      return {
+        status: nextStatus === 'qr_pending' ? 'qrcode' : 'connecting',
+        qrCode,
+        instanceName,
+      };
     } catch (error) {
-      console.error(`❌ Erro no Webhook WhatsApp [${hookRunId}]:`, error.message);
-      console.error(error.stack);
+      const message =
+        error.response?.data?.message ||
+        error.message ||
+        'Falha ao conectar ao WhatsApp.';
+
+      await this._updateSchoolWhatsappState(schoolId, {
+        instanceName,
+        status: 'error',
+        lastError: message,
+      });
+
+      if (error.response?.status === 403) {
+        throw new Error('Sessão em limpeza. Aguarde alguns segundos e tente novamente.');
+      }
+
+      throw new Error(`Falha ao conectar: ${message}`);
     }
   }
 
-  /**
-   * [MERCADO PAGO] Webhook
-   */
-  async handleMpWebhook(req, res) {
-    const hookRunId = `mp-${Date.now()}`;
-    console.log(`--- 🔔 WEBHOOK MERCADO PAGO RECEBIDO (${hookRunId}) ---`);
-
-    res.status(200).json({ status: 'recebido' });
-
-    const paymentId = req.query['data.id'] || req.body?.data?.id;
-
-    if (!paymentId) {
-      console.log(`ℹ️ [${hookRunId}] Evento MP sem paymentId (ignorando). query=`, req.query);
-      return;
-    }
-
-    console.log(`📌 [${hookRunId}] paymentId=${paymentId}`);
+  async getConnectionStatus(instanceName) {
+    const url = `${this.apiUrl}/instance/connectionState/${instanceName}`;
 
     try {
-      const invResult = await InvoiceService.handlePaymentWebhook(
-        paymentId,
-        'MERCADO_PAGO',
-        null
-      );
+      const response = await axios.get(url, {
+        headers: this._getHeaders(),
+      });
 
-      if (invResult.processed) {
-        this._emitEvents(invResult.invoice, 'invoice');
-        return;
-      }
+      const state =
+        response.data?.instance?.state ||
+        response.data?.state ||
+        'disconnected';
 
-      const negResult = await NegotiationService.handlePaymentWebhook(paymentId);
-
-      if (negResult.processed) {
-        this._emitEvents(negResult.negotiation, 'negotiation');
-        return;
-      }
-
-      console.warn(
-        `⚠️ [${hookRunId}] Webhook MP ${paymentId} não encontrado em Faturas nem Negociações.`
-      );
+      return {
+        status: state,
+        instanceName,
+        raw: response.data,
+      };
     } catch (error) {
-      console.error(
-        `❌ [${hookRunId}] Erro processando Webhook MP ${paymentId}:`,
-        error.message
-      );
+      if (error.response?.status === 404) {
+        return {
+          status: 'disconnected',
+          instanceName,
+          raw: null,
+        };
+      }
+
+      return {
+        status: 'disconnected',
+        instanceName,
+        raw: error.response?.data || null,
+      };
     }
   }
 
-  /**
-   * [CORA] Webhook
-   */
-  async handleCoraWebhook(req, res) {
-    const hookRunId = `cora-${Date.now()}`;
-
-    res.status(200).send('OK');
-
-    console.log(`--- 🏦 WEBHOOK CORA RECEBIDO (${hookRunId}) ---`);
-
-    const headers = req.headers || {};
-    const headerKeys = Object.keys(headers);
-    console.log(`🧾 [${hookRunId}] headerKeys=`, headerKeys);
-
-    const eventType =
-      headers['webhook-event-type'] ||
-      headers['x-webhook-event-type'] ||
-      headers['x-cora-webhook-event-type'] ||
-      headers['event-type'] ||
-      null;
-
-    const resourceId =
-      headers['webhook-resource-id'] ||
-      headers['x-webhook-resource-id'] ||
-      headers['x-cora-webhook-resource-id'] ||
-      headers['resource-id'] ||
-      null;
-
-    const bodyEventType =
-      req.body?.eventType ||
-      req.body?.event_type ||
-      req.body?.type ||
-      req.body?.event ||
-      null;
-
-    const bodyResourceId =
-      req.body?.resourceId ||
-      req.body?.resource_id ||
-      req.body?.id ||
-      req.body?.data?.id ||
-      null;
-
-    const finalEventType = eventType || bodyEventType;
-    const finalResourceId = resourceId || bodyResourceId;
-
-    console.log(`📡 [${hookRunId}] Evento=${finalEventType} | ID=${finalResourceId}`);
-
-    if (!finalEventType || !finalResourceId) {
-      console.warn(
-        `⚠️ [${hookRunId}] Webhook Cora sem eventType/resourceId. bodyKeys=`,
-        Object.keys(req.body || {})
-      );
-      console.warn(`⚠️ [${hookRunId}] body=`, req.body);
-      return;
-    }
-
-    let statusRaw = null;
-    const evt = String(finalEventType).toLowerCase();
-
-    if (
-      evt === 'invoice.paid' ||
-      evt === 'bank_slip.liquidation' ||
-      evt === 'bankslip.liquidation'
-    ) {
-      statusRaw = 'paid';
-    } else if (evt === 'invoice.canceled' || evt === 'invoice.cancelled') {
-      statusRaw = 'cancelled';
-    } else {
-      console.log(`ℹ️ [${hookRunId}] Evento Cora ignorado (não relevante): ${finalEventType}`);
-      return;
-    }
+  async logoutSchool(schoolId, options = {}) {
+    const instanceName = this._getInstanceName(schoolId);
+    const url = `${this.apiUrl}/instance/logout/${instanceName}`;
+    const preserveInstanceName = options.preserveInstanceName !== false;
 
     try {
-      const invResult = await InvoiceService.handlePaymentWebhook(
-        finalResourceId,
-        'CORA',
-        statusRaw
-      );
+      await axios.delete(url, {
+        headers: this._getHeaders(),
+      });
 
-      if (invResult.processed) {
-        this._emitEvents(invResult.invoice, 'invoice');
-        console.log(
-          `✅ [${hookRunId}] Webhook Cora processado. invoiceId=${invResult.invoice?._id} newStatus=${invResult.newStatus}`
-        );
+      console.log(`🔌 [Zap] Logout realizado para ${instanceName}`);
+    } catch (error) {
+      const status = error.response?.status;
+
+      if (status === 404) {
+        console.log(`ℹ️ [Zap] Instância ${instanceName} não encontrada no logout. Considerando desconectada.`);
+      } else if (status === 400) {
+        console.warn(`⚠️ [Zap] Logout retornou 400 para ${instanceName}. Tratando como estado já limpo/inválido.`);
       } else {
-        console.warn(
-          `⚠️ [${hookRunId}] Webhook Cora ID ${finalResourceId} não encontrado no banco ou não processado.`
-        );
+        console.warn(`⚠️ [Zap] Aviso no logout API: ${error.message}`);
       }
-    } catch (error) {
-      console.error(`❌ [${hookRunId}] Erro processando Webhook Cora:`, error.message);
+    } finally {
+      await this._updateSchoolWhatsappState(schoolId, {
+        instanceName: preserveInstanceName ? instanceName : null,
+        status: 'disconnected',
+        qrCode: null,
+        lastDisconnectedAt: new Date(),
+        lastError: null,
+      });
     }
   }
 
-  _emitEvents(document, type) {
-    if (!document) return;
+  async sendText(schoolId, phone, message) {
+    const instanceName = this._getInstanceName(schoolId);
+    const url = `${this.apiUrl}/message/sendText/${instanceName}`;
 
-    const status = document.status;
-    const eventBase = type === 'negotiation' ? 'negotiation' : 'invoice';
+    const number = this._normalizePhone(phone);
 
-    if (status === 'paid') {
-      appEmitter.emit(`${eventBase}:paid`, document);
-      console.log(`📡 EVENTO: ${eventBase}:paid disparado.`);
-    } else {
-      appEmitter.emit(`${eventBase}:updated`, document);
-      console.log(`📡 EVENTO: ${eventBase}:updated disparado.`);
+    if (number.length < 12) {
+      console.error(`❌ [Zap] Número inválido detectado: ${phone}`);
+      throw new Error(`Número de telefone inválido (verifique o DDD): ${phone}`);
+    }
+
+    const payload = {
+      number,
+      options: {
+        delay: 1200,
+        presence: 'composing',
+      },
+      text: message,
+    };
+
+    try {
+      console.log(`📤 [Zap] Enviando texto | Instância: ${instanceName} | Número: ${number}`);
+
+      await axios.post(url, payload, {
+        headers: this._getHeaders(),
+      });
+
+      await this._updateSchoolWhatsappState(schoolId, {
+        instanceName,
+        status: 'connected',
+        qrCode: null,
+        lastConnectedAt: new Date(),
+        lastError: null,
+      });
+
+      console.log(`✅ [Zap] Mensagem enviada com sucesso!`);
+    } catch (error) {
+      const errorData = error.response ? JSON.stringify(error.response.data) : error.message;
+      const messageText =
+        error.response?.data?.message ||
+        error.message ||
+        'Falha no envio de mensagem.';
+
+      console.error(`❌ [Zap] Erro Evolution Texto: ${errorData}`);
+
+      await this._updateSchoolWhatsappState(schoolId, {
+        instanceName,
+        status: 'error',
+        lastError: messageText,
+      });
+
+      throw new Error(`Falha no envio WhatsApp: ${messageText}`);
+    }
+  }
+
+  async sendFile(schoolId, phone, fileUrl, fileName, caption) {
+    const instanceName = this._getInstanceName(schoolId);
+    const url = `${this.apiUrl}/message/sendMedia/${instanceName}`;
+
+    const number = this._normalizePhone(phone);
+
+    if (number.length < 12) {
+      throw new Error(`Número de telefone inválido (PDF): ${phone}`);
+    }
+
+    const payload = {
+      number,
+      options: {
+        delay: 1200,
+        presence: 'composing',
+      },
+      mediatype: 'document',
+      caption,
+      media: fileUrl,
+      fileName,
+    };
+
+    try {
+      console.log(`📤 [Zap] Enviando arquivo | Instância: ${instanceName} | Número: ${number}`);
+
+      await axios.post(url, payload, {
+        headers: this._getHeaders(),
+      });
+
+      await this._updateSchoolWhatsappState(schoolId, {
+        instanceName,
+        status: 'connected',
+        qrCode: null,
+        lastConnectedAt: new Date(),
+        lastError: null,
+      });
+
+      console.log(`✅ [Zap] PDF enviado com sucesso!`);
+    } catch (error) {
+      const errorData = error.response ? JSON.stringify(error.response.data) : error.message;
+      const messageText =
+        error.response?.data?.message ||
+        error.message ||
+        'Falha no envio do arquivo.';
+
+      console.error(`❌ [Zap] Erro Envio PDF: ${errorData}`);
+
+      await this._updateSchoolWhatsappState(schoolId, {
+        instanceName,
+        status: 'error',
+        lastError: messageText,
+      });
+
+      throw new Error(`Falha no envio do PDF: ${messageText}`);
+    }
+  }
+
+  async ensureConnection(schoolId) {
+    try {
+      const instanceName = this._getInstanceName(schoolId);
+      const statusData = await this.getConnectionStatus(instanceName);
+
+      const rawStatus = statusData.status;
+      const dbStatus = this._mapEvolutionStateToDbStatus(rawStatus);
+
+      if (rawStatus === 'open') {
+        console.log(`✅ [Auto-Heal] Instância ${instanceName} ONLINE! Atualizando banco...`);
+
+        await this.setInstanceWebhook(instanceName);
+
+        await this._updateSchoolWhatsappState(schoolId, {
+          instanceName,
+          status: 'connected',
+          qrCode: null,
+          lastConnectedAt: new Date(),
+          lastError: null,
+        });
+
+        return true;
+      }
+
+      console.warn(`⚠️ [Auto-Heal] Instância ${instanceName} não está aberta. Estado real: ${rawStatus}`);
+
+      await this._updateSchoolWhatsappState(schoolId, {
+        instanceName,
+        status: dbStatus,
+        ...(dbStatus === 'disconnected'
+          ? { lastDisconnectedAt: new Date() }
+          : {}),
+      });
+
+      return false;
+    } catch (error) {
+      const instanceName = this._getInstanceName(schoolId);
+
+      await this._updateSchoolWhatsappState(schoolId, {
+        instanceName,
+        status: 'error',
+        lastError: error.message || 'Erro ao validar conexão do WhatsApp.',
+      });
+
+      return false;
     }
   }
 }
 
-module.exports = new WebhookController();
+module.exports = new WhatsappService();

@@ -74,6 +74,7 @@ class WhatsappService {
         webhookBase64: true,
         events: [
           'MESSAGES_UPSERT',
+          'MESSAGES_UPDATE',
           'QRCODE_UPDATED',
           'CONNECTION_UPDATE',
         ],
