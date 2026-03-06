@@ -38,15 +38,15 @@ class WebhookController {
         'whatsapp.instanceName': resolvedInstanceName,
       }).select('_id name whatsapp');
 
-      // Fallback: se a instância seguir o padrão school_<schoolId>, tenta achar pelo próprio _id
+      // Fallback pelo _id embutido em school_<id>
       if (!school && String(resolvedInstanceName).startsWith('school_')) {
         const possibleSchoolId = String(resolvedInstanceName).replace('school_', '');
 
         try {
           school = await School.findById(possibleSchoolId).select('_id name whatsapp');
-        } catch (error) {
+        } catch (fallbackError) {
           console.warn(
-            `⚠️ [${hookRunId}] Falha ao tentar fallback por _id para instância ${resolvedInstanceName}: ${error.message}`
+            `⚠️ [${hookRunId}] Falha no fallback por _id para ${resolvedInstanceName}: ${fallbackError.message}`
           );
         }
       }
@@ -62,6 +62,9 @@ class WebhookController {
         `🏫 [${hookRunId}] Escola resolvida | schoolId=${school._id} | nome=${school.name || 'Sem nome'} | instance=${resolvedInstanceName}`
       );
 
+      // ------------------------------------------------------------
+      // EVENTO: connection.update
+      // ------------------------------------------------------------
       if (event === 'connection.update') {
         const state = data?.state || 'disconnected';
 
@@ -92,6 +95,9 @@ class WebhookController {
         return;
       }
 
+      // ------------------------------------------------------------
+      // EVENTO: qrcode.updated
+      // ------------------------------------------------------------
       if (event === 'qrcode.updated') {
         await School.findByIdAndUpdate(school._id, {
           'whatsapp.instanceName': resolvedInstanceName,
@@ -107,12 +113,19 @@ class WebhookController {
         return;
       }
 
+      // ------------------------------------------------------------
+      // Ignora outros eventos que não sejam mensagem recebida
+      // ------------------------------------------------------------
       if (event !== 'messages.upsert') {
         console.log(
           `ℹ️ [${hookRunId}] Evento WhatsApp ignorado | event=${event} | instance=${resolvedInstanceName}`
         );
         return;
       }
+
+      console.log(
+        `💬 [${hookRunId}] messages.upsert detectado | schoolId=${school._id} | instance=${resolvedInstanceName}`
+      );
 
       if (!data?.key) {
         console.warn(`⚠️ [${hookRunId}] messages.upsert sem data.key`);
@@ -130,13 +143,17 @@ class WebhookController {
         data?.key?.participant ||
         '';
 
+      console.log(
+        `📱 [${hookRunId}] remoteJid bruto | remoteJidAlt=${data?.key?.remoteJidAlt || 'N/A'} | remoteJid=${data?.key?.remoteJid || 'N/A'}`
+      );
+
       const phone = String(remoteJid)
         .replace(/@.*/, '')
         .replace(/\D/g, '');
 
       if (!phone) {
         console.warn(
-          `⚠️ [${hookRunId}] Webhook WhatsApp sem telefone identificável | instance=${resolvedInstanceName}`
+          `⚠️ [${hookRunId}] Webhook WhatsApp sem telefone identificável | schoolId=${school._id} | instance=${resolvedInstanceName}`
         );
         return;
       }
@@ -149,7 +166,12 @@ class WebhookController {
         data?.message?.documentMessage?.caption ||
         data?.message?.buttonsResponseMessage?.selectedButtonId ||
         data?.message?.listResponseMessage?.title ||
+        data?.message?.listResponseMessage?.singleSelectReply?.selectedRowId ||
         '';
+
+      console.log(
+        `📝 [${hookRunId}] Conteúdo da mensagem | schoolId=${school._id} | phone=${phone} | text=${messageText || 'VAZIO'}`
+      );
 
       if (!messageText || !String(messageText).trim()) {
         console.warn(
