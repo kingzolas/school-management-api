@@ -8,48 +8,96 @@ class WebhookController {
   /**
    * [WHATSAPP] Webhook da Evolution API
    */
- async handleWhatsappWebhook(req, res) {
-
-  console.log('==============================');
-  console.log('📩 WEBHOOK WHATSAPP RECEBIDO');
-  console.log('BODY:', JSON.stringify(req.body, null, 2));
-  console.log('==============================');
-
+async handleWhatsappWebhook(req, res) {
   try {
-
     res.status(200).json({ status: 'recebido' });
 
-    const { event, data, instance, instanceName } = req.body || {};
+    const { event, data, instance, instanceName, sender } = req.body || {};
 
-    console.log('📌 Event:', event);
-    console.log('📌 Instance:', instance);
-    console.log('📌 InstanceName:', instanceName);
+    const resolvedInstanceName =
+      instance ||
+      instanceName ||
+      data?.instance ||
+      data?.qrcode?.instance ||
+      req.body?.instance ||
+      req.body?.instanceName ||
+      null;
 
-    if (!data) {
-      console.log('⚠️ Payload sem data');
+    if (!resolvedInstanceName) {
+      console.warn('⚠️ Webhook WhatsApp sem instanceName identificável.');
       return;
     }
 
-    console.log('📦 DATA:', JSON.stringify(data, null, 2));
+    const school = await School.findOne({
+      'whatsapp.instanceName': resolvedInstanceName,
+    }).select('_id whatsapp');
 
-    if (data.key?.fromMe) {
-      console.log('↩️ Mensagem enviada pelo próprio bot. Ignorando.');
+    if (!school) {
+      console.warn(`⚠️ Nenhuma escola encontrada para a instância: ${resolvedInstanceName}`);
+      return;
+    }
+
+    if (event === 'connection.update') {
+      const state = data?.state || 'disconnected';
+
+      const update = {
+        'whatsapp.lastSyncAt': new Date(),
+        'whatsapp.lastError': null,
+      };
+
+      if (state === 'open') {
+        update['whatsapp.status'] = 'connected';
+        update['whatsapp.qrCode'] = null;
+        update['whatsapp.connectedPhone'] = data?.wuid || sender || null;
+        update['whatsapp.profileName'] = data?.profileName || null;
+        update['whatsapp.lastConnectedAt'] = new Date();
+      } else if (state === 'connecting') {
+        update['whatsapp.status'] = 'connecting';
+      } else {
+        update['whatsapp.status'] = 'disconnected';
+        update['whatsapp.lastDisconnectedAt'] = new Date();
+      }
+
+      await School.findByIdAndUpdate(school._id, update);
+      return;
+    }
+
+    if (event === 'qrcode.updated') {
+      await School.findByIdAndUpdate(school._id, {
+        'whatsapp.status': 'qr_pending',
+        'whatsapp.qrCode': data?.qrcode?.base64 || null,
+        'whatsapp.lastSyncAt': new Date(),
+        'whatsapp.lastError': null,
+      });
+      return;
+    }
+
+    if (event !== 'messages.upsert') {
+      return;
+    }
+
+    if (!data?.key) {
+      return;
+    }
+
+    if (data.key.fromMe) {
       return;
     }
 
     const remoteJid =
+      data?.key?.remoteJidAlt ||
       data?.key?.remoteJid ||
       data?.key?.participant ||
-      data?.key?.id ||
       '';
-
-    console.log('📱 remoteJid:', remoteJid);
 
     const phone = String(remoteJid)
       .replace(/@.*/, '')
       .replace(/\D/g, '');
 
-    console.log('📞 phone extraído:', phone);
+    if (!phone) {
+      console.warn('⚠️ Webhook WhatsApp sem telefone identificável.');
+      return;
+    }
 
     const messageText =
       data?.message?.conversation ||
@@ -57,19 +105,32 @@ class WebhookController {
       data?.message?.imageMessage?.caption ||
       data?.message?.videoMessage?.caption ||
       data?.message?.documentMessage?.caption ||
+      data?.message?.buttonsResponseMessage?.selectedButtonId ||
+      data?.message?.listResponseMessage?.title ||
       '';
 
-    console.log('💬 messageText:', messageText);
-
-    if (!messageText) {
-      console.log('⚠️ Mensagem sem texto');
+    if (!messageText || !String(messageText).trim()) {
+      console.warn('⚠️ Mensagem sem texto processável.');
       return;
     }
 
+    await School.findByIdAndUpdate(school._id, {
+      'whatsapp.status': 'connected',
+      'whatsapp.lastSyncAt': new Date(),
+      'whatsapp.lastError': null,
+    });
+
+    console.log(`🤖 Encaminhando mensagem para o bot | Escola: ${school._id} | Telefone: ${phone} | Texto: ${messageText}`);
+
+    await WhatsappBotService.handleIncomingMessage({
+      schoolId: school._id,
+      phone,
+      messageText,
+    });
+
   } catch (error) {
-
-    console.error('❌ ERRO NO WEBHOOK:', error);
-
+    console.error('❌ Erro no Webhook WhatsApp:', error.message);
+    console.error(error.stack);
   }
 }
 
