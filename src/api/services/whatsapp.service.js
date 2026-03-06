@@ -5,6 +5,7 @@ class WhatsappService {
   constructor() {
     this.apiUrl = process.env.EVOLUTION_API_URL;
     this.apiKey = process.env.EVOLUTION_API_KEY;
+    this.webhookUrl = process.env.EVOLUTION_WEBHOOK_URL;
   }
 
   _getInstanceName(schoolId) {
@@ -58,6 +59,44 @@ class WhatsappService {
     await School.findByIdAndUpdate(schoolId, payload);
   }
 
+  async setInstanceWebhook(instanceName) {
+    if (!this.webhookUrl) {
+      throw new Error('EVOLUTION_WEBHOOK_URL não configurada no ambiente.');
+    }
+
+    const url = `${this.apiUrl}/webhook/set/${instanceName}`;
+
+    const payload = {
+      enabled: true,
+      url: this.webhookUrl,
+      webhookByEvents: false,
+      webhookBase64: false,
+      events: [
+        'MESSAGES_UPSERT',
+        'QRCODE_UPDATED',
+        'CONNECTION_UPDATE',
+      ],
+    };
+
+    try {
+      const response = await axios.post(url, payload, {
+        headers: this._getHeaders(),
+      });
+
+      console.log(`🔗 [Zap] Webhook configurado com sucesso para ${instanceName}`);
+      return response.data;
+    } catch (error) {
+      const errorData = error.response?.data || error.message;
+      console.error(`❌ [Zap] Falha ao configurar webhook da instância ${instanceName}:`, errorData);
+
+      throw new Error(
+        `Falha ao configurar webhook da instância ${instanceName}: ${
+          error.response?.data?.message || error.message
+        }`
+      );
+    }
+  }
+
   async connectSchool(schoolId) {
     const instanceName = this._getInstanceName(schoolId);
     const connectUrl = `${this.apiUrl}/instance/connect/${instanceName}`;
@@ -82,6 +121,8 @@ class WhatsappService {
 
       if (currentStatus === 'open') {
         console.log(`✅ [Zap] Instância ${instanceName} já estava conectada.`);
+
+        await this.setInstanceWebhook(instanceName);
 
         await this._updateSchoolWhatsappState(schoolId, {
           instanceName,
@@ -114,6 +155,9 @@ class WhatsappService {
       const response = await axios.get(connectUrl, {
         headers: this._getHeaders(),
       });
+
+      // garante o webhook por instância
+      await this.setInstanceWebhook(instanceName);
 
       const qrCode =
         response.data?.base64 ||
@@ -344,6 +388,8 @@ class WhatsappService {
 
       if (rawStatus === 'open') {
         console.log(`✅ [Auto-Heal] Instância ${instanceName} ONLINE! Atualizando banco...`);
+
+        await this.setInstanceWebhook(instanceName);
 
         await this._updateSchoolWhatsappState(schoolId, {
           instanceName,
