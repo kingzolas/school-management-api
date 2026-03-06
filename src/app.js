@@ -43,6 +43,8 @@ const notificationRoutes = require('./api/routes/notification.routes.js');
 
 const invoiceCompensationRoutes = require('./api/routes/invoiceCompensation.routes.js');
 
+const studentPortalAccessRoutes = require('./api/routes/studentPortalAccess.routes');
+
 const app = express();
 
 // Configuração CORS
@@ -108,5 +110,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/releases', releaseRoutes);
 
 app.use('/api/invoice-compensations', invoiceCompensationRoutes);
+
+app.use('/api/auth/student', studentPortalAccessRoutes);
 
 module.exports = app;

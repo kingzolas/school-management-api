@@ -1,4 +1,3 @@
-// src/api/routes/webhook.routes.js
 const express = require('express');
 const router = express.Router();
 const webhookController = require('../controllers/webhook.controller');

@@ -1,38 +1,87 @@
-// src/api/controllers/webhook.controller.js
 const InvoiceService = require('../services/invoice.service');
 const NegotiationService = require('../services/negotiation.service');
+const WhatsappBotService = require('../services/whatsappBot.service');
+const School = require('../models/school.model');
 const appEmitter = require('../../loaders/eventEmitter');
 
 class WebhookController {
-
   /**
    * [WHATSAPP] Webhook da Evolution API
    */
-  async handleWhatsappWebhook(req, res) {
-    try {
-      res.status(200).json({ status: 'recebido' });
-      const { event, data } = req.body;
+ async handleWhatsappWebhook(req, res) {
 
-      if (event === 'messages.upsert' && !data.key.fromMe) {
-        // Mantido (sem alterações funcionais)
-      }
-    } catch (error) {
-      console.error('❌ Erro no Webhook WhatsApp:', error.message);
+  console.log('==============================');
+  console.log('📩 WEBHOOK WHATSAPP RECEBIDO');
+  console.log('BODY:', JSON.stringify(req.body, null, 2));
+  console.log('==============================');
+
+  try {
+
+    res.status(200).json({ status: 'recebido' });
+
+    const { event, data, instance, instanceName } = req.body || {};
+
+    console.log('📌 Event:', event);
+    console.log('📌 Instance:', instance);
+    console.log('📌 InstanceName:', instanceName);
+
+    if (!data) {
+      console.log('⚠️ Payload sem data');
+      return;
     }
+
+    console.log('📦 DATA:', JSON.stringify(data, null, 2));
+
+    if (data.key?.fromMe) {
+      console.log('↩️ Mensagem enviada pelo próprio bot. Ignorando.');
+      return;
+    }
+
+    const remoteJid =
+      data?.key?.remoteJid ||
+      data?.key?.participant ||
+      data?.key?.id ||
+      '';
+
+    console.log('📱 remoteJid:', remoteJid);
+
+    const phone = String(remoteJid)
+      .replace(/@.*/, '')
+      .replace(/\D/g, '');
+
+    console.log('📞 phone extraído:', phone);
+
+    const messageText =
+      data?.message?.conversation ||
+      data?.message?.extendedTextMessage?.text ||
+      data?.message?.imageMessage?.caption ||
+      data?.message?.videoMessage?.caption ||
+      data?.message?.documentMessage?.caption ||
+      '';
+
+    console.log('💬 messageText:', messageText);
+
+    if (!messageText) {
+      console.log('⚠️ Mensagem sem texto');
+      return;
+    }
+
+  } catch (error) {
+
+    console.error('❌ ERRO NO WEBHOOK:', error);
+
   }
+}
 
   /**
    * [MERCADO PAGO] Webhook
-   * Lógica mantida (mas com log extra)
    */
   async handleMpWebhook(req, res) {
     const hookRunId = `mp-${Date.now()}`;
     console.log(`--- 🔔 WEBHOOK MERCADO PAGO RECEBIDO (${hookRunId}) ---`);
 
-    // 1. Responder rápido
     res.status(200).json({ status: 'recebido' });
 
-    // 2. Extrair ID
     const paymentId = req.query['data.id'] || req.body?.data?.id;
 
     if (!paymentId) {
@@ -43,42 +92,49 @@ class WebhookController {
     console.log(`📌 [${hookRunId}] paymentId=${paymentId}`);
 
     try {
-      const invResult = await InvoiceService.handlePaymentWebhook(paymentId, 'MERCADO_PAGO', null);
+      const invResult = await InvoiceService.handlePaymentWebhook(
+        paymentId,
+        'MERCADO_PAGO',
+        null
+      );
+
       if (invResult.processed) {
         this._emitEvents(invResult.invoice, 'invoice');
         return;
       }
 
       const negResult = await NegotiationService.handlePaymentWebhook(paymentId);
+
       if (negResult.processed) {
         this._emitEvents(negResult.negotiation, 'negotiation');
         return;
       }
 
-      console.warn(`⚠️ [${hookRunId}] Webhook MP ${paymentId} não encontrado em Faturas nem Negociações.`);
+      console.warn(
+        `⚠️ [${hookRunId}] Webhook MP ${paymentId} não encontrado em Faturas nem Negociações.`
+      );
     } catch (error) {
-      console.error(`❌ [${hookRunId}] Erro processando Webhook MP ${paymentId}:`, error.message);
+      console.error(
+        `❌ [${hookRunId}] Erro processando Webhook MP ${paymentId}:`,
+        error.message
+      );
     }
   }
 
   /**
    * [CORA] Webhook
-   * Endpoint: /api/webhook/cora
    */
   async handleCoraWebhook(req, res) {
     const hookRunId = `cora-${Date.now()}`;
 
-    // 1) Responder rápido (Cora costuma reenviar se não receber OK)
     res.status(200).send('OK');
 
     console.log(`--- 🏦 WEBHOOK CORA RECEBIDO (${hookRunId}) ---`);
 
-    // ✅ Loga headers pra detectar proxy removendo custom headers
     const headers = req.headers || {};
     const headerKeys = Object.keys(headers);
     console.log(`🧾 [${hookRunId}] headerKeys=`, headerKeys);
 
-    // Cora (e proxies) podem variar o header:
     const eventType =
       headers['webhook-event-type'] ||
       headers['x-webhook-event-type'] ||
@@ -93,7 +149,6 @@ class WebhookController {
       headers['resource-id'] ||
       null;
 
-    // ✅ Fallback: caso venha no body (alguns middlewares / gateways mandam assim)
     const bodyEventType =
       req.body?.eventType ||
       req.body?.event_type ||
@@ -114,20 +169,24 @@ class WebhookController {
     console.log(`📡 [${hookRunId}] Evento=${finalEventType} | ID=${finalResourceId}`);
 
     if (!finalEventType || !finalResourceId) {
-      console.warn(`⚠️ [${hookRunId}] Webhook Cora sem eventType/resourceId. bodyKeys=`, Object.keys(req.body || {}));
+      console.warn(
+        `⚠️ [${hookRunId}] Webhook Cora sem eventType/resourceId. bodyKeys=`,
+        Object.keys(req.body || {})
+      );
       console.warn(`⚠️ [${hookRunId}] body=`, req.body);
       return;
     }
 
-    // Mapeamento de status
     let statusRaw = null;
-
-    // Aceita variações e caixa
     const evt = String(finalEventType).toLowerCase();
 
-    if (evt === 'invoice.paid' || evt === 'bank_slip.liquidation' || evt === 'bankslip.liquidation') {
+    if (
+      evt === 'invoice.paid' ||
+      evt === 'bank_slip.liquidation' ||
+      evt === 'bankslip.liquidation'
+    ) {
       statusRaw = 'paid';
-    } else if (evt === 'invoice.canceled' || evt === 'invoice.cancelled' || evt === 'invoice.canceled'.toLowerCase()) {
+    } else if (evt === 'invoice.canceled' || evt === 'invoice.cancelled') {
       statusRaw = 'cancelled';
     } else {
       console.log(`ℹ️ [${hookRunId}] Evento Cora ignorado (não relevante): ${finalEventType}`);
@@ -135,26 +194,31 @@ class WebhookController {
     }
 
     try {
-      const invResult = await InvoiceService.handlePaymentWebhook(finalResourceId, 'CORA', statusRaw);
+      const invResult = await InvoiceService.handlePaymentWebhook(
+        finalResourceId,
+        'CORA',
+        statusRaw
+      );
 
       if (invResult.processed) {
         this._emitEvents(invResult.invoice, 'invoice');
-        console.log(`✅ [${hookRunId}] Webhook Cora processado. invoiceId=${invResult.invoice?._id} newStatus=${invResult.newStatus}`);
+        console.log(
+          `✅ [${hookRunId}] Webhook Cora processado. invoiceId=${invResult.invoice?._id} newStatus=${invResult.newStatus}`
+        );
       } else {
-        console.warn(`⚠️ [${hookRunId}] Webhook Cora ID ${finalResourceId} não encontrado no banco ou não processado.`);
+        console.warn(
+          `⚠️ [${hookRunId}] Webhook Cora ID ${finalResourceId} não encontrado no banco ou não processado.`
+        );
       }
     } catch (error) {
       console.error(`❌ [${hookRunId}] Erro processando Webhook Cora:`, error.message);
     }
   }
 
-  /**
-   * [HELPER] Emite eventos para o sistema (Socket.io / Logs)
-   */
   _emitEvents(document, type) {
     if (!document) return;
 
-    const status = document.status; // paid, canceled...
+    const status = document.status;
     const eventBase = type === 'negotiation' ? 'negotiation' : 'invoice';
 
     if (status === 'paid') {
