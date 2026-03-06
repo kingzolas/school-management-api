@@ -69,12 +69,20 @@ class WebhookController {
   }
 
   async _resolveSchoolByInstance(resolvedInstanceName, hookRunId) {
+    console.log(
+      `🔎 [${hookRunId}] Tentando resolver escola por whatsapp.instanceName=${resolvedInstanceName}`
+    );
+
     let school = await School.findOne({
       'whatsapp.instanceName': resolvedInstanceName,
     }).select('_id name whatsapp');
 
     if (!school && String(resolvedInstanceName).startsWith('school_')) {
       const possibleSchoolId = String(resolvedInstanceName).replace('school_', '');
+
+      console.log(
+        `🧪 [${hookRunId}] Nenhuma escola por instanceName. Tentando fallback por _id=${possibleSchoolId}`
+      );
 
       try {
         school = await School.findById(possibleSchoolId).select('_id name whatsapp');
@@ -83,6 +91,12 @@ class WebhookController {
           `⚠️ [${hookRunId}] Falha no fallback por _id para ${resolvedInstanceName}: ${fallbackError.message}`
         );
       }
+    }
+
+    if (school) {
+      console.log(
+        `✅ [${hookRunId}] Escola encontrada | schoolId=${school._id} | nome=${school.name || 'Sem nome'} | db.instanceName=${school.whatsapp?.instanceName || 'N/A'} | db.status=${school.whatsapp?.status || 'N/A'}`
+      );
     }
 
     return school;
@@ -124,6 +138,7 @@ class WebhookController {
         console.warn(
           `⚠️ [${hookRunId}] Nenhuma escola encontrada para a instância: ${resolvedInstanceName}`
         );
+        console.warn(`🧪 [${hookRunId}] Body completo: ${this._safeJson(req.body)}`);
         return;
       }
 
@@ -131,12 +146,8 @@ class WebhookController {
         `🏫 [${hookRunId}] Escola resolvida | schoolId=${school._id} | nome=${school.name || 'Sem nome'} | instance=${resolvedInstanceName}`
       );
 
-      // Normaliza o nome do evento para evitar bugs de case sensitivity (V1 vs V2)
       const evtNormalizado = String(event || '').toLowerCase();
 
-      // ------------------------------------------------------------
-      // EVENTO: connection.update
-      // ------------------------------------------------------------
       if (evtNormalizado === 'connection.update') {
         const state = data?.state || 'disconnected';
 
@@ -167,9 +178,6 @@ class WebhookController {
         return;
       }
 
-      // ------------------------------------------------------------
-      // EVENTO: qrcode.updated
-      // ------------------------------------------------------------
       if (evtNormalizado === 'qrcode.updated') {
         await School.findByIdAndUpdate(school._id, {
           'whatsapp.instanceName': resolvedInstanceName,
@@ -185,9 +193,6 @@ class WebhookController {
         return;
       }
 
-      // ------------------------------------------------------------
-      // PROCESSA SOMENTE NOVA MENSAGEM
-      // ------------------------------------------------------------
       if (evtNormalizado !== 'messages.upsert') {
         console.log(
           `ℹ️ [${hookRunId}] Evento WhatsApp ignorado | event=${event} | instance=${resolvedInstanceName}`
@@ -252,13 +257,14 @@ class WebhookController {
       });
 
       console.log(
-        `🤖 [${hookRunId}] Encaminhando mensagem para o bot | schoolId=${school._id} | instance=${resolvedInstanceName} | phone=${phone} | text="${messageText}"`
+        `🤖 [${hookRunId}] Encaminhando mensagem para o bot | schoolId=${school._id} | schoolName=${school.name || 'Sem nome'} | instance=${resolvedInstanceName} | phone=${phone} | text="${messageText}"`
       );
 
       await WhatsappBotService.handleIncomingMessage({
         schoolId: school._id,
         phone,
         messageText,
+        instanceName: resolvedInstanceName,
       });
 
       console.log(
@@ -270,7 +276,6 @@ class WebhookController {
     }
   }
 
-  // ... (Mantenha o restante dos métodos handleMpWebhook, handleCoraWebhook, _emitEvents exatamente iguais)
   /**
    * [MERCADO PAGO] Webhook
    */

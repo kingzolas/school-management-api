@@ -70,12 +70,10 @@ class WhatsappService {
       webhook: {
         enabled: true,
         url: this.webhookUrl,
-        // Compatibilidade com Evolution API V1
         webhookByEvents: false,
-        webhookBase64: false, // Alterado para false para evitar travamentos de memória
-        // Compatibilidade com Evolution API V2
+        webhookBase64: false,
         byEvents: false,
-        base64: false,        // Alterado para false
+        base64: false,
         events: [
           'MESSAGES_UPSERT',
           'QRCODE_UPDATED',
@@ -85,11 +83,15 @@ class WhatsappService {
     };
 
     try {
+      console.log(
+        `🔗 [Zap] Configurando webhook | instance=${instanceName} | apiUrl=${this.apiUrl} | webhookUrl=${this.webhookUrl}`
+      );
+
       const response = await axios.post(url, payload, {
         headers: this._getHeaders(),
       });
 
-      console.log(`🔗 [Zap] Webhook configurado com sucesso para ${instanceName} | Base64: OFF`);
+      console.log(`✅ [Zap] Webhook configurado com sucesso para ${instanceName} | Base64: OFF`);
       return response.data;
     } catch (error) {
       const errorData = error.response?.data || null;
@@ -113,6 +115,7 @@ class WhatsappService {
     const connectUrl = `${this.apiUrl}/instance/connect/${instanceName}`;
 
     console.log(`🔌 [Zap] Iniciando processo de conexão para: ${instanceName}`);
+    console.log(`🧪 [Zap] Config atual | apiUrl=${this.apiUrl} | webhookUrl=${this.webhookUrl}`);
 
     await this._updateSchoolWhatsappState(schoolId, {
       instanceName,
@@ -222,12 +225,20 @@ class WhatsappService {
         response.data?.state ||
         'disconnected';
 
+      console.log(
+        `📡 [Zap] Status consultado | instance=${instanceName} | state=${state}`
+      );
+
       return {
         status: state,
         instanceName,
         raw: response.data,
       };
     } catch (error) {
+      console.warn(
+        `⚠️ [Zap] Falha ao consultar status | instance=${instanceName} | statusHttp=${error.response?.status || 'N/A'} | message=${error.message}`
+      );
+
       if (error.response?.status === 404) {
         return {
           status: 'disconnected',

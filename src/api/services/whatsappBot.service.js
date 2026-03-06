@@ -1,6 +1,8 @@
+const mongoose = require('mongoose');
 const WhatsappSession = require('../models/whatsapp-session.model');
 const Tutor = require('../models/tutor.model');
 const Student = require('../models/student.model');
+const School = require('../models/school.model');
 
 const whatsappService = require('./whatsapp.service');
 const tempAccessTokenService = require('./tempAccessToken.service');
@@ -8,8 +10,7 @@ const tempAccessTokenService = require('./tempAccessToken.service');
 class WhatsappBotService {
   constructor() {
     this.sessionTtlMinutes = 20;
-    
-    // --- CACHE ANTI-DUPLICAÇÃO ---
+
     this.recentMessages = new Map();
 
     this.globalCommands = {
@@ -21,7 +22,6 @@ class WhatsappBotService {
       handoff: ['atendimento', 'humano', 'secretaria', 'atendente', 'escola'],
     };
 
-    // Palavras que engatilham o fluxo do portal financeiro direto
     this.entryKeywords = [
       'boleto',
       'mensalidade',
@@ -46,6 +46,12 @@ class WhatsappBotService {
 
   extractDigits(value) {
     return String(value || '').replace(/\D/g, '');
+  }
+
+  maskCpf(value) {
+    const digits = this.extractDigits(value);
+    if (digits.length !== 11) return null;
+    return digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
   }
 
   isValidCpf(cpf) {
@@ -89,12 +95,7 @@ class WhatsappBotService {
     return this.globalCommands[commandName].includes(normalized);
   }
 
-  // ==============================================================================
-  // 🗣️ TEXTOS E MENSAGENS DO BOT
-  // ==============================================================================
-
   getGreeting() {
-    // Garante que o fuso horário base seja o de Brasília (UTC-3)
     const utc = new Date().getTime() + (new Date().getTimezoneOffset() * 60000);
     const brazilTime = new Date(utc + (3600000 * -3));
     const hour = brazilTime.getHours();
@@ -143,7 +144,8 @@ class WhatsappBotService {
     const lines = ['Encontrei os seguintes alunos vinculados a este CPF:', ''];
 
     options.forEach((option, index) => {
-      lines.push(`*${index + 1}* - ${option.fullName}`);
+      const relationship = option.relationship ? ` (${option.relationship})` : '';
+      lines.push(`*${index + 1}* - ${option.fullName}${relationship}`);
     });
 
     lines.push('');
@@ -158,10 +160,6 @@ class WhatsappBotService {
     const safeBase = String(baseUrl || '').replace(/\/$/, '');
     return `${safeBase}/auth/student/access-by-token?token=${encodeURIComponent(rawToken)}`;
   }
-
-  // ==============================================================================
-  // ⚙️ GERENCIAMENTO DE SESSÃO E FLUXO
-  // ==============================================================================
 
   async getOrCreateSession({ schoolId, phone }) {
     const now = new Date();
@@ -185,7 +183,7 @@ class WhatsappBotService {
         status: 'active',
         current_step: 'awaiting_main_option',
         previous_step: null,
-        attempt_count: 0, // Garante que a contagem comece do zero
+        attempt_count: 0,
         expires_at: new Date(now.getTime() + this.sessionTtlMinutes * 60 * 1000),
         last_interaction_at: now,
       });
@@ -205,8 +203,6 @@ class WhatsappBotService {
   async sendAndPersist({ schoolId, phone, message, session = null }) {
     let finalMessage = message;
 
-    // 🌟 A MÁGICA ACONTECE AQUI:
-    // Se for a primeira interação do usuário nesta sessão, injetamos a apresentação
     if (session && session.attempt_count === 1) {
       const greeting = this.getGreeting();
       const presentation = `${greeting}! 🤖 Sou o assistente virtual do software *Academy Hub*.\n\n`;
@@ -230,8 +226,6 @@ class WhatsappBotService {
     session.student_options = [];
     session.invalid_cpf_attempts = 0;
     session.invalid_selection_attempts = 0;
-    // NOTA: propositalmente não zeramos o attempt_count aqui,
-    // para evitar que o bot se apresente duas vezes na mesma conversa se o usuário usar o comando "reiniciar"
     await this.touchSession(session);
   }
 
@@ -256,41 +250,148 @@ class WhatsappBotService {
     );
   }
 
-  async resolveStudentsByCpf({ schoolId, cpf }) {
-    const tutors = await Tutor.find({
-      school_id: schoolId,
-      cpf,
-    }).select('_id fullName cpf phoneNumber telefone celular');
+  async _logSchoolContext({ schoolId, instanceName = null }) {
+    try {
+      const school = await School.findById(schoolId).select('_id name whatsapp');
+
+      if (!school) {
+        console.warn(
+          `⚠️ [BotLookup] Escola não encontrada por schoolId=${schoolId} | instanceName=${instanceName || 'N/A'}`
+        );
+        return null;
+      }
+
+      console.log(
+        `🏫 [BotLookup] Contexto da escola | schoolId=${school._id} | nome=${school.name || 'Sem nome'} | db.instanceName=${school.whatsapp?.instanceName || 'N/A'} | req.instanceName=${instanceName || 'N/A'} | zap.status=${school.whatsapp?.status || 'N/A'}`
+      );
+
+      return school;
+    } catch (error) {
+      console.error(
+        `❌ [BotLookup] Erro ao carregar contexto da escola | schoolId=${schoolId}: ${error.message}`
+      );
+      return null;
+    }
+  }
+
+  async resolveStudentsByCpf({ schoolId, cpf, instanceName = null }) {
+    const cpfDigits = this.extractDigits(cpf);
+    const cpfMasked = this.maskCpf(cpfDigits);
+
+    const cpfCandidates = [...new Set([cpf, cpfDigits, cpfMasked].filter(Boolean))];
+
+    console.log('='.repeat(90));
+    console.log(`🔎 [BotLookup] Iniciando busca por CPF do tutor`);
+    console.log(`📌 [BotLookup] schoolId=${schoolId}`);
+    console.log(`📌 [BotLookup] instanceName=${instanceName || 'N/A'}`);
+    console.log(`📌 [BotLookup] cpf.original=${cpf}`);
+    console.log(`📌 [BotLookup] cpf.digits=${cpfDigits}`);
+    console.log(`📌 [BotLookup] cpf.masked=${cpfMasked || 'N/A'}`);
+    console.log(`📌 [BotLookup] cpf.candidates=${JSON.stringify(cpfCandidates)}`);
+
+    await this._logSchoolContext({ schoolId, instanceName });
+
+    const tutorFilter = {
+      school_id: new mongoose.Types.ObjectId(String(schoolId)),
+      cpf: { $in: cpfCandidates },
+    };
+
+    console.log(`🧪 [BotLookup] Query Tutor: ${JSON.stringify(tutorFilter, null, 2)}`);
+
+    const tutors = await Tutor.find(tutorFilter)
+      .select('_id fullName cpf phoneNumber email school_id students')
+      .lean();
+
+    console.log(`👥 [BotLookup] Tutors encontrados=${tutors.length}`);
+
+    tutors.forEach((tutor, index) => {
+      console.log(
+        `👤 [BotLookup] Tutor[${index}] id=${tutor._id} | nome=${tutor.fullName} | cpf=${tutor.cpf} | school_id=${tutor.school_id} | linkedStudents=${Array.isArray(tutor.students) ? tutor.students.length : 0}`
+      );
+    });
 
     if (!tutors.length) {
+      console.warn(
+        `⚠️ [BotLookup] Nenhum tutor encontrado para o CPF informado na escola ${schoolId}`
+      );
+      console.log('='.repeat(90));
       return [];
     }
 
     const tutorIds = tutors.map((tutor) => tutor._id);
 
-    const students = await Student.find({
-      school_id: schoolId,
+    const studentFilter = {
+      school_id: new mongoose.Types.ObjectId(String(schoolId)),
       isActive: true,
       $or: [
         { financialTutorId: { $in: tutorIds } },
         { 'tutors.tutorId': { $in: tutorIds } },
       ],
-    }).select('_id fullName enrollmentNumber financialTutorId tutors');
+    };
+
+    console.log(`🧪 [BotLookup] Query Student: ${JSON.stringify(studentFilter, null, 2)}`);
+
+    const students = await Student.find(studentFilter)
+      .select('_id fullName enrollmentNumber financialTutorId financialResp tutors school_id isActive')
+      .populate({
+        path: 'financialTutorId',
+        select: '_id fullName cpf phoneNumber email school_id',
+      })
+      .populate({
+        path: 'tutors.tutorId',
+        select: '_id fullName cpf phoneNumber email school_id',
+      })
+      .lean();
+
+    console.log(`🎓 [BotLookup] Students encontrados=${students.length}`);
+
+    students.forEach((student, index) => {
+      console.log(
+        `🧒 [BotLookup] Student[${index}] id=${student._id} | nome=${student.fullName} | school_id=${student.school_id} | active=${student.isActive} | financialResp=${student.financialResp}`
+      );
+
+      if (student.financialTutorId) {
+        console.log(
+          `   💰 financialTutorId=${student.financialTutorId._id || student.financialTutorId} | nome=${student.financialTutorId.fullName || 'N/A'} | cpf=${student.financialTutorId.cpf || 'N/A'}`
+        );
+      } else {
+        console.log(`   💰 financialTutorId=N/A`);
+      }
+
+      if (Array.isArray(student.tutors) && student.tutors.length) {
+        student.tutors.forEach((link, linkIndex) => {
+          console.log(
+            `   🔗 tutors[${linkIndex}] relationship=${link.relationship || 'N/A'} | tutorId=${link.tutorId?._id || link.tutorId || 'N/A'} | tutorNome=${link.tutorId?.fullName || 'N/A'} | tutorCpf=${link.tutorId?.cpf || 'N/A'}`
+          );
+        });
+      } else {
+        console.log(`   🔗 sem vínculos em tutors[]`);
+      }
+    });
 
     const dedup = new Map();
 
     for (const student of students) {
-      const financialTutorId = student.financialTutorId
-        ? String(student.financialTutorId)
-        : null;
+      let matchedTutorId = null;
+      let matchedRelationship = null;
 
-      let matchedTutorId = financialTutorId;
+      if (
+        student.financialTutorId &&
+        tutorIds.some((id) => String(id) === String(student.financialTutorId._id || student.financialTutorId))
+      ) {
+        matchedTutorId = String(student.financialTutorId._id || student.financialTutorId);
+        matchedRelationship = 'Responsável Financeiro';
+      }
 
       if (!matchedTutorId && Array.isArray(student.tutors)) {
         const related = student.tutors.find((item) =>
-          tutorIds.some((id) => String(id) === String(item.tutorId))
+          tutorIds.some((id) => String(id) === String(item.tutorId?._id || item.tutorId))
         );
-        matchedTutorId = related ? String(related.tutorId) : null;
+
+        if (related) {
+          matchedTutorId = String(related.tutorId?._id || related.tutorId);
+          matchedRelationship = related.relationship || null;
+        }
       }
 
       dedup.set(String(student._id), {
@@ -298,12 +399,23 @@ class WhatsappBotService {
         tutor_id: matchedTutorId,
         fullName: student.fullName,
         enrollmentNumber: student.enrollmentNumber || null,
+        relationship: matchedRelationship,
       });
     }
 
-    return Array.from(dedup.values()).sort((a, b) =>
+    const options = Array.from(dedup.values()).sort((a, b) =>
       a.fullName.localeCompare(b.fullName, 'pt-BR')
     );
+
+    console.log(`✅ [BotLookup] Opções finais deduplicadas=${options.length}`);
+    options.forEach((option, index) => {
+      console.log(
+        `📄 [BotLookup] Option[${index}] student_id=${option.student_id} | tutor_id=${option.tutor_id || 'N/A'} | nome=${option.fullName} | rel=${option.relationship || 'N/A'}`
+      );
+    });
+    console.log('='.repeat(90));
+
+    return options;
   }
 
   async handleMainOption({ session, schoolId, phone, normalized }) {
@@ -345,12 +457,20 @@ class WhatsappBotService {
     });
   }
 
-  async handleCpfStep({ session, schoolId, phone, rawText }) {
+  async handleCpfStep({ session, schoolId, phone, rawText, instanceName = null }) {
     const cpf = this.extractCpf(rawText);
+
+    console.log(
+      `🧾 [BotCPF] Recebendo CPF | schoolId=${schoolId} | phone=${phone} | instanceName=${instanceName || 'N/A'} | raw="${rawText}" | extracted=${cpf || 'N/A'}`
+    );
 
     if (!cpf || !this.isValidCpf(cpf)) {
       session.invalid_cpf_attempts += 1;
       await this.touchSession(session);
+
+      console.warn(
+        `⚠️ [BotCPF] CPF inválido | schoolId=${schoolId} | phone=${phone} | tentativa=${session.invalid_cpf_attempts}`
+      );
 
       if (session.invalid_cpf_attempts >= 3) {
         return this.sendAndPersist({
@@ -371,7 +491,7 @@ class WhatsappBotService {
       });
     }
 
-    const options = await this.resolveStudentsByCpf({ schoolId, cpf });
+    const options = await this.resolveStudentsByCpf({ schoolId, cpf, instanceName });
 
     session.cpf = cpf;
     session.invalid_cpf_attempts = 0;
@@ -427,6 +547,10 @@ class WhatsappBotService {
       session.invalid_selection_attempts += 1;
       await this.touchSession(session);
 
+      console.warn(
+        `⚠️ [BotSelect] Seleção inválida | schoolId=${schoolId} | phone=${phone} | input=${normalized} | totalOptions=${options.length} | tentativa=${session.invalid_selection_attempts}`
+      );
+
       if (session.invalid_selection_attempts >= 3) {
         return this.sendAndPersist({
           schoolId,
@@ -447,6 +571,10 @@ class WhatsappBotService {
 
     const selected = options[choice - 1];
 
+    console.log(
+      `✅ [BotSelect] Aluno selecionado | schoolId=${schoolId} | phone=${phone} | choice=${choice} | studentId=${selected.student_id} | tutorId=${selected.tutor_id || 'N/A'} | nome=${selected.fullName}`
+    );
+
     session.selected_student_id = selected.student_id;
     session.selected_tutor_id = selected.tutor_id || null;
     session.invalid_selection_attempts = 0;
@@ -465,9 +593,15 @@ class WhatsappBotService {
   async generateAndSendAccess({ schoolId, phone, session, selected }) {
     const portalBaseUrl = process.env.STUDENT_PORTAL_BASE_URL;
 
+    console.log(
+      `🔐 [BotAccess] Gerando acesso | schoolId=${schoolId} | phone=${phone} | studentId=${selected.student_id} | tutorId=${selected.tutor_id || 'N/A'} | studentName=${selected.fullName}`
+    );
+
     if (!portalBaseUrl) {
       session.status = 'cancelled';
       await session.save();
+
+      console.error(`❌ [BotAccess] STUDENT_PORTAL_BASE_URL não configurada.`);
 
       return this.sendAndPersist({
         schoolId,
@@ -489,6 +623,10 @@ class WhatsappBotService {
     session.status = 'completed';
     await session.save();
 
+    console.log(
+      `✅ [BotAccess] Link gerado com sucesso | schoolId=${schoolId} | studentId=${selected.student_id}`
+    );
+
     return this.sendAndPersist({
       schoolId,
       phone,
@@ -503,13 +641,12 @@ class WhatsappBotService {
     });
   }
 
-  async handleIncomingMessage({ schoolId, phone, messageText }) {
+  async handleIncomingMessage({ schoolId, phone, messageText, instanceName = null }) {
     const rawText = String(messageText || '').trim();
     const normalized = this.normalizeText(rawText);
 
     if (!normalized) return;
 
-    // --- SISTEMA ANTI-DUPLICAÇÃO (DEBOUNCE) ---
     const dedupKey = `${schoolId}:${phone}:${normalized}`;
     const now = Date.now();
     const lastSeen = this.recentMessages.get(dedupKey);
@@ -518,24 +655,25 @@ class WhatsappBotService {
       console.log(`♻️ [Anti-Duplicação] Mensagem ignorada: ${normalized}`);
       return;
     }
-    
+
     this.recentMessages.set(dedupKey, now);
     if (this.recentMessages.size > 200) this.recentMessages.clear();
-    // ------------------------------------------
 
     const session = await this.getOrCreateSession({ schoolId, phone });
     session.last_user_message = rawText;
     session.attempt_count += 1;
     await this.touchSession(session);
 
-    // --- Tratamento de Comandos Globais ---
+    console.log(
+      `🧠 [Bot] Nova mensagem | schoolId=${schoolId} | phone=${phone} | instanceName=${instanceName || 'N/A'} | currentStep=${session.current_step} | text="${rawText}"`
+    );
+
     if (this.isGlobalCommand(normalized, 'cancel')) {
       await this.cancelSession(session);
       return this.sendAndPersist({
         schoolId,
         phone,
         message: 'Atendimento encerrado. O Academy Hub agradece o seu contato! 👋\n\nQuando precisar de algo, é só mandar um "Oi".',
-        // Propositalmente não envio a variável 'session' aqui para não correr o risco de ele se apresentar ao dar Tchau.
       });
     }
 
@@ -611,9 +749,8 @@ class WhatsappBotService {
       });
     }
 
-    // --- Fluxo Principal ---
     if (session.current_step === 'awaiting_cpf') {
-      return this.handleCpfStep({ session, schoolId, phone, rawText });
+      return this.handleCpfStep({ session, schoolId, phone, rawText, instanceName });
     }
 
     if (session.current_step === 'awaiting_student_selection') {
