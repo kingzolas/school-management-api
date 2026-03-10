@@ -6,6 +6,7 @@ const School = require('../models/school.model.js');
 const whatsappService = require('./whatsapp.service.js');
 const NotificationService = require('./notification.service.js');
 const GatewayFactory = require('../gateways/gateway.factory.js');
+const tutorFinancialScoreService = require('./tutorFinancialScore.service.js');
 const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const https = require('https');
@@ -118,10 +119,6 @@ class InvoiceService {
         boleto_url: !!result?.boleto_url
       });
 
-      // =======================================================================
-      // [CORREÇÃO CRÍTICA]: Prioriza a Linha Digitável (47 dígitos) ao invés do 
-      // Código de Barras (44 dígitos). O Frontend e os Bancos precisam da linha digitável.
-      // =======================================================================
       const bestBarcode = result.boleto_digitable || result.digitable_line || result.digitable || result.boleto_barcode;
 
       const newInvoice = new Invoice({
@@ -136,7 +133,7 @@ class InvoiceService {
         gateway: result.gateway,
         external_id: result.external_id,
         boleto_url: result.boleto_url,
-        boleto_barcode: bestBarcode, // Salva a Linha Digitável correta aqui!
+        boleto_barcode: bestBarcode,
         pix_code: result.pix_code,
         pix_qr_base64: result.pix_qr_base64,
         mp_payment_id: result.gateway === 'mercadopago' ? result.external_id : undefined,
@@ -163,6 +160,19 @@ class InvoiceService {
           }
         } catch (queueError) {
           console.error('⚠️ [InvoiceService] Erro ao tentar enfileirar (não bloqueante):', queueError.message);
+        }
+      }
+
+      // Recalcula score apenas se essa cobrança já nasceu vencida ou vencendo hoje.
+      if (linkedTutorId) {
+        const due = new Date(dueDate);
+        const now = new Date();
+        if (!Number.isNaN(due.getTime()) && due.getTime() <= now.getTime()) {
+          try {
+            await tutorFinancialScoreService.calculateTutorScore(linkedTutorId, schoolId);
+          } catch (scoreError) {
+            console.error('⚠️ [InvoiceService] Erro ao recalcular score após createInvoice (não bloqueante):', scoreError.message);
+          }
         }
       }
 
@@ -237,6 +247,15 @@ class InvoiceService {
 
     invoice.status = 'canceled';
     await invoice.save();
+
+    if (invoice.tutor) {
+      try {
+        await tutorFinancialScoreService.calculateTutorScore(invoice.tutor, schoolId);
+      } catch (scoreError) {
+        console.error('⚠️ [InvoiceService] Erro ao recalcular score após cancelInvoice (não bloqueante):', scoreError.message);
+      }
+    }
+
     return invoice;
   }
 
@@ -328,6 +347,14 @@ class InvoiceService {
       });
 
       wasUpdated = true;
+
+      if (invoice.tutor) {
+        try {
+          await tutorFinancialScoreService.calculateTutorScore(invoice.tutor, invoice.school_id);
+        } catch (scoreError) {
+          console.error('⚠️ [InvoiceService] Erro ao recalcular score após webhook (não bloqueante):', scoreError.message);
+        }
+      }
     } else {
       console.log(`🟡 [handlePaymentWebhook ${hookRunId}] Nenhuma alteração necessária`, {
         invoiceId: String(invoice._id),
@@ -414,6 +441,8 @@ class InvoiceService {
       mercadopago: mpPendings.length
     });
 
+    const tutorsToRecalculate = new Set();
+
     // --- CORA BULK ---
     let coraGateway = null;
     let bulkPaidIdsStr = [];
@@ -471,6 +500,13 @@ class InvoiceService {
           });
 
           if (bulkPaidIdsStr.length > 0) {
+            const affectedInvoices = await Invoice.find({
+              school_id: schoolId,
+              gateway: 'cora',
+              status: { $in: ['pending', 'overdue'] },
+              external_id: { $in: bulkPaidIdsStr }
+            }).select('_id tutor');
+
             const result = await Invoice.updateMany(
               {
                 school_id: schoolId,
@@ -488,7 +524,13 @@ class InvoiceService {
               modifiedCount: result.modifiedCount
             });
 
-            if (result.modifiedCount > 0) stats.updatedCount += result.modifiedCount;
+            if (result.modifiedCount > 0) {
+              stats.updatedCount += result.modifiedCount;
+
+              for (const inv of affectedInvoices) {
+                if (inv.tutor) tutorsToRecalculate.add(String(inv.tutor));
+              }
+            }
           }
         }
       }
@@ -524,7 +566,10 @@ class InvoiceService {
           const paidAt = res.data?.date_approved || res.data?.dateApproved || null;
 
           const result = await this.handlePaymentWebhook(inv.external_id, 'MP-SYNC', status, paidAt);
-          if (result.updated) stats.updatedCount++;
+          if (result.updated) {
+            stats.updatedCount++;
+            if (result.invoice?.tutor) tutorsToRecalculate.add(String(result.invoice.tutor));
+          }
           return;
         }
 
@@ -540,7 +585,10 @@ class InvoiceService {
 
           if (info?.status) {
             const result = await this.handlePaymentWebhook(inv.external_id, 'CORA-SYNC', info.status, info.paidAt);
-            if (result.updated) stats.updatedCount++;
+            if (result.updated) {
+              stats.updatedCount++;
+              if (result.invoice?.tutor) tutorsToRecalculate.add(String(result.invoice.tutor));
+            }
           }
 
           return;
@@ -554,6 +602,14 @@ class InvoiceService {
         });
       }
     }));
+
+    if (tutorsToRecalculate.size > 0) {
+      try {
+        await tutorFinancialScoreService.recalculateTutorsByIds([...tutorsToRecalculate], schoolId);
+      } catch (scoreError) {
+        console.error(`⚠️ [${syncRunId}] erro ao recalcular scores após sync:`, scoreError.message);
+      }
+    }
 
     console.log(`✅ [${syncRunId}] Sync finalizado`, {
       totalChecked: stats.totalChecked,
@@ -575,7 +631,7 @@ class InvoiceService {
     return Invoice.find(query)
       .sort({ dueDate: -1 })
       .populate('student', 'fullName')
-      .populate('tutor', 'fullName');
+      .populate('tutor', 'fullName financialScore');
   }
 
   async getInvoiceById(invoiceId, schoolId) {
@@ -587,7 +643,7 @@ class InvoiceService {
 
     return Invoice.findOne({ _id: invoiceId, school_id: schoolId })
       .populate('student', 'fullName profilePicture')
-      .populate('tutor', 'fullName');
+      .populate('tutor', 'fullName financialScore');
   }
 
   async getInvoicesByStudent(studentId, schoolId) {
@@ -599,7 +655,7 @@ class InvoiceService {
 
     return Invoice.find({ student: studentId, school_id: schoolId })
       .sort({ dueDate: -1 })
-      .populate('tutor', 'fullName');
+      .populate('tutor', 'fullName financialScore');
   }
 
   async findOverdue(schoolId) {
@@ -610,8 +666,9 @@ class InvoiceService {
       school_id: schoolId,
       dueDate: { $lt: today },
       status: { $nin: ['paid', 'canceled'] }
-    }).select('description value dueDate student')
+    }).select('description value dueDate student tutor')
       .populate('student', 'fullName')
+      .populate('tutor', 'fullName financialScore')
       .lean();
   }
 
@@ -625,7 +682,7 @@ class InvoiceService {
       school_id: schoolId,
       external_id: String(externalId)
     })
-      .select('_id status paidAt dueDate gateway external_id createdAt updatedAt')
+      .select('_id status paidAt dueDate gateway external_id createdAt updatedAt tutor')
       .lean();
 
     const selectString = [
