@@ -4,14 +4,18 @@ class SchoolYearController {
     
     async create(req, res) {
         try {
-            const schoolId = req.user.school_id; // Pega do Token
+            const schoolId = req.user.school_id; 
             const data = req.body;
+            
+            console.log(`[SchoolYearController] Requisição de criação recebida para escola: ${schoolId}`);
             
             const schoolYear = await schoolYearService.create(data, schoolId);
             res.status(201).json(schoolYear);
         } catch (error) {
-            // Retorna 409 Conflict se já existir
-            const status = error.message.includes('já está cadastrado') ? 409 : 400;
+            console.error(`[SchoolYearController] Erro no Create: ${error.message}`);
+            // Retorna 409 Conflict se for erro de duplicidade
+            const isConflict = error.message.includes('já está cadastrado') || error.message.includes('duplicidade');
+            const status = isConflict ? 409 : 400;
             res.status(status).json({ message: error.message });
         }
     }

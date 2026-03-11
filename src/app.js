@@ -44,6 +44,7 @@ const notificationRoutes = require('./api/routes/notification.routes.js');
 const invoiceCompensationRoutes = require('./api/routes/invoiceCompensation.routes.js');
 
 const studentPortalAccessRoutes = require('./api/routes/studentPortalAccess.routes');
+const examRoutes = require('./api/routes/exam.routes.js');
 
 const app = express();
 
@@ -112,5 +113,7 @@ app.use('/api/releases', releaseRoutes);
 app.use('/api/invoice-compensations', invoiceCompensationRoutes);
 
 app.use('/api/auth/student', studentPortalAccessRoutes);
+
+app.use('/api/exams', examRoutes);
 
 module.exports = app;
