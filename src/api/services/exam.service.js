@@ -7,6 +7,28 @@ const ClassGrade = require('../models/class.model'); // <-- ADICIONADO
 const crypto = require('crypto');
 
 class ExamService {
+
+    async verifyExamSheet(qrCodeUuid, schoolId) {
+        console.log(`--> [ExamService] Verificando QR Code: ${qrCodeUuid}`);
+        
+        // Acha a folha e popula o aluno
+        const sheet = await ExamSheet.findOne({ qr_code_uuid: qrCodeUuid, school_id: schoolId })
+            .populate('student_id', 'fullName name');
+            
+        if (!sheet) throw new Error('QR Code inválido ou folha não encontrada.');
+
+        // Acha a prova para pegar matéria e turma
+        const exam = await Exam.findById(sheet.exam_id)
+            .populate('class_id', 'name grade')
+            .populate('subject_id', 'name');
+
+        return {
+            studentName: sheet.student_id.fullName || sheet.student_id.name,
+            examTitle: exam.title,
+            subjectName: exam.subject_id.name,
+            className: exam.class_id.name || exam.class_id.grade,
+        };
+    }
     async createExam(data, schoolId) {
         console.log("--> [ExamService] Construindo o Model para salvar com os dados:", data);
         

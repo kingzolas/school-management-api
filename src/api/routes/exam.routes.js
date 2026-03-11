@@ -17,4 +17,6 @@ router.get('/:id', examController.getById);
 router.post('/:id/generate-sheets', examController.generateSheets);
 router.post('/scan', examController.scanSheet);
 
+router.get('/exams/sheet/:uuid/verify', verifyToken, examController.verifySheet);
+
 module.exports = router;

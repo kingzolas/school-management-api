@@ -81,6 +81,18 @@ class ExamController {
             res.status(400).json({ message: error.message });
         }
     }
+
+    async verifySheet(req, res) {
+        try {
+            const schoolId = req.user.school_id;
+            const { uuid } = req.params;
+            const info = await examService.verifyExamSheet(uuid, schoolId);
+            res.status(200).json(info);
+        } catch (error) {
+            console.error('❌ ERRO AO VERIFICAR QR CODE:', error.message);
+            res.status(400).json({ message: error.message });
+        }
+    }
 }
 
 module.exports = new ExamController();
