@@ -93,6 +93,51 @@ class ExamController {
             res.status(400).json({ message: error.message });
         }
     }
+
+    async processOMRImage(req, res) {
+        try {
+            console.log('\n📸 [POST] /exams/process-omr - ANALISANDO GABARITO PELA IA');
+            const { imageBase64 } = req.body;
+
+            if (!imageBase64) throw new Error("Imagem não enviada.");
+
+            // Limpa o cabeçalho do base64 se vier do Flutter Web
+            const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+            
+            // Cria um arquivo temporário
+            const tempFileName = `temp_${crypto.randomUUID()}.jpg`;
+            const tempFilePath = path.join(__dirname, '../../', tempFileName); // Ajuste o path conforme sua pasta raiz
+            
+            fs.writeFileSync(tempFilePath, base64Data, { encoding: 'base64' });
+
+            // Chama o script Python
+            const scriptPath = path.join(__dirname, '../scripts/process_omr.py'); // Ajuste o path para a pasta scripts
+            
+            exec(`python "${scriptPath}" "${tempFilePath}"`, (error, stdout, stderr) => {
+                // Sempre apaga a imagem pra não lotar o servidor
+                if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+
+                if (error) {
+                    console.error("❌ ERRO NO PYTHON:", stderr || error.message);
+                    return res.status(200).json({ success: false, message: "IA falhou ao ler a imagem." });
+                }
+
+                try {
+                    // O Python deu um print num JSON, o Node.js lê isso
+                    const result = JSON.parse(stdout);
+                    console.log("✅ IA Retornou:", result);
+                    res.status(200).json(result);
+                } catch(e) {
+                    console.error("❌ Falha ao dar parse no retorno da IA:", stdout);
+                    res.status(200).json({ success: false, message: "Retorno inválido da IA" });
+                }
+            });
+
+        } catch (error) {
+            console.error('❌ ERRO NO ENDPOINT DE IMAGEM:', error.message);
+            res.status(400).json({ success: false, message: error.message });
+        }
+    }
 }
 
 module.exports = new ExamController();

@@ -2,8 +2,9 @@ const Exam = require('../models/exam.model');
 const ExamSheet = require('../models/exam-sheet.model');
 const Student = require('../models/student.model');
 const Enrollment = require('../models/enrollment.model');
-const Evaluation = require('../models/evaluation.model'); // <-- ADICIONADO
-const ClassGrade = require('../models/class.model'); // <-- ADICIONADO
+const Evaluation = require('../models/evaluation.model'); 
+// 👇 CORREÇÃO CRÍTICA AQUI: Aponte para o arquivo de NOTAS, não o de Turmas!
+const ClassGrade = require('../models/grade.model'); 
 const crypto = require('crypto');
 
 class ExamService {
@@ -11,13 +12,11 @@ class ExamService {
     async verifyExamSheet(qrCodeUuid, schoolId) {
         console.log(`--> [ExamService] Verificando QR Code: ${qrCodeUuid}`);
         
-        // Acha a folha e popula o aluno
         const sheet = await ExamSheet.findOne({ qr_code_uuid: qrCodeUuid, school_id: schoolId })
             .populate('student_id', 'fullName name');
             
         if (!sheet) throw new Error('QR Code inválido ou folha não encontrada.');
 
-        // Acha a prova para pegar matéria e turma
         const exam = await Exam.findById(sheet.exam_id)
             .populate('class_id', 'name grade')
             .populate('subject_id', 'name');
@@ -29,17 +28,16 @@ class ExamService {
             className: exam.class_id.name || exam.class_id.grade,
         };
     }
+
     async createExam(data, schoolId) {
         console.log("--> [ExamService] Construindo o Model para salvar com os dados:", data);
         
-        // 1. Salva a Prova Original (A "matriz" do PDF)
         const exam = new Exam({
             ...data,
             school_id: schoolId
         });
         const savedExam = await exam.save();
 
-        // 2. CRIA A PONTE COM O DIÁRIO: Gera uma coluna de nota no Gradebook automaticamente
         try {
             console.log("--> [ExamService] Criando Evaluation correspondente no Diário...");
             const evaluation = new Evaluation({
@@ -47,22 +45,19 @@ class ExamService {
                 class_id: savedExam.class_id,
                 subject_id: savedExam.subject_id,
                 title: savedExam.title,
-                type: 'EXAM', // Marca como prova
+                type: 'EXAM', 
                 date: savedExam.applicationDate,
                 maxScore: savedExam.totalValue,
-                // Opcional: Você pode salvar o id da prova original aqui se quiser ligar as duas futuramente
             });
             const savedEval = await evaluation.save();
             
-            // Salva o ID da Evaluation na prova, para usarmos na hora de dar a nota!
-            savedExam.settings = savedExam.settings || {}; // Garante que o objeto existe
-            savedExam.settings.evaluationId = savedEval._id; // <-- Pulo do gato
+            savedExam.settings = savedExam.settings || {}; 
+            savedExam.settings.evaluationId = savedEval._id; 
             await savedExam.save();
 
             console.log("--> [ExamService] Evaluation criada com sucesso:", savedEval._id);
         } catch (evalErr) {
             console.error("❌ ERRO AO CRIAR EVALUATION:", evalErr.message);
-            // Decide se quer dar throw ou apenas seguir
         }
 
         return savedExam;
@@ -85,9 +80,6 @@ class ExamService {
         return exam;
     }
 
-    /**
-     * Gera as Folhas de Prova (ExamSheets).
-     */
     async generateExamSheets(examId, schoolId, specificStudentIds = []) {
         console.log(`--> [ExamService] Gerando folhas para a prova ${examId}...`);
         
@@ -174,28 +166,21 @@ class ExamService {
         };
     }
 
-    /**
-     * Endpoint chamado pelo celular do Professor ao escanear o QR Code
-     */
     async scanExamSheet(qrCodeUuid, grade, schoolId) {
         console.log(`--> [ExamService] Computando nota ${grade} para o QR Code ${qrCodeUuid}`);
         
         const sheet = await ExamSheet.findOne({ qr_code_uuid: qrCodeUuid, school_id: schoolId });
         if (!sheet) throw new Error('QR Code inválido ou folha não encontrada.');
 
-        // 1. Atualiza o status da folha
         sheet.grade = grade;
         sheet.status = 'SCANNED';
         await sheet.save();
 
-        // 2. Busca a Prova para achar a Evaluation correspondente
         const exam = await Exam.findById(sheet.exam_id);
         
-        // Verifica se a Prova tem a Evaluation salva
         if (exam && exam.settings && exam.settings.evaluationId) {
             console.log("--> [ExamService] Lançando nota no Diário Oficial...");
             
-            // Acha o Enrollment desse aluno nessa turma
             const enrollment = await Enrollment.findOne({
                 student: sheet.student_id,
                 class: exam.class_id,
@@ -203,7 +188,7 @@ class ExamService {
             });
 
             if (enrollment) {
-                // Tenta atualizar ou criar a nota (upsert)
+                // 👇 Aqui ele salva a nota corretamente na tabela de notas!
                 await ClassGrade.findOneAndUpdate(
                     {
                         school_id: schoolId,
@@ -216,7 +201,7 @@ class ExamService {
                         value: grade,
                         dateRecorded: new Date()
                     },
-                    { upsert: true, new: true } // Se não existir nota, cria uma nova
+                    { upsert: true, new: true } 
                 );
                 console.log("✅ Nota lançada no Diário com sucesso!");
             } else {

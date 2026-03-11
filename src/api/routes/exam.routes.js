@@ -18,5 +18,5 @@ router.post('/:id/generate-sheets', examController.generateSheets);
 router.post('/scan', examController.scanSheet);
 
 router.get('/exams/sheet/:uuid/verify', verifyToken, examController.verifySheet);
-
+router.post('/exams/process-omr', verifyToken, examController.processOMRImage);
 module.exports = router;
