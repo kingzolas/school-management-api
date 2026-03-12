@@ -99,6 +99,19 @@ class ExamController {
         }
     }
 
+    // NOVA FUNÇÃO: Controller para a rota de listar folhas
+    async getSheetsByExam(req, res) {
+        try {
+            const schoolId = req.user.school_id;
+            const examId = req.params.id; // Pega o ID da URL
+            const result = await examService.getExamSheetsByExamId(examId, schoolId);
+            res.status(200).json(result);
+        } catch (error) {
+            console.error('❌ ERRO AO BUSCAR ALUNOS DA PROVA:', error);
+            res.status(404).json({ message: error.message });
+        }
+    }
+
     async processOMRImage(req, res) {
         try {
             console.log('\n📸 [POST] /exams/process-omr - ANALISANDO GABARITO PELA IA');

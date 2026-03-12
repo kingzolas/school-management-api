@@ -63,6 +63,40 @@ class ExamService {
         return savedExam;
     }
 
+    // NOVA FUNÇÃO: Busca todas as folhas de uma prova específica para o lançamento manual
+    async getExamSheetsByExamId(examId, schoolId) {
+        console.log(`--> [ExamService] Buscando alunos da prova ${examId}...`);
+        
+        // Verifica se a prova existe e pertence a esta escola
+        const exam = await Exam.findOne({ _id: examId, school_id: schoolId });
+        if (!exam) throw new Error('Prova não encontrada.');
+
+        // Busca todas as folhas geradas para esta prova
+        const sheets = await ExamSheet.find({ exam_id: examId, school_id: schoolId })
+            .populate('student_id', 'name fullName registrationNumber') // Traz os dados do aluno
+            .sort({ 'student_id.name': 1 }); // Ordena por ordem alfabética
+
+        // Formata o retorno para facilitar a vida do Flutter
+        const formattedSheets = sheets.map(sheet => ({
+            id: sheet._id,
+            qrCodeUuid: sheet.qr_code_uuid,
+            studentId: sheet.student_id._id,
+            studentName: sheet.student_id.fullName || sheet.student_id.name,
+            registration: sheet.student_id.registrationNumber,
+            status: sheet.status, // 'PENDING' ou 'SCANNED'
+            grade: sheet.grade,   // Nota (se já tiver)
+            pdfGeneratedAt: sheet.pdf_generated_at
+        }));
+
+        return {
+            examTitle: exam.title,
+            totalSheets: formattedSheets.length,
+            scannedCount: formattedSheets.filter(s => s.status === 'SCANNED').length,
+            pendingCount: formattedSheets.filter(s => s.status !== 'SCANNED').length,
+            sheets: formattedSheets
+        };
+    }
+
     async getExams(query, schoolId) {
         return await Exam.find({ ...query, school_id: schoolId })
             .populate('class_id', 'name grade') 

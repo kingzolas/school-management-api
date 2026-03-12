@@ -19,4 +19,7 @@ router.post('/scan', examController.scanSheet);
 
 router.get('/exams/sheet/:uuid/verify', verifyToken, examController.verifySheet);
 router.post('/exams/process-omr', verifyToken, examController.processOMRImage);
+
+// Busca todos os alunos (folhas) de uma prova específica para correção manual
+router.get('/:id/sheets', examController.getSheetsByExam);
 module.exports = router;
