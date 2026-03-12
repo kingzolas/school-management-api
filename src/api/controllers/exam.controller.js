@@ -1,4 +1,9 @@
 const examService = require('../services/exam.service'); // Ajuste o caminho se necessário
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
+const crypto = require('crypto');
+const os = require('os');
 
 class ExamController {
     async create(req, res) {
@@ -104,14 +109,14 @@ class ExamController {
             // Limpa o cabeçalho do base64 se vier do Flutter Web
             const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
             
-            // Cria um arquivo temporário
+            // Cria um arquivo temporário na pasta segura do sistema operacional
             const tempFileName = `temp_${crypto.randomUUID()}.jpg`;
-            const tempFilePath = path.join(__dirname, '../../', tempFileName); // Ajuste o path conforme sua pasta raiz
+            const tempFilePath = path.join(os.tmpdir(), tempFileName); 
             
             fs.writeFileSync(tempFilePath, base64Data, { encoding: 'base64' });
 
-            // Chama o script Python
-            const scriptPath = path.join(__dirname, '../scripts/process_omr.py'); // Ajuste o path para a pasta scripts
+            // 👇 CAMINHO CORRIGIDO AQUI! Voltando duas pastas (api e src) para acessar scripts
+            const scriptPath = path.join(__dirname, '../../scripts/process_omr.py'); 
             
             exec(`python "${scriptPath}" "${tempFilePath}"`, (error, stdout, stderr) => {
                 // Sempre apaga a imagem pra não lotar o servidor

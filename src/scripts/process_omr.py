@@ -2,115 +2,145 @@ import sys
 import cv2
 import numpy as np
 import json
+import traceback
 
 def process_image(image_path):
     try:
-        # LOG INICIAL PARA VER SE O PYTHON LIGOU
-        sys.stderr.write(f"[PYTHON INFO] Tentando carregar imagem: {image_path}\n")
-
-        # 1. Carrega a imagem da prova
+        sys.stderr.write(f"[PYTHON INFO] Lendo com Padrão Estrito 11/10: {image_path}\n")
+        
         image = cv2.imread(image_path)
         if image is None:
-            raise Exception("Não foi possível ler a imagem do disco.")
+            raise Exception("Não foi possível ler a imagem.")
         
-        sys.stderr.write(f"[PYTHON INFO] Imagem carregada com sucesso. Resolução original: {image.shape}\n")
-
-        # Redimensiona mantendo a proporção para não amassar as bolinhas
         h, w = image.shape[:2]
-        new_w = 1000
+        new_w = 1200 
         new_h = int((new_w / w) * h)
         image = cv2.resize(image, (new_w, new_h))
-
-        sys.stderr.write(f"[PYTHON INFO] Imagem redimensionada para: {image.shape}\n")
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        # Binarização adaptativa
-        thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 5)
+        # OTSU é perfeito para encontrar a diferença entre o papel branco e a tinta preta
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-        # Procura contornos
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-        sys.stderr.write(f"[PYTHON INFO] Total de contornos encontrados na imagem: {len(contours)}\n")
-
-        bubbles = []
+        candidates = []
         for c in contours:
             (x, y, w_box, h_box) = cv2.boundingRect(c)
             ar = w_box / float(h_box)
             
-            # Regras para achar uma bolinha (Mínimo 10px, máximo 60px, proporção quadrada)
-            if 0.7 <= ar <= 1.3 and 10 <= w_box <= 60 and 10 <= h_box <= 60:
-                bubbles.append((x, y, w_box, h_box, c))
+            # Filtro de proporção (deve ser aproximadamente quadrado para ser um círculo)
+            if 0.8 <= ar <= 1.2 and w_box >= 15:
+                area = cv2.contourArea(c)
+                perimeter = cv2.arcLength(c, True)
+                if perimeter == 0: continue
+                
+                circularity = 4 * np.pi * (area / (perimeter * perimeter))
+                
+                # A MATEMÁTICA: Um quadrado perfeito tem circularidade ~0.785. 
+                # Usando 0.82 garantimos que NENHUM quadrado âncora será lido como bolinha!
+                if circularity > 0.82:
+                    candidates.append({
+                        'cx': x + w_box // 2, 'cy': y + h_box // 2,
+                        'w': w_box, 'h': h_box, 'c': c, 'x': x, 'y': y
+                    })
 
-        sys.stderr.write(f"[PYTHON INFO] Contornos que parecem bolinhas (filtrados): {len(bubbles)}\n")
+        # Remove contornos duplicados (às vezes o OpenCV pega a linha de dentro e a de fora)
+        unique_bubbles = []
+        for cand in candidates:
+            is_dup = False
+            for ub in unique_bubbles:
+                if abs(cand['cx'] - ub['cx']) < 15 and abs(cand['cy'] - ub['cy']) < 15:
+                    is_dup = True
+                    break
+            if not is_dup:
+                unique_bubbles.append(cand)
 
-        if len(bubbles) < 15:
-            # Se achou pouco, aborta e manda zerado pro professor digitar
-            sys.stderr.write("[PYTHON AVISO] Poucas bolinhas encontradas. Abortando IA.\n")
-            print(json.dumps({"success": False, "message": f"Apenas {len(bubbles)} bolinhas encontradas."}))
+        sys.stderr.write(f"[PYTHON INFO] Círculos perfeitos encontrados: {len(unique_bubbles)}\n")
+
+        # Agrupa os círculos horizontalmente (Eixo Y)
+        unique_bubbles = sorted(unique_bubbles, key=lambda b: b['cy'])
+        
+        rows = []
+        current_row = []
+        for b in unique_bubbles:
+            if not current_row:
+                current_row.append(b)
+            else:
+                # Tolerância de alinhamento vertical (metade do tamanho de uma bolinha)
+                if abs(b['cy'] - current_row[0]['cy']) < (b['h'] * 0.5):
+                    current_row.append(b)
+                else:
+                    rows.append(current_row)
+                    current_row = [b]
+        if current_row:
+            rows.append(current_row)
+
+        # Filtra apenas as linhas que contêm pelo menos 10 bolinhas
+        valid_rows = [r for r in rows if len(r) >= 10]
+        valid_rows = sorted(valid_rows, key=lambda r: r[0]['cy']) # Ordena de cima para baixo
+
+        if len(valid_rows) < 2:
+            sys.stderr.write(f"[PYTHON ERROR] Não encontrou as 2 linhas. Linhas achadas: {[len(r) for r in rows]}\n")
+            print(json.dumps({"success": False, "message": "Não foi possível identificar as linhas de notas (11 e 10 bolinhas)."}))
             return
 
-        bubbles = sorted(bubbles, key=lambda b: b[1])
+        # A MÁGICA DO SEU PADRÃO: 
+        # Como existe texto do lado esquerdo ("Inteiro:", "Decimal:"), pegamos os elementos contando da direita para a esquerda.
+        # Pegamos exatamente os últimos 11 da linha de cima e os últimos 10 da linha de baixo.
+        top_row = sorted(valid_rows[0], key=lambda b: b['cx'])[-11:]
+        bottom_row = sorted(valid_rows[1], key=lambda b: b['cx'])[-10:]
 
-        mid_y = sum([b[1] for b in bubbles]) / len(bubbles)
-        top_row = [b for b in bubbles if b[1] < mid_y]
-        bottom_row = [b for b in bubbles if b[1] >= mid_y]
+        if len(top_row) != 11 or len(bottom_row) != 10:
+            print(json.dumps({"success": False, "message": "As bolinhas não puderam ser isoladas corretamente."}))
+            return
 
-        sys.stderr.write(f"[PYTHON INFO] Bolinhas separadas: Linha de Cima = {len(top_row)}, Linha de Baixo = {len(bottom_row)}\n")
-
-        top_row = sorted(top_row, key=lambda b: b[0])
-        bottom_row = sorted(bottom_row, key=lambda b: b[0])
-
-        def get_filled_index(row, row_name):
-            if not row: return -1
-            max_pixels = -1
-            filled_idx = -1
+        def get_darkest_bubble(row, row_name):
+            min_intensity = 255 # 255 é branco absoluto
+            filled_index = 0
             
-            sys.stderr.write(f"[PYTHON INFO] Analisando pixels da linha: {row_name}\n")
-            for i, (x, y, w_box, h_box, c) in enumerate(row):
-                mask = np.zeros(thresh.shape, dtype="uint8")
-                cv2.drawContours(mask, [c], -1, 255, -1)
+            for index, b in enumerate(row):
+                mask = np.zeros(gray.shape, dtype="uint8")
                 
-                mask = cv2.bitwise_and(thresh, thresh, mask=mask)
-                total = cv2.countNonZero(mask)
+                # Olha apenas para o miolo da bolinha (35% do raio) para ignorar o contorno impresso no papel
+                radius = int(min(b['w'], b['h']) * 0.35)
+                cv2.circle(mask, (b['cx'], b['cy']), radius, 255, -1)
                 
-                # Descomente a linha abaixo se quiser ver a contagem de pixel de CADA bolinha
-                # sys.stderr.write(f"  -> Bolinha {i} tem {total} pixels pintados\n")
+                # Calcula a média de cor da imagem ORIGINAL dentro desse miolo
+                mean_intensity = cv2.mean(gray, mask=mask)[0]
+                
+                # Se quiser ver a "nota" de escuridão de cada bolinha, tire o '#' da linha abaixo
+                # sys.stderr.write(f" -> {row_name} [{index}]: Nível de Cinza = {mean_intensity:.1f}\n")
 
-                if total > max_pixels:
-                    max_pixels = total
-                    filled_idx = i
+                if mean_intensity < min_intensity:
+                    min_intensity = mean_intensity
+                    filled_index = index
                     
-            sys.stderr.write(f"[PYTHON RESULTADO] A bolinha mais pintada da {row_name} foi o índice {filled_idx} (com {max_pixels} pixels).\n")
-            return filled_idx
+            sys.stderr.write(f"[PYTHON RESULTADO] {row_name} - Bolinha mais escura: Índice {filled_index}\n")
+            return filled_index
 
-        inteiro_val = get_filled_index(top_row, "Linha de Inteiros")
-        decimal_val = get_filled_index(bottom_row, "Linha de Decimais")
-
-        if inteiro_val == -1: inteiro_val = 0
-        if decimal_val == -1: decimal_val = 0
-        if inteiro_val > 10: inteiro_val = 10
-        if decimal_val > 9: decimal_val = 9
+        inteiro_val = get_darkest_bubble(top_row, "Inteiros")
+        decimal_val = get_darkest_bubble(bottom_row, "Decimais")
 
         final_grade = float(f"{inteiro_val}.{decimal_val}")
 
-        sys.stderr.write(f"[PYTHON SUCESSO] Nota final calculada: {final_grade}\n")
+        sys.stderr.write(f"[PYTHON SUCESSO] Nota calculada: {final_grade}\n")
 
         print(json.dumps({
             "success": True, 
             "inteiro": inteiro_val, 
             "decimal": decimal_val, 
             "grade": final_grade,
-            "debug": f"Lidas: Cima={len(top_row)}, Baixo={len(bottom_row)}"
+            "debug": f"Lidas perfeitamente: Cima={len(top_row)}, Baixo={len(bottom_row)}"
         }))
 
     except Exception as e:
-        sys.stderr.write(f"[PYTHON FATAL ERROR] {str(e)}\n")
+        sys.stderr.write(f"[PYTHON FATAL ERROR] {str(e)}\n{traceback.format_exc()}\n")
         print(json.dumps({"success": False, "error": str(e)}))
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         process_image(sys.argv[1])
     else:
-        print(json.dumps({"success": False, "error": "Caminho da imagem não fornecido"}))
+        print(json.dumps({"success": False, "error": "Imagem não fornecida"}))
