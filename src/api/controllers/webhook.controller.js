@@ -27,19 +27,37 @@ class WebhookController {
   }
 
   _extractMessageText(data = {}) {
+    let msg = data?.message || {};
+
+    // 🌟 CORREÇÃO AQUI: Desempacotar Mensagens Temporárias e ViewOnce.
+    // Pais novos costumam cair na regra de "Mensagens Temporárias" padrão, 
+    // o que esconde o texto verdadeiro dentro de wrappers.
+    while (
+      msg.ephemeralMessage?.message ||
+      msg.viewOnceMessage?.message ||
+      msg.viewOnceMessageV2?.message ||
+      msg.documentWithCaptionMessage?.message
+    ) {
+      msg =
+        msg.ephemeralMessage?.message ||
+        msg.viewOnceMessage?.message ||
+        msg.viewOnceMessageV2?.message ||
+        msg.documentWithCaptionMessage?.message;
+    }
+
     return this._firstNonEmpty([
-      data?.message?.conversation,
-      data?.message?.extendedTextMessage?.text,
-      data?.message?.imageMessage?.caption,
-      data?.message?.videoMessage?.caption,
-      data?.message?.documentMessage?.caption,
-      data?.message?.buttonsResponseMessage?.selectedButtonId,
-      data?.message?.buttonsResponseMessage?.selectedDisplayText,
-      data?.message?.listResponseMessage?.title,
-      data?.message?.listResponseMessage?.singleSelectReply?.selectedRowId,
-      data?.message?.templateButtonReplyMessage?.selectedId,
-      data?.message?.templateButtonReplyMessage?.selectedDisplayText,
-      data?.message?.interactiveResponseMessage?.body?.text,
+      msg?.conversation,
+      msg?.extendedTextMessage?.text,
+      msg?.imageMessage?.caption,
+      msg?.videoMessage?.caption,
+      msg?.documentMessage?.caption,
+      msg?.buttonsResponseMessage?.selectedButtonId,
+      msg?.buttonsResponseMessage?.selectedDisplayText,
+      msg?.listResponseMessage?.title,
+      msg?.listResponseMessage?.singleSelectReply?.selectedRowId,
+      msg?.templateButtonReplyMessage?.selectedId,
+      msg?.templateButtonReplyMessage?.selectedDisplayText,
+      msg?.interactiveResponseMessage?.body?.text,
       data?.text,
       data?.body,
       data?.content,
@@ -62,9 +80,6 @@ class WebhookController {
     ]);
   }
 
-  // ======================================================================
-  // 🌟 CORREÇÃO DO ERRO 400 (@lid) APLICADA AQUI
-  // ======================================================================
   _extractPhone(remoteJid = '') {
     const jid = String(remoteJid || '');
     
@@ -73,8 +88,10 @@ class WebhookController {
       return jid;
     }
     
-    // Se for um número comum, removemos o sufixo e mantemos só os números
-    return jid.replace(/@.*/, '').replace(/\D/g, '');
+    // 🌟 CORREÇÃO AQUI: Isolar o número da porta/dispositivo secundário antes de limpar as letras.
+    // Exemplo: 559499999999:2@s.whatsapp.net vira apenas 559499999999
+    const cleanJid = jid.split('@')[0].split(':')[0];
+    return cleanJid.replace(/\D/g, '');
   }
 
   async _resolveSchoolByInstance(resolvedInstanceName, hookRunId) {
@@ -198,15 +215,11 @@ class WebhookController {
         return;
       }
 
-      // ==========================================================
-      // 🌟 NOVA FUNCIONALIDADE: "DESPERTADOR" DO BOT (NÃO LIDO)
-      // ==========================================================
+      // --- CHATS UPDATE (DESPERTADOR BOT) ---
       if (evtNormalizado === 'chats.update') {
-        // A Evolution pode enviar a data como um array de atualizações ou um objeto único
         const updates = Array.isArray(data) ? data : [data];
         
         for (const update of updates) {
-          // Se unreadCount > 0, o atendente marcou a conversa como não lida
           if (update && update.unreadCount > 0) {
             const remoteJid = update.id || update.jid;
             if (!remoteJid) continue;
@@ -217,8 +230,6 @@ class WebhookController {
               `🛎️ [${hookRunId}] Chat marcado como NÃO LIDO | phone=${phone}. Reiniciando bot...`
             );
 
-            // Chamamos o bot com o comando silencioso "reiniciar"
-            // Isso força o bot a zerar a sessão e enviar o menu principal!
             await WhatsappBotService.handleIncomingMessage({
               schoolId: school._id,
               phone,
@@ -227,15 +238,11 @@ class WebhookController {
             });
           }
         }
-        return; // Finaliza o processamento de atualização de chat
+        return; 
       }
-      // ==========================================================
 
       // --- PROCESSAMENTO DE MENSAGENS RECEBIDAS ---
       if (evtNormalizado !== 'messages.upsert') {
-        console.log(
-          `ℹ️ [${hookRunId}] Evento WhatsApp ignorado | event=${event} | instance=${resolvedInstanceName}`
-        );
         return;
       }
 
@@ -254,6 +261,13 @@ class WebhookController {
       }
 
       const remoteJid = this._extractRemoteJid(data, sender);
+
+      // 🌟 PROTEÇÃO: Ignorar grupos e Status/Stories
+      if (remoteJid && (remoteJid.includes('@g.us') || remoteJid.includes('status@broadcast'))) {
+        console.log(`👥 [${hookRunId}] Mensagem de grupo/status ignorada: ${remoteJid}`);
+        return;
+      }
+
       const phone = this._extractPhone(remoteJid);
 
       if (!phone) {
@@ -295,7 +309,6 @@ class WebhookController {
     }
   }
 
-  // Restante do código (Mercado Pago, Cora, etc) se mantém inalterado...
   async handleMpWebhook(req, res) {
     const hookRunId = `mp-${Date.now()}`;
     console.log(`--- 🔔 WEBHOOK MERCADO PAGO RECEBIDO (${hookRunId}) ---`);
