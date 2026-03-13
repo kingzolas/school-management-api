@@ -17,8 +17,9 @@ router.get('/:id', examController.getById);
 router.post('/:id/generate-sheets', examController.generateSheets);
 router.post('/scan', examController.scanSheet);
 
-router.get('/exams/sheet/:uuid/verify', verifyToken, examController.verifySheet);
-router.post('/exams/process-omr', verifyToken, examController.processOMRImage);
+// Removemos o "/exams" do começo destas duas linhas!
+router.get('/sheet/:uuid/verify', verifyToken, examController.verifySheet);
+router.post('/process-omr', verifyToken, examController.processOMRImage);
 
 // Busca todos os alunos (folhas) de uma prova específica para correção manual
 router.get('/:id/sheets', examController.getSheetsByExam);
