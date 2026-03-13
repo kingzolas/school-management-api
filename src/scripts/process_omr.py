@@ -4,11 +4,9 @@ import numpy as np
 import json
 import traceback
 
-# Helper para os logs aparecerem perfeitamente no console do Node.js (Render)
 def log_info(msg):
     sys.stderr.write(f"[PYTHON INFO] {msg}\n")
 
-# Função para ordenar coordenadas (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
 def order_points(pts):
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
@@ -19,7 +17,6 @@ def order_points(pts):
     rect[3] = pts[np.argmax(diff)]
     return rect
 
-# Função para aplicar a transformação de perspectiva (Deixa a folha 100% reta)
 def four_point_transform(image, pts):
     rect = order_points(pts)
     (tl, tr, br, bl) = rect
@@ -39,13 +36,12 @@ def four_point_transform(image, pts):
         [0, maxHeight - 1]], dtype="float32")
     
     M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-    return warped
+    return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
 
 def process_image(image_path, correction_type):
     try:
-        log_info(f"===================================================")
-        log_info(f"Iniciando leitura da imagem no modo {correction_type}")
+        log_info("="*50)
+        log_info(f"Iniciando leitura extrema - Modo: {correction_type}")
         
         image = cv2.imread(image_path)
         if image is None:
@@ -53,147 +49,143 @@ def process_image(image_path, correction_type):
         
         h, w = image.shape[:2]
 
-        if h > w:
+        if correction_type == 'DIRECT_GRADE' and h > w:
             image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            log_info("Imagem rotacionada 90 graus (estava em modo retrato).")
+        elif correction_type == 'BUBBLE_SHEET' and w > h:
+            image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
-        # Redimensionamento padrão para a IA ter uma referência matemática constante
+        # Adiciona borda branca GIGANTE para garantir que as âncoras não fiquem presas na borda da foto
+        image = cv2.copyMakeBorder(image, 60, 60, 60, 60, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+
         new_w = 1200 
-        new_h = int((new_w / w) * image.shape[0])
+        new_h = int((new_w / image.shape[1]) * image.shape[0])
         image = cv2.resize(image, (new_w, new_h))
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         
-        # Binarização mais sensível para não apagar bolinhas impressas muito finas
-        thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 11)
-
-        # Engrossa um pouco as linhas para garantir que o círculo feche
+        # Binarização mais agressiva
+        thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 15)
+        
         kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         thresh = cv2.dilate(thresh, kernel_dilate, iterations=1)
 
         # ====================================================================
-        # PASSO 1: ENCONTRAR AS 4 ÂNCORAS PRETAS E ALINHAR A FOLHA
+        # PASSO 1: ENCONTRAR AS 4 ÂNCORAS PRETAS E CORTAR O LIXO
         # ====================================================================
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         anchors = []
 
         for c in contours:
             area = cv2.contourArea(c)
-            # Âncoras são quadrados razoavelmente grandes, mas menores que a página
-            if area < 300 or area > 15000: 
+            # Âncoras são visivelmente os maiores quadrados sólidos do papel
+            if area < 500 or area > 25000: 
                 continue
                 
             peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.04 * peri, True)
+            approx = cv2.approxPolyDP(c, 0.05 * peri, True) # 0.05 é bem tolerante a cantos arredondados
             
-            # Se tiver 4 cantos e for parecido com um quadrado
-            if len(approx) == 4:
+            if len(approx) >= 4:
                 (x, y, w_box, h_box) = cv2.boundingRect(approx)
                 ar = w_box / float(h_box)
-                if 0.7 <= ar <= 1.3: # Mais tolerância para distorção
+                if 0.6 <= ar <= 1.4: # É "quadrado"
                     M = cv2.moments(c)
                     if M["m00"] != 0:
                         cX = int(M["m10"] / M["m00"])
                         cY = int(M["m01"] / M["m00"])
                         anchors.append([cX, cY])
 
+        # Se achar mais de 4, pega as 4 maiores áreas (evita confundir com o QR code)
         if len(anchors) >= 4:
-            log_info(f"Sucesso: {len(anchors)} âncoras encontradas. Ajustando perspectiva...")
-            pts = np.array(anchors[:4], dtype="float32")
-            warped_gray = four_point_transform(gray, pts)
+            # Organiza os pontos para pegar os extremos da imagem
+            pts = np.array(anchors, dtype="float32")
+            rect = order_points(pts)
+            log_info("4 Âncoras perfeitamente localizadas. Recortando imagem pela matriz.")
             
-            blurred = cv2.GaussianBlur(warped_gray, (5, 5), 0)
-            thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 11)
-            thresh = cv2.dilate(thresh, kernel_dilate, iterations=1)
+            # Corta a imagem EXATAMENTE nos pontos das âncoras
+            warped_gray = four_point_transform(gray, rect)
+            
+            # Adiciona uma borda branca de segurança ao redor do novo recorte
+            warped_gray = cv2.copyMakeBorder(warped_gray, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+            
             gray = warped_gray
             h, w = gray.shape[:2]
+            
+            # Refaz a binarização na imagem limpa
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 15)
         else:
-            log_info(f"AVISO: Encontrou apenas {len(anchors)} âncoras. Prosseguindo sem alinhamento...")
+            raise Exception(f"Achei {len(anchors)} âncoras. Preciso das 4. O papel pode estar muito amassado ou cortado na foto.")
 
         # ====================================================================
-        # PASSO 2: ENCONTRAR AS BOLINHAS 
+        # PASSO 2: ENCONTRAR AS BOLINHAS COM TOLERÂNCIA MÁXIMA
         # ====================================================================
-        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
-
         contours, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        log_info(f"Contornos brutos encontrados na imagem: {len(contours)}")
-
+        
         candidates = []
         for c in contours:
             (x, y, w_box, h_box) = cv2.boundingRect(c)
             ar = w_box / float(h_box)
             
-            # Tamanho esperado das bolinhas na imagem de 1200px (Ignora âncoras gigantes > 90px)
-            if 0.60 <= ar <= 1.40 and 12 <= w_box <= 80:
+            # Aceita literalmente qualquer coisa que caiba num quadrado proporcional e seja pequeno (bolinhas)
+            if 0.5 <= ar <= 1.5 and 15 <= w_box <= 80:
                 area = cv2.contourArea(c)
                 peri = cv2.arcLength(c, True)
                 if peri == 0: continue
                 
-                # Tolerância DRASTICAMENTE reduzida para aceitar bolinhas rabiscadas ou tortas
+                # Circularidade quase zero (aceita borrões e letras)
                 circularity = 4 * np.pi * (area / (peri * peri))
-                if circularity > 0.45: 
+                if circularity > 0.15: 
                     candidates.append({
                         'cx': x + w_box // 2, 'cy': y + h_box // 2,
                         'w': w_box, 'h': h_box, 'c': c, 'area': area
                     })
 
-        log_info(f"Candidatos com formato de bolinha: {len(candidates)}")
-
         if not candidates:
-             raise Exception("Nenhuma bolinha encontrada. Melhore a iluminação e enquadre na linha verde.")
+             raise Exception("Nenhuma alternativa identificada no cartão. Está muito longe ou sem foco.")
 
-        # Filtra lixo usando a mediana do tamanho das bolinhas
+        # Filtra os candidatos baseados na mediana de tamanho (ignora textos finos)
         areas = [cand['area'] for cand in candidates]
         median_area = np.median(areas)
-        
-        filtered_bubbles = [c for c in candidates if (median_area * 0.4) <= c['area'] <= (median_area * 2.2)]
-        log_info(f"Bolinhas após filtro de tamanho (removendo ruídos): {len(filtered_bubbles)}")
+        filtered_bubbles = [c for c in candidates if (median_area * 0.3) <= c['area'] <= (median_area * 3.0)]
 
-        # Remove bolinhas sobrepostas (duplicatas do mesmo círculo)
+        # Remove sobreposições
         unique_bubbles = []
         for cand in filtered_bubbles:
-            if not any(abs(cand['cx'] - ub['cx']) < 10 and abs(cand['cy'] - ub['cy']) < 10 for ub in unique_bubbles):
+            if not any(abs(cand['cx'] - ub['cx']) < 15 and abs(cand['cy'] - ub['cy']) < 15 for ub in unique_bubbles):
                 unique_bubbles.append(cand)
 
-        log_info(f"Total de bolinhas reais prontas para análise: {len(unique_bubbles)}")
+        log_info(f"Bolinhas validadas na folha: {len(unique_bubbles)}")
 
-        # Agrupa em linhas horizontais
-        unique_bubbles = sorted(unique_bubbles, key=lambda b: b['cy'])
-        rows = []
-        current_row = []
-        for b in unique_bubbles:
-            if not current_row:
-                current_row.append(b)
-            else:
-                # Se a variação vertical for pequena, pertence à mesma linha
-                if abs(b['cy'] - current_row[0]['cy']) < (b['h'] * 0.8):
-                    current_row.append(b)
-                else:
-                    rows.append(sorted(current_row, key=lambda i: i['cx']))
-                    current_row = [b]
-        if current_row:
-            rows.append(sorted(current_row, key=lambda i: i['cx']))
-
-        # FUNÇÃO PARA CALCULAR A ESCURIDÃO
         def analyze_bubble_intensity(bubble):
             mask = np.zeros(gray.shape, dtype="uint8")
-            # Usa 40% do raio para ler SÓ o centro da bolinha (onde a caneta fica), ignorando a borda preta
             radius = int(min(bubble['w'], bubble['h']) * 0.40)
             cv2.circle(mask, (bubble['cx'], bubble['cy']), radius, 255, -1)
             mean_val = cv2.mean(gray, mask=mask)[0]
-            # Retorna valor de 0 a 255 (Quanto MAIOR, MAIS ESCURA a bolinha está)
             return 255 - mean_val 
-
 
         # ====================================================================
         # FLUXO A: GABARITO ANTIGO (NOTA DIRETA)
         # ====================================================================
         if correction_type == 'DIRECT_GRADE':
+            unique_bubbles = sorted(unique_bubbles, key=lambda b: b['cy'])
+            rows = []
+            current_row = []
+            for b in unique_bubbles:
+                if not current_row:
+                    current_row.append(b)
+                else:
+                    if abs(b['cy'] - current_row[0]['cy']) < (b['h'] * 0.8):
+                        current_row.append(b)
+                    else:
+                        rows.append(sorted(current_row, key=lambda i: i['cx']))
+                        current_row = [b]
+            if current_row:
+                rows.append(sorted(current_row, key=lambda i: i['cx']))
+
             valid_rows = [r for r in rows if len(r) >= 9]
             if len(valid_rows) < 2:
-                raise Exception("Não encontrei as 2 fileiras de bolinhas para lançar a nota manual.")
+                raise Exception("Não encontrei as 2 fileiras do gabarito antigo.")
 
             valid_rows = sorted(valid_rows, key=lambda r: r[0]['cy']) 
             top_row = sorted(valid_rows[0], key=lambda b: b['cx'])[-11:]
@@ -212,53 +204,63 @@ def process_image(image_path, correction_type):
                 log_info(f"[{row_name}] Escuridão: {intensities} -> Marcou: {idx}")
                 return idx
 
-            inteiro_val = get_darkest(top_row, "Fileira Inteiros")
-            decimal_val = get_darkest(bottom_row, "Fileira Decimais")
-            
+            inteiro_val = get_darkest(top_row, "Inteiros")
+            decimal_val = get_darkest(bottom_row, "Decimais")
             final_grade = float(f"{inteiro_val}.{decimal_val}")
-            log_info(f"Nota final calculada: {final_grade}")
 
-            print(json.dumps({
-                "success": True, 
-                "type": "DIRECT_GRADE",
-                "grade": final_grade
-            }))
+            print(json.dumps({"success": True, "type": "DIRECT_GRADE", "grade": final_grade}))
             return
 
         # ====================================================================
-        # FLUXO B: NOVO CARTÃO RESPOSTA (BUBBLE SHEET)
+        # FLUXO B: CARTÃO RESPOSTA (BUBBLE SHEET)
         # ====================================================================
         elif correction_type == 'BUBBLE_SHEET':
+            # 1. Agrupa por linhas aproximadas (Eixo Y)
+            unique_bubbles = sorted(unique_bubbles, key=lambda b: b['cy'])
+            rows = []
+            current_row = []
+            for b in unique_bubbles:
+                if not current_row:
+                    current_row.append(b)
+                else:
+                    if abs(b['cy'] - current_row[0]['cy']) < (b['h'] * 1.5): # Mais tolerância vertical
+                        current_row.append(b)
+                    else:
+                        rows.append(sorted(current_row, key=lambda i: i['cx']))
+                        current_row = [b]
+            if current_row:
+                rows.append(sorted(current_row, key=lambda i: i['cx']))
+
+            # 2. Divide cada linha em blocos de questões (Eixo X)
             blocks = []
             for row in rows:
-                if not row: continue
+                if len(row) < 3: continue 
+                
                 curr_block = [row[0]]
                 for i in range(1, len(row)):
-                    # Distância horizontal. Se for maior que 150px, é porque pulou pra coluna da direita.
                     gap = row[i]['cx'] - row[i-1]['cx']
-                    if gap < 150: 
+                    if gap < row[0]['w'] * 3.5: # Estão na mesma questão
                         curr_block.append(row[i])
-                    else:
-                        if len(curr_block) >= 3: # Aceita blocos a partir de 3 bolinhas pra evitar quebra por falha
+                    else: 
+                        # Pulou de coluna. Salva o bloco se for válido
+                        if 4 <= len(curr_block) <= 6:
                             blocks.append(curr_block)
                         curr_block = [row[i]]
                 
-                if len(curr_block) >= 3:
+                if 4 <= len(curr_block) <= 6:
                     blocks.append(curr_block)
 
-            question_blocks = [b for b in blocks if 3 <= len(b) <= 6]
-            log_info(f"Total de blocos de alternativas identificados: {len(question_blocks)}")
+            log_info(f"Questões isoladas pela IA: {len(blocks)}")
+            if not blocks:
+                raise Exception("A IA não conseguiu separar as letras A, B, C, D. Tire a foto mais plana.")
 
-            if not question_blocks:
-                raise Exception("Não consegui separar as alternativas (A, B, C...). Tente tirar a foto mais de perto.")
-
-            # Organiza os blocos em colunas para garantir que a Questão 1 venha antes da Questão 21
+            # 3. Organiza os blocos em colunas e depois por linha
             column_centroids = []
-            for b in question_blocks:
+            for b in blocks:
                 avg_cx = np.mean([bubble['cx'] for bubble in b])
                 matched = False
                 for col in column_centroids:
-                    if abs(avg_cx - col['avg_cx']) < 150: # Tolerância vertical da coluna
+                    if abs(avg_cx - col['avg_cx']) < 250: # Tolerância Larga para colunas
                         col['blocks'].append(b)
                         col['avg_cx'] = np.mean([np.mean([bub['cx'] for bub in blk]) for blk in col['blocks']])
                         matched = True
@@ -272,35 +274,33 @@ def process_image(image_path, correction_type):
             for col_idx, col in enumerate(column_centroids):
                 sorted_blocks = sorted(col['blocks'], key=lambda b: np.mean([bub['cy'] for bub in b]))
                 ordered_blocks.extend(sorted_blocks)
-                log_info(f"Coluna {col_idx + 1} identificada com {len(sorted_blocks)} questões.")
+                log_info(f"Coluna {col_idx + 1} possui {len(sorted_blocks)} questões válidas.")
 
             answers = []
             options_labels = ['A', 'B', 'C', 'D', 'E']
             
+            # 4. Leitura Final e Trava de Bolinha em Branco
             for i, block in enumerate(ordered_blocks):
-                block = sorted(block, key=lambda b: b['cx']) # A -> E
+                # Garante que A,B,C estão da esquerda pra direita dentro do bloco
+                block = sorted(block, key=lambda b: b['cx']) 
                 
                 darkness_list = [analyze_bubble_intensity(b) for b in block]
                 max_idx = np.argmax(darkness_list)
                 max_darkness = darkness_list[max_idx]
                 min_darkness = np.min(darkness_list)
                 
-                # REGRA DE PROTEÇÃO CONTRA QUESTÃO EM BRANCO
-                # Se a diferença de escuridão entre a bolinha mais pintada e a bolinha mais branca for menor que 25,
-                # significa que o aluno não pintou nada. É só a sujeira do papel ou a borda preta enganando a IA.
-                if (max_darkness - min_darkness) < 25:
+                # Se a bolinha mais escura não tiver pelo menos 20 pontos de diferença
+                # para a bolinha mais clara, significa que o aluno não pintou forte o suficiente (ou deixou em branco)
+                if (max_darkness - min_darkness) < 20:
                     marked = None
                     status_log = "EM BRANCO"
                 else:
                     marked = options_labels[max_idx] if max_idx < len(options_labels) else None
                     status_log = f"Marcou {marked}"
                     
-                log_info(f"Q{str(i+1).zfill(2)} | Escuridão: {[int(d) for d in darkness_list]} -> {status_log}")
+                log_info(f"Q{str(i+1).zfill(2)} | Escuridão lida: {[int(d) for d in darkness_list]} -> {status_log}")
 
-                answers.append({
-                    "question": i + 1,
-                    "marked": marked
-                })
+                answers.append({"question": i + 1, "marked": marked})
 
             print(json.dumps({
                 "success": True,
@@ -311,10 +311,10 @@ def process_image(image_path, correction_type):
             return
 
         else:
-            raise Exception(f"Tipo de correção desconhecido: {correction_type}")
+            raise Exception(f"Modo desconhecido: {correction_type}")
 
     except Exception as e:
-        log_info(f"FALHA FATAL NA IA: {str(e)}")
+        log_info(f"FALHA FATAL: {str(e)}")
         print(json.dumps({"success": False, "error": str(e), "trace": traceback.format_exc()}))
 
 if __name__ == "__main__":
