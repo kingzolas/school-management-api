@@ -26,7 +26,8 @@ class ExamService {
             subjectName: exam.subject_id.name,
             className: exam.class_id.name || exam.class_id.grade,
             correctionType: exam.correctionType || 'DIRECT_GRADE',
-            examVersion: sheet.examVersion || 'STANDARD'
+            examVersion: sheet.examVersion || 'STANDARD',
+            examId: exam._id // 👇 ADICIONE ESTA LINHA AQUI!
         };
     }
 
