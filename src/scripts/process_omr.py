@@ -44,7 +44,7 @@ def euclidean(p1, p2):
     return float(np.linalg.norm(np.array(p1) - np.array(p2)))
 
 
-def resize_keep_aspect(image, target_w=1600):
+def resize_keep_aspect(image, target_w=1200): # REDUZIDO DE 1600 PARA 1200 PARA PERFORMANCE
     h, w = image.shape[:2]
     scale = target_w / float(w)
     return cv2.resize(image, (target_w, int(h * scale)))
@@ -213,139 +213,6 @@ def warp_using_layout_anchors(image, student_anchors, layout):
 
 
 # =========================================================
-# TEMPLATE SINTÉTICO A PARTIR DO LAYOUT
-# =========================================================
-
-def build_synthetic_template_from_layout(layout):
-    """
-    Cria um template sintético canônico, só para ajudar no ECC/alinhamento fino.
-    Não depende de PNG salvo em disco.
-    """
-    cw = safe_int(layout.get("canonicalWidth", CANONICAL_W), CANONICAL_W)
-    ch = safe_int(layout.get("canonicalHeight", CANONICAL_H), CANONICAL_H)
-
-    canvas = np.full((ch, cw), 255, dtype=np.uint8)
-
-    # desenha âncoras
-    anchors = layout.get("anchors", {})
-    for key in ["topLeft", "topRight", "bottomRight", "bottomLeft"]:
-        if key in anchors:
-            x = safe_int(anchors[key]["x"])
-            y = safe_int(anchors[key]["y"])
-            size = 12
-            x1 = max(0, x - size // 2)
-            y1 = max(0, y - size // 2)
-            x2 = min(cw, x1 + size)
-            y2 = min(ch, y1 + size)
-            canvas[y1:y2, x1:x2] = 0
-
-    # registradores centrais
-    center_registers = layout.get("centerRegisters", {})
-    for key in ["top", "bottom"]:
-        if key in center_registers:
-            x = safe_int(center_registers[key]["x"])
-            y = safe_int(center_registers[key]["y"])
-            cv2.rectangle(canvas, (x - 5, y - 1), (x + 5, y + 1), 120, -1)
-
-    # área geral das respostas
-    answer_region = layout.get("answerRegion")
-    if answer_region:
-        x1 = safe_int(answer_region.get("x1"))
-        y1 = safe_int(answer_region.get("y1"))
-        x2 = safe_int(answer_region.get("x2"))
-        y2 = safe_int(answer_region.get("y2"))
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), 210, 1)
-
-    # guias de linha
-    for row in layout.get("rowGuides", []):
-        left_tick = row.get("leftTick")
-        right_tick = row.get("rightTick")
-
-        if left_tick:
-            cv2.line(
-                canvas,
-                (safe_int(left_tick["x1"]), safe_int(left_tick["y"])),
-                (safe_int(left_tick["x2"]), safe_int(left_tick["y"])),
-                150,
-                1
-            )
-
-        if right_tick:
-            cv2.line(
-                canvas,
-                (safe_int(right_tick["x1"]), safe_int(right_tick["y"])),
-                (safe_int(right_tick["x2"]), safe_int(right_tick["y"])),
-                150,
-                1
-            )
-
-    # marcadores de opção
-    for option_guide in layout.get("optionGuides", []):
-        top_marker = option_guide.get("topMarker")
-        bottom_marker = option_guide.get("bottomMarker")
-
-        if top_marker:
-            x = safe_int(top_marker["x"])
-            y = safe_int(top_marker["y"])
-            cv2.circle(canvas, (x, y), 1, 150, -1)
-
-        if bottom_marker:
-            x = safe_int(bottom_marker["x"])
-            y = safe_int(bottom_marker["y"])
-            cv2.circle(canvas, (x, y), 1, 150, -1)
-
-    # bolhas vazias
-    for bubble in layout.get("bubbles", []):
-        x = safe_int(bubble["x"])
-        y = safe_int(bubble["y"])
-        r = max(4, safe_int(bubble.get("r", 11)))
-        cv2.circle(canvas, (x, y), r, 0, 1)
-
-    return preprocess_gray(canvas)
-
-
-def refine_alignment_with_synthetic_template(student_bgr, synthetic_template_gray, layout):
-    student_gray = cv2.cvtColor(student_bgr, cv2.COLOR_BGR2GRAY)
-    student_gray = preprocess_gray(student_gray)
-
-    warp_mode = cv2.MOTION_AFFINE
-    warp_matrix = np.eye(2, 3, dtype=np.float32)
-
-    criteria = (
-        cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
-        60,
-        1e-5
-    )
-
-    cw = safe_int(layout.get("canonicalWidth", CANONICAL_W), CANONICAL_W)
-    ch = safe_int(layout.get("canonicalHeight", CANONICAL_H), CANONICAL_H)
-
-    try:
-        cc, warp_matrix = cv2.findTransformECC(
-            synthetic_template_gray,
-            student_gray,
-            warp_matrix,
-            warp_mode,
-            criteria,
-            None,
-            1
-        )
-
-        refined = cv2.warpAffine(
-            student_bgr,
-            warp_matrix,
-            (cw, ch),
-            flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP,
-            borderMode=cv2.BORDER_REPLICATE
-        )
-        log_info(f"ECC refinement OK | cc={round(float(cc), 6)}")
-        return refined, float(cc)
-    except Exception as e:
-        log_info(f"ECC refinement falhou, seguindo só com warp por âncoras: {str(e)}")
-        return student_bgr, None
-
-
-# =========================================================
 # BOLHAS / LEITURA
 # =========================================================
 
@@ -391,13 +258,10 @@ def build_question_grid_from_layout(layout):
 
 
 def bubble_fill_score(gray, bubble, search_radius=0):
-    """
-    Mede preenchimento local de uma bolha.
-    search_radius tenta compensar pequenos desalinhamentos residuais.
-    """
     base_x = int(bubble["x"])
     base_y = int(bubble["y"])
     r = int(bubble["r"])
+    option = bubble.get("option", "")
 
     best = None
 
@@ -430,16 +294,18 @@ def bubble_fill_score(gray, bubble, search_radius=0):
 
             darkness_gain = float(bg_mean - inner_mean)
 
-            # score base
+            # Mantemos o score base para retrocompatibilidade com o DIRECT_GRADE
             score = darkness_gain + (fill_ratio * 100.0)
 
             candidate = {
                 "score": score,
                 "fill_ratio": fill_ratio,
+                "darkness_gain": darkness_gain,
                 "inner_mean": inner_mean,
                 "bg_mean": bg_mean,
                 "x": x,
-                "y": y
+                "y": y,
+                "option": option
             }
 
             if best is None or candidate["score"] > best["score"]:
@@ -449,20 +315,18 @@ def bubble_fill_score(gray, bubble, search_radius=0):
         return {
             "score": -9999.0,
             "fill_ratio": 0.0,
+            "darkness_gain": 0.0,
             "inner_mean": 255.0,
             "bg_mean": 255.0,
             "x": base_x,
-            "y": base_y
+            "y": base_y,
+            "option": option
         }
 
     return best
 
 
 def read_bubble_sheet(warped_bgr, layout):
-    """
-    Leitura baseada no layout geométrico salvo no banco.
-    Não depende mais de template PNG em arquivo.
-    """
     student_gray = cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2GRAY)
     student_gray = preprocess_gray(student_gray)
 
@@ -473,51 +337,59 @@ def read_bubble_sheet(warped_bgr, layout):
     debug_rows = []
 
     for q_idx, row in enumerate(question_grid, start=1):
-        row_stats = [bubble_fill_score(student_gray, bubble, search_radius=2) for bubble in row]
+        # Search radius reduzido para 1 para mais agilidade
+        row_stats = [bubble_fill_score(student_gray, bubble, search_radius=1) for bubble in row]
 
-        raw_scores = [s["score"] for s in row_stats]
-        fill_ratios = [s["fill_ratio"] for s in row_stats]
+        # NOVA REGRA: Ordenamos pelas bolhas de maior preenchimento absoluto (fill_ratio)
+        sorted_stats = sorted(row_stats, key=lambda s: s["fill_ratio"], reverse=True)
+        best = sorted_stats[0]
+        second = sorted_stats[1] if len(sorted_stats) > 1 else None
 
-        # normalização por linha
-        min_score = min(raw_scores)
-        adjusted_scores = [s - min_score for s in raw_scores]
+        best_fill = best["fill_ratio"]
+        best_darkness = best["darkness_gain"]
+        second_fill = second["fill_ratio"] if second else 0.0
 
-        best_idx = int(np.argmax(adjusted_scores))
-        best_score = adjusted_scores[best_idx]
-        best_fill = fill_ratios[best_idx]
+        is_blank = best_fill < 0.32
+        is_ambiguous = False
 
-        sorted_scores = sorted(adjusted_scores, reverse=True)
-        second_score = sorted_scores[1] if len(sorted_scores) > 1 else -9999.0
+        if not is_blank:
+            # Verifica rasura/dupla marcação: duas bolhas com preenchimento forte
+            if best_fill >= 0.45 and second_fill >= 0.45:
+                is_ambiguous = True
+            # Verifica se não abriu vantagem clara sobre a segunda
+            elif (best_fill - second_fill) < 0.10 and best_fill >= 0.40:
+                is_ambiguous = True
 
-        # Critérios
-        # branco: nenhuma bolha se destacou de forma real
-        is_blank = (best_score < 12 and best_fill < 0.18)
-
-        # ambígua: duas bolhas muito próximas e fortes
-        strong_count = sum(
-            1 for s, f in zip(adjusted_scores, fill_ratios)
-            if s > 10 and f > 0.16
-        )
-        is_ambiguous = (
-            not is_blank and
-            strong_count >= 2 and
-            (best_score - second_score) < 7
-        )
+        marked = None
+        status = "UNKNOWN"
 
         if is_blank:
-            marked = None
             status = "BLANK"
         elif is_ambiguous:
-            marked = None
             status = "AMBIGUOUS"
-        else:
-            marked = OPTIONS[best_idx]
+        elif best_fill >= 0.50 and best_darkness >= 15:
+            marked = best["option"]
             status = "MARKED"
+        else:
+            # Caiu no limbo de marcação fraca demais ou sujeira que não chegou no limiar.
+            # Por segurança, classificamos como BLANK para não inventar nota.
+            status = "BLANK"
 
         answers.append({
             "question": q_idx,
             "marked": marked
         })
+
+        # Mantendo o formato original de debug para não quebrar a sua interface/JSON
+        raw_scores = [s["score"] for s in row_stats]
+        adjusted_scores = [s["score"] - min(raw_scores) for s in row_stats]
+        fill_ratios = [s["fill_ratio"] for s in row_stats]
+
+        # Encontra o índice original da melhor bolha para o debug
+        best_idx = 0
+        for i, s in enumerate(row_stats):
+            if s["option"] == best["option"]:
+                best_idx = i
 
         debug_rows.append({
             "question": q_idx,
@@ -534,9 +406,8 @@ def read_bubble_sheet(warped_bgr, layout):
 
         log_info(
             f"Q{str(q_idx).zfill(2)} "
-            f"| raw={[round(v, 1) for v in raw_scores]} "
-            f"| adjusted={[round(v, 1) for v in adjusted_scores]} "
             f"| fills={[round(v, 2) for v in fill_ratios]} "
+            f"| gain={[round(s['darkness_gain'], 1) for s in row_stats]} "
             f"| {status} -> {marked}"
         )
 
@@ -548,7 +419,7 @@ def read_bubble_sheet(warped_bgr, layout):
 
 
 # =========================================================
-# DIRECT_GRADE
+# DIRECT_GRADE (MANTIDO INTACTO)
 # =========================================================
 
 def detect_direct_grade(gray):
@@ -573,7 +444,6 @@ def detect_direct_grade(gray):
 
     ys = [c[1] for c in circles]
 
-    # clusterização simplificada em duas linhas
     if len(ys) < 5:
         raise Exception("Bolhas insuficientes para o modo DIRECT_GRADE.")
 
@@ -623,7 +493,7 @@ def process_image(image_path, correction_type, layout_path=None):
         if image is None:
             raise Exception("Não foi possível ler a imagem fornecida.")
 
-        image = resize_keep_aspect(image, 1600)
+        image = resize_keep_aspect(image, 1200) # Resize reduzido
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         if correction_type == "BUBBLE_SHEET":
@@ -639,18 +509,10 @@ def process_image(image_path, correction_type, layout_path=None):
             log_info("Detectando âncoras na folha do aluno...")
             student_anchors = find_anchor_squares(gray)
 
+            # Processamento direto após o Warp (ECC pesado foi totalmente removido)
             warped_student, _ = warp_using_layout_anchors(image, student_anchors, layout)
 
-            log_info("Construindo template sintético do layout...")
-            synthetic_template = build_synthetic_template_from_layout(layout)
-
-            log_info("Refinando alinhamento contra template sintético...")
-            warped_student, ecc_cc = refine_alignment_with_synthetic_template(
-                warped_student,
-                synthetic_template,
-                layout
-            )
-
+            log_info("Analisando preenchimento das respostas...")
             result = read_bubble_sheet(warped_student, layout)
 
             print(json.dumps({
@@ -663,7 +525,7 @@ def process_image(image_path, correction_type, layout_path=None):
                     "totalQuestions": layout.get("totalQuestions"),
                     "columnCount": layout.get("columnCount"),
                     "answerRegion": layout.get("answerRegion"),
-                    "ecc_correlation": round(ecc_cc, 6) if ecc_cc is not None else None,
+                    "ecc_correlation": None, # Mantido nulo para retrocompatibilidade
                     "rows": result["debug_rows"]
                 }
             }))
