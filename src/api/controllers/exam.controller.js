@@ -25,6 +25,53 @@ class ExamController {
         }
     }
 
+    // 👇 [NOVO] Controlador para atualizar uma prova existente
+    async update(req, res) {
+        try {
+            console.log('\n======================================================');
+            console.log(`📥 [PUT] /exams/${req.params.id} - ATUALIZAÇÃO DE PROVA`);
+            
+            const schoolId = req.user.school_id;
+            const examId = req.params.id;
+            const updateData = req.body;
+
+            const updatedExam = await examService.updateExam(examId, updateData, schoolId);
+            
+            console.log('✅ Prova atualizada com sucesso!');
+            console.log('======================================================\n');
+            
+            res.status(200).json(updatedExam);
+        } catch (error) {
+            console.error('❌ ERRO AO ATUALIZAR PROVA:', error.message);
+            // Se o erro for de status bloqueado, manda 403 Forbidden
+            if (error.message.includes('não pode mais ser alterada')) {
+                return res.status(403).json({ message: error.message });
+            }
+            res.status(400).json({ message: error.message });
+        }
+    }
+
+    // 👇 [NOVO] Controlador para duplicar uma prova
+    async duplicate(req, res) {
+        try {
+            console.log('\n======================================================');
+            console.log(`📥 [POST] /exams/${req.params.id}/duplicate - DUPLICAR PROVA`);
+            
+            const schoolId = req.user.school_id;
+            const examId = req.params.id;
+
+            const duplicatedExam = await examService.duplicateExam(examId, schoolId);
+            
+            console.log('✅ Prova duplicada com sucesso! Novo ID:', duplicatedExam._id);
+            console.log('======================================================\n');
+            
+            res.status(201).json(duplicatedExam);
+        } catch (error) {
+            console.error('❌ ERRO AO DUPLICAR PROVA:', error.message);
+            res.status(400).json({ message: error.message });
+        }
+    }
+
     async getAll(req, res) {
         try {
             const schoolId = req.user.school_id;
@@ -67,7 +114,6 @@ class ExamController {
         }
     }
 
-    // 👇 [ATUALIZADO] Passa o objeto body inteiro para o service
     async scanSheet(req, res) {
         try {
             console.log('\n======================================================');
@@ -76,7 +122,6 @@ class ExamController {
             
             const schoolId = req.user.school_id;
 
-            // Envia req.body inteiro para suportar answers, grades mistas, etc.
             const sheet = await examService.scanExamSheet(req.body, schoolId);
             
             console.log(`✅ Resultados computados para QR Code ${req.body.qrCodeUuid}`);

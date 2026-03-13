@@ -25,7 +25,6 @@ class ExamService {
             examTitle: exam.title,
             subjectName: exam.subject_id.name,
             className: exam.class_id.name || exam.class_id.grade,
-            // 👇 Retornamos também o tipo de prova para o App saber o que fazer
             correctionType: exam.correctionType || 'DIRECT_GRADE',
             examVersion: sheet.examVersion || 'STANDARD'
         };
@@ -37,7 +36,6 @@ class ExamService {
         const exam = new Exam({
             ...data,
             school_id: schoolId,
-            // Garante que se não vier o tipo de correção, ele assuma o antigo
             correctionType: data.correctionType || 'DIRECT_GRADE' 
         });
         const savedExam = await exam.save();
@@ -67,6 +65,77 @@ class ExamService {
         return savedExam;
     }
 
+    // 👇 [NOVO] Trava de segurança e atualização
+    async updateExam(examId, updateData, schoolId) {
+        console.log(`--> [ExamService] Tentando atualizar prova ${examId}...`);
+        
+        const exam = await Exam.findOne({ _id: examId, school_id: schoolId });
+        if (!exam) throw new Error('Prova não encontrada.');
+
+        // 🔥 A TRAVA DE SEGURANÇA: Se já foi impressa ou corrigida, barra a edição!
+        if (exam.status === 'PRINTED' || exam.status === 'GRADED') {
+            throw new Error('Esta prova já foi gerada ou corrigida e não pode mais ser alterada para evitar falhas no gabarito.');
+        }
+
+        // Atualiza os dados permitidos
+        exam.title = updateData.title || exam.title;
+        exam.totalValue = updateData.totalValue || exam.totalValue;
+        exam.correctionType = updateData.correctionType || exam.correctionType;
+        exam.questions = updateData.questions || exam.questions;
+        exam.applicationDate = updateData.applicationDate || exam.applicationDate;
+
+        const updatedExam = await exam.save();
+
+        // Tenta atualizar também a Evaluation (Diário) se ela existir
+        if (updatedExam.settings && updatedExam.settings.evaluationId) {
+            try {
+                await Evaluation.findByIdAndUpdate(
+                    updatedExam.settings.evaluationId, 
+                    {
+                        title: updatedExam.title,
+                        maxScore: updatedExam.totalValue,
+                        date: updatedExam.applicationDate
+                    }
+                );
+            } catch (evalErr) {
+                console.error("Aviso: Falha ao sincronizar edição com o Diário:", evalErr.message);
+            }
+        }
+
+        return updatedExam;
+    }
+
+    // 👇 [NOVO] Função de Clonagem
+    async duplicateExam(examId, schoolId) {
+        console.log(`--> [ExamService] Duplicando prova ${examId}...`);
+        
+        const originalExam = await Exam.findOne({ _id: examId, school_id: schoolId }).lean();
+        if (!originalExam) throw new Error('Prova original não encontrada para duplicar.');
+
+        // Remove os IDs do Mongoose para criar um registro virgem
+        delete originalExam._id;
+        delete originalExam.__v;
+        delete originalExam.createdAt;
+        delete originalExam.updatedAt;
+        if (originalExam.settings) delete originalExam.settings.evaluationId; 
+        
+        // Remove os _id de dentro das questões também
+        if (originalExam.questions && originalExam.questions.length > 0) {
+            originalExam.questions = originalExam.questions.map(q => {
+                delete q._id;
+                return q;
+            });
+        }
+
+        // Adiciona a tag de Cópia e reseta o status e a data
+        originalExam.title = `${originalExam.title} [Cópia]`;
+        originalExam.status = 'DRAFT';
+        originalExam.applicationDate = new Date();
+
+        // Envia para o create normal, que vai salvar no banco E criar uma nova Evaluation no diário!
+        return await this.createExam(originalExam, schoolId);
+    }
+
     async getExamSheetsByExamId(examId, schoolId) {
         console.log(`--> [ExamService] Buscando alunos da prova ${examId}...`);
         
@@ -85,14 +154,14 @@ class ExamService {
             registration: sheet.student_id.registrationNumber,
             status: sheet.status, 
             grade: sheet.grade,  
-            objectiveGrade: sheet.objectiveGrade, // NOVO
-            dissertativeGrade: sheet.dissertativeGrade, // NOVO
+            objectiveGrade: sheet.objectiveGrade,
+            dissertativeGrade: sheet.dissertativeGrade,
             pdfGeneratedAt: sheet.pdf_generated_at
         }));
 
         return {
             examTitle: exam.title,
-            correctionType: exam.correctionType, // NOVO: Avisa pro app que tipo de prova é essa
+            correctionType: exam.correctionType, 
             totalSheets: formattedSheets.length,
             scannedCount: formattedSheets.filter(s => s.status === 'SCANNED').length,
             pendingCount: formattedSheets.filter(s => s.status !== 'SCANNED').length,
@@ -185,7 +254,8 @@ class ExamService {
             }
         }
 
-        exam.status = 'READY';
+        // 🔥 ATUALIZA O STATUS PARA BLOQUEAR FUTURAS EDIÇÕES
+        exam.status = 'PRINTED'; 
         await exam.save();
 
         const profName = exam.teacher_id ? (exam.teacher_id.fullName || exam.teacher_id.name || 'Professor') : 'Professor';
@@ -197,16 +267,14 @@ class ExamService {
                 subjectName: exam.subject_id?.name || 'Disciplina',
                 teacherName: profName,
                 applicationDate: exam.applicationDate,
-                correctionType: exam.correctionType // NOVO: Avisa o gerador de PDF
+                correctionType: exam.correctionType 
             },
             sheets: sheetsCreated,
             errors
         };
     }
 
-    // 👇 [ATUALIZADO] Agora suporta receber o gabarito detalhado
     async scanExamSheet(payload, schoolId) {
-        // Desestrutura o payload que agora pode ter mais dados além da nota
         const { qrCodeUuid, grade, objectiveGrade, dissertativeGrade, answers } = payload;
         
         console.log(`--> [ExamService] Computando resultado para o QR Code ${qrCodeUuid}`);
@@ -214,10 +282,8 @@ class ExamService {
         const sheet = await ExamSheet.findOne({ qr_code_uuid: qrCodeUuid, school_id: schoolId });
         if (!sheet) throw new Error('QR Code inválido ou folha não encontrada.');
 
-        // Salva a nota final
         sheet.grade = grade;
         
-        // Se vieram dados detalhados (Prova Mista/Gabarito), salva também
         if (objectiveGrade !== undefined) sheet.objectiveGrade = objectiveGrade;
         if (dissertativeGrade !== undefined) sheet.dissertativeGrade = dissertativeGrade;
         if (answers && Array.isArray(answers)) sheet.answers = answers;
@@ -226,6 +292,12 @@ class ExamService {
         await sheet.save();
 
         const exam = await Exam.findById(sheet.exam_id);
+        
+        // 🔥 ATUALIZA O STATUS DA PROVA PARA INDICAR QUE ELA ESTÁ SENDO CORRIGIDA
+        if (exam && exam.status !== 'GRADED') {
+             exam.status = 'GRADED';
+             await exam.save();
+        }
         
         if (exam && exam.settings && exam.settings.evaluationId) {
             console.log("--> [ExamService] Lançando nota no Diário Oficial...");

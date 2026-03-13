@@ -23,4 +23,8 @@ router.post('/process-omr', verifyToken, examController.processOMRImage);
 
 // Busca todos os alunos (folhas) de uma prova específica para correção manual
 router.get('/:id/sheets', examController.getSheetsByExam);
+
+router.put('/:id', examController.update);
+router.post('/:id/duplicate', examController.duplicate);
+
 module.exports = router;
