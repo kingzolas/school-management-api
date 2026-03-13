@@ -25,7 +25,7 @@ class ExamController {
         }
     }
 
-    // 👇 [NOVO] Controlador para atualizar uma prova existente
+    // 👇 Controlador para atualizar uma prova existente
     async update(req, res) {
         try {
             console.log('\n======================================================');
@@ -43,7 +43,6 @@ class ExamController {
             res.status(200).json(updatedExam);
         } catch (error) {
             console.error('❌ ERRO AO ATUALIZAR PROVA:', error.message);
-            // Se o erro for de status bloqueado, manda 403 Forbidden
             if (error.message.includes('não pode mais ser alterada')) {
                 return res.status(403).json({ message: error.message });
             }
@@ -51,7 +50,7 @@ class ExamController {
         }
     }
 
-    // 👇 [NOVO] Controlador para duplicar uma prova
+    // 👇 Controlador para duplicar uma prova
     async duplicate(req, res) {
         try {
             console.log('\n======================================================');
@@ -158,12 +157,18 @@ class ExamController {
         }
     }
 
+    // 👇 [ATUALIZADO] Endpoint Inteligente com Logs Densos e Cálculo de Gabarito
     async processOMRImage(req, res) {
         try {
             console.log('\n📸 [POST] /exams/process-omr - ANALISANDO GABARITO PELA IA');
-            const { imageBase64 } = req.body;
+            
+            // Agora o App envia não só a imagem, mas qual é o formato e de qual prova é.
+            const { imageBase64, correctionType = 'DIRECT_GRADE', examId } = req.body;
+            const schoolId = req.user.school_id;
 
             if (!imageBase64) throw new Error("Imagem não enviada.");
+            console.log(`[INFO] Tipo de Correção Solicitada: ${correctionType}`);
+            if (examId) console.log(`[INFO] ID da Prova vinculado: ${examId}`);
 
             const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
             
@@ -174,26 +179,88 @@ class ExamController {
 
             const scriptPath = path.join(__dirname, '../../scripts/process_omr.py'); 
             
-            exec(`python "${scriptPath}" "${tempFilePath}"`, (error, stdout, stderr) => {
+            // Passa o correction_type como segundo argumento para o Python
+            const command = `python "${scriptPath}" "${tempFilePath}" "${correctionType}"`;
+            console.log(`[EXEC] Rodando script: ${command}`);
+
+            exec(command, async (error, stdout, stderr) => {
+                // Limpa o arquivo temporário independentemente do resultado
                 if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
 
                 if (error) {
-                    console.error("❌ ERRO NO PYTHON:", stderr || error.message);
-                    return res.status(200).json({ success: false, message: "IA falhou ao ler a imagem." });
+                    console.error("❌ ERRO NO SCRIPT PYTHON (EXEC):", stderr || error.message);
+                    return res.status(200).json({ success: false, message: "A IA falhou ao processar o formato da imagem. Tente enquadrar melhor." });
                 }
 
                 try {
                     const result = JSON.parse(stdout);
-                    console.log("✅ IA Retornou:", result);
+                    console.log("✅ [PYTHON RESPONSE] IA retornou os dados brutos com sucesso.");
+                    
+                    if (!result.success) {
+                        console.error("⚠️ Aviso da IA:", result.message || result.error);
+                        return res.status(200).json(result);
+                    }
+
+                    // 🔥 SE FOR BUBBLE SHEET, NÓS CALCULAMOS A NOTA AQUI NO NODE.JS!
+                    if (result.type === 'BUBBLE_SHEET' && examId) {
+                        console.log(`[NODE] Iniciando correção baseada no gabarito da Prova ID: ${examId}...`);
+                        
+                        // Busca o gabarito original salvo pelo professor
+                        const exam = await examService.getExamById(examId, schoolId);
+                        
+                        let totalGrade = 0;
+                        let objectiveGrade = 0;
+                        const detailedCorrection = [];
+
+                        // No cartão resposta, as bolinhas (01, 02, 03) referem-se APENAS às questões objetivas.
+                        // Precisamos filtrar as dissertativas para não errar o index do array.
+                        const objectiveQuestions = exam.questions.filter(q => q.type === 'OBJECTIVE');
+
+                        result.answers.forEach(ans => {
+                            // ans.question começa em 1 (ex: Questão 01)
+                            const qIndex = ans.question - 1;
+                            
+                            if (qIndex < objectiveQuestions.length) {
+                                const dbQuestion = objectiveQuestions[qIndex];
+                                
+                                // Verifica se o aluno marcou a letra igual a que o professor definiu como correta
+                                const isCorrect = (ans.marked === dbQuestion.correctAnswer);
+                                
+                                if (isCorrect) {
+                                    objectiveGrade += dbQuestion.weight;
+                                    totalGrade += dbQuestion.weight;
+                                }
+
+                                detailedCorrection.push({
+                                    questionNumber: ans.question,
+                                    studentMarked: ans.marked,
+                                    correctAnswer: dbQuestion.correctAnswer,
+                                    isCorrect: isCorrect,
+                                    earnedPoints: isCorrect ? dbQuestion.weight : 0
+                                });
+                            }
+                        });
+
+                        // Sobrescreve a grade genérica do Python com a nota real calculada
+                        result.grade = totalGrade;
+                        result.objectiveGrade = objectiveGrade;
+                        result.correctionDetails = detailedCorrection;
+
+                        console.log(`[NODE] Correção finalizada! Nota calculada: ${totalGrade}`);
+                        console.log(`[NODE] Detalhes das marcações:`, JSON.stringify(detailedCorrection, null, 2));
+                    }
+
+                    console.log("📤 [RESPONSE] Enviando payload final para o App Mobile.");
                     res.status(200).json(result);
                 } catch(e) {
-                    console.error("❌ Falha ao dar parse no retorno da IA:", stdout);
-                    res.status(200).json({ success: false, message: "Retorno inválido da IA" });
+                    console.error("❌ Falha crítica ao dar parse no retorno da IA ou calcular gabarito:", stdout);
+                    console.error("Detalhe do erro:", e.message);
+                    res.status(200).json({ success: false, message: "A leitura foi feita, mas houve um erro ao cruzar com o gabarito." });
                 }
             });
 
         } catch (error) {
-            console.error('❌ ERRO NO ENDPOINT DE IMAGEM:', error.message);
+            console.error('❌ ERRO GERAL NO ENDPOINT DE IMAGEM:', error.message);
             res.status(400).json({ success: false, message: error.message });
         }
     }
