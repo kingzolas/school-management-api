@@ -23,6 +23,12 @@ const questionSchema = new Schema({
     // Exclusivo para questões OBJETIVAS 
     options: [{ type: String }], 
     
+    // ======================================================================
+    // [NOVO] Gabarito para correção automática da IA
+    // Exemplo: 'A', 'B', 'C', 'D' ou 'E'
+    // ======================================================================
+    correctAnswer: { type: String, default: null },
+    
     // Exclusivo para questões DISSERTATIVAS
     linesToLeave: { type: Number, default: 5 },
     
@@ -43,11 +49,20 @@ const examSchema = new Schema({
     applicationDate: { type: Date, required: true },
     totalValue: { type: Number, required: true }, // Ex: 10.0
     
+    // ======================================================================
+    // [NOVO] Define como essa prova será corrigida (Lançamento ou Cartão)
+    // ======================================================================
+    correctionType: {
+        type: String,
+        enum: ['DIRECT_GRADE', 'BUBBLE_SHEET'],
+        default: 'DIRECT_GRADE'
+    },
+    
     // Array guardando todo o conteúdo da prova
     questions: [questionSchema],
 
     // ======================================================================
-    // [NOVO] Configurações e Ligações Internas (Ponte com o Diário)
+    // Configurações e Ligações Internas (Ponte com o Diário)
     // ======================================================================
     settings: {
         evaluationId: { type: Schema.Types.ObjectId, ref: 'Evaluation' }

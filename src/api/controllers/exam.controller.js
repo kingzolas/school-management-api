@@ -1,4 +1,4 @@
-const examService = require('../services/exam.service'); // Ajuste o caminho se necessário
+const examService = require('../services/exam.service'); 
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
@@ -67,22 +67,24 @@ class ExamController {
         }
     }
 
+    // 👇 [ATUALIZADO] Passa o objeto body inteiro para o service
     async scanSheet(req, res) {
         try {
             console.log('\n======================================================');
-            console.log('📥 [POST] /exams/scan - LEITURA DE QR CODE');
-            console.log('Payload:', req.body);
+            console.log('📥 [POST] /exams/scan - LEITURA DE QR CODE (MANUAL/IA)');
+            console.log('Payload:', JSON.stringify(req.body, null, 2));
             
             const schoolId = req.user.school_id;
-            const { qrCodeUuid, grade } = req.body;
 
-            const sheet = await examService.scanExamSheet(qrCodeUuid, grade, schoolId);
-            console.log(`✅ Nota ${grade} computada para QR Code ${qrCodeUuid}`);
+            // Envia req.body inteiro para suportar answers, grades mistas, etc.
+            const sheet = await examService.scanExamSheet(req.body, schoolId);
+            
+            console.log(`✅ Resultados computados para QR Code ${req.body.qrCodeUuid}`);
             console.log('======================================================\n');
             
-            res.status(200).json({ message: 'Nota computada com sucesso!', sheet });
+            res.status(200).json({ message: 'Computado com sucesso!', sheet });
         } catch (error) {
-            console.error('❌ ERRO AO LER QR CODE:', error.message);
+            console.error('❌ ERRO AO PROCESSAR RESULTADO:', error.message);
             res.status(400).json({ message: error.message });
         }
     }
@@ -99,11 +101,10 @@ class ExamController {
         }
     }
 
-    // NOVA FUNÇÃO: Controller para a rota de listar folhas
     async getSheetsByExam(req, res) {
         try {
             const schoolId = req.user.school_id;
-            const examId = req.params.id; // Pega o ID da URL
+            const examId = req.params.id; 
             const result = await examService.getExamSheetsByExamId(examId, schoolId);
             res.status(200).json(result);
         } catch (error) {
@@ -119,20 +120,16 @@ class ExamController {
 
             if (!imageBase64) throw new Error("Imagem não enviada.");
 
-            // Limpa o cabeçalho do base64 se vier do Flutter Web
             const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
             
-            // Cria um arquivo temporário na pasta segura do sistema operacional
             const tempFileName = `temp_${crypto.randomUUID()}.jpg`;
             const tempFilePath = path.join(os.tmpdir(), tempFileName); 
             
             fs.writeFileSync(tempFilePath, base64Data, { encoding: 'base64' });
 
-            // 👇 CAMINHO CORRIGIDO AQUI! Voltando duas pastas (api e src) para acessar scripts
             const scriptPath = path.join(__dirname, '../../scripts/process_omr.py'); 
             
             exec(`python "${scriptPath}" "${tempFilePath}"`, (error, stdout, stderr) => {
-                // Sempre apaga a imagem pra não lotar o servidor
                 if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
 
                 if (error) {
@@ -141,7 +138,6 @@ class ExamController {
                 }
 
                 try {
-                    // O Python deu um print num JSON, o Node.js lê isso
                     const result = JSON.parse(stdout);
                     console.log("✅ IA Retornou:", result);
                     res.status(200).json(result);

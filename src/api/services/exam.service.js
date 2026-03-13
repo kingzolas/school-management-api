@@ -3,7 +3,6 @@ const ExamSheet = require('../models/exam-sheet.model');
 const Student = require('../models/student.model');
 const Enrollment = require('../models/enrollment.model');
 const Evaluation = require('../models/evaluation.model'); 
-// 👇 CORREÇÃO CRÍTICA AQUI: Aponte para o arquivo de NOTAS, não o de Turmas!
 const ClassGrade = require('../models/grade.model'); 
 const crypto = require('crypto');
 
@@ -26,6 +25,9 @@ class ExamService {
             examTitle: exam.title,
             subjectName: exam.subject_id.name,
             className: exam.class_id.name || exam.class_id.grade,
+            // 👇 Retornamos também o tipo de prova para o App saber o que fazer
+            correctionType: exam.correctionType || 'DIRECT_GRADE',
+            examVersion: sheet.examVersion || 'STANDARD'
         };
     }
 
@@ -34,7 +36,9 @@ class ExamService {
         
         const exam = new Exam({
             ...data,
-            school_id: schoolId
+            school_id: schoolId,
+            // Garante que se não vier o tipo de correção, ele assuma o antigo
+            correctionType: data.correctionType || 'DIRECT_GRADE' 
         });
         const savedExam = await exam.save();
 
@@ -63,33 +67,32 @@ class ExamService {
         return savedExam;
     }
 
-    // NOVA FUNÇÃO: Busca todas as folhas de uma prova específica para o lançamento manual
     async getExamSheetsByExamId(examId, schoolId) {
         console.log(`--> [ExamService] Buscando alunos da prova ${examId}...`);
         
-        // Verifica se a prova existe e pertence a esta escola
         const exam = await Exam.findOne({ _id: examId, school_id: schoolId });
         if (!exam) throw new Error('Prova não encontrada.');
 
-        // Busca todas as folhas geradas para esta prova
         const sheets = await ExamSheet.find({ exam_id: examId, school_id: schoolId })
-            .populate('student_id', 'name fullName registrationNumber') // Traz os dados do aluno
-            .sort({ 'student_id.name': 1 }); // Ordena por ordem alfabética
+            .populate('student_id', 'name fullName registrationNumber') 
+            .sort({ 'student_id.name': 1 }); 
 
-        // Formata o retorno para facilitar a vida do Flutter
         const formattedSheets = sheets.map(sheet => ({
             id: sheet._id,
             qrCodeUuid: sheet.qr_code_uuid,
             studentId: sheet.student_id._id,
             studentName: sheet.student_id.fullName || sheet.student_id.name,
             registration: sheet.student_id.registrationNumber,
-            status: sheet.status, // 'PENDING' ou 'SCANNED'
-            grade: sheet.grade,   // Nota (se já tiver)
+            status: sheet.status, 
+            grade: sheet.grade,  
+            objectiveGrade: sheet.objectiveGrade, // NOVO
+            dissertativeGrade: sheet.dissertativeGrade, // NOVO
             pdfGeneratedAt: sheet.pdf_generated_at
         }));
 
         return {
             examTitle: exam.title,
+            correctionType: exam.correctionType, // NOVO: Avisa pro app que tipo de prova é essa
             totalSheets: formattedSheets.length,
             scannedCount: formattedSheets.filter(s => s.status === 'SCANNED').length,
             pendingCount: formattedSheets.filter(s => s.status !== 'SCANNED').length,
@@ -193,20 +196,32 @@ class ExamService {
                 title: exam.title,
                 subjectName: exam.subject_id?.name || 'Disciplina',
                 teacherName: profName,
-                applicationDate: exam.applicationDate
+                applicationDate: exam.applicationDate,
+                correctionType: exam.correctionType // NOVO: Avisa o gerador de PDF
             },
             sheets: sheetsCreated,
             errors
         };
     }
 
-    async scanExamSheet(qrCodeUuid, grade, schoolId) {
-        console.log(`--> [ExamService] Computando nota ${grade} para o QR Code ${qrCodeUuid}`);
+    // 👇 [ATUALIZADO] Agora suporta receber o gabarito detalhado
+    async scanExamSheet(payload, schoolId) {
+        // Desestrutura o payload que agora pode ter mais dados além da nota
+        const { qrCodeUuid, grade, objectiveGrade, dissertativeGrade, answers } = payload;
+        
+        console.log(`--> [ExamService] Computando resultado para o QR Code ${qrCodeUuid}`);
         
         const sheet = await ExamSheet.findOne({ qr_code_uuid: qrCodeUuid, school_id: schoolId });
         if (!sheet) throw new Error('QR Code inválido ou folha não encontrada.');
 
+        // Salva a nota final
         sheet.grade = grade;
+        
+        // Se vieram dados detalhados (Prova Mista/Gabarito), salva também
+        if (objectiveGrade !== undefined) sheet.objectiveGrade = objectiveGrade;
+        if (dissertativeGrade !== undefined) sheet.dissertativeGrade = dissertativeGrade;
+        if (answers && Array.isArray(answers)) sheet.answers = answers;
+
         sheet.status = 'SCANNED';
         await sheet.save();
 
@@ -222,7 +237,6 @@ class ExamService {
             });
 
             if (enrollment) {
-                // 👇 Aqui ele salva a nota corretamente na tabela de notas!
                 await ClassGrade.findOneAndUpdate(
                     {
                         school_id: schoolId,
