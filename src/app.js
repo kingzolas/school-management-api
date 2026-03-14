@@ -34,6 +34,7 @@ const registrationRequestRoutes = require('./api/routes/registration-request.rou
 const attendanceRoutes = require('./api/routes/attendance.routes.js'); // [ADICIONADO - Frequência]
 const evaluationRoutes = require('./api/routes/evaluation.routes');
 const gradeRoutes = require('./api/routes/grade.routes');
+const geminiExamRoutes = require('./api/routes/gemini-exam.routes');
 // ===================================================================
 const releaseRoutes = require('./api/routes/release.routes');
 
@@ -115,5 +116,7 @@ app.use('/api/invoice-compensations', invoiceCompensationRoutes);
 app.use('/api/auth/student', studentPortalAccessRoutes);
 
 app.use('/api/exams', examRoutes);
+
+app.use('/api/gemini-exam', geminiExamRoutes);
 
 module.exports = app;
