@@ -174,8 +174,19 @@ class ExamController {
 
             const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
 
-            const tempFileName = `temp_${crypto.randomUUID()}.jpg`;
-            tempFilePath = path.join(os.tmpdir(), tempFileName);
+            // ========================================================
+            // NOVA PASTA DE DEBUG (Use nodemon.json para ignorar)
+            // ========================================================
+            // process.cwd() garante que a pasta seja criada na raiz do projeto
+            const debugDir = path.join(process.cwd(), '..', 'omr_debug_external');
+            
+           if (!fs.existsSync(debugDir)) {
+    fs.mkdirSync(debugDir, { recursive: true });
+}
+
+            const uuid = crypto.randomUUID();
+            const tempFileName = `foto_aluno_${uuid}.jpg`;
+            tempFilePath = path.join(debugDir, tempFileName);
 
             fs.writeFileSync(tempFilePath, base64Data, { encoding: 'base64' });
 
@@ -183,7 +194,6 @@ class ExamController {
             if (correctionType === 'BUBBLE_SHEET' && examId) {
                 try {
                     omrLayout = await examService.getExamOmrLayout(examId, schoolId);
-                    console.log(`[INFO] Layout OMR carregado da prova ${examId}.`);
                 } catch (layoutErr) {
                     console.warn(`⚠️ Falha ao carregar layout OMR da prova: ${layoutErr.message}`);
                 }
@@ -194,25 +204,26 @@ class ExamController {
             let command = `python "${scriptPath}" "${tempFilePath}" "${correctionType}"`;
 
             if (omrLayout) {
-                const tempLayoutName = `omr_layout_${crypto.randomUUID()}.json`;
-                tempLayoutPath = path.join(os.tmpdir(), tempLayoutName);
+                const tempLayoutName = `mapa_coordenadas_${uuid}.json`;
+                tempLayoutPath = path.join(debugDir, tempLayoutName);
                 fs.writeFileSync(tempLayoutPath, JSON.stringify(omrLayout, null, 2), 'utf8');
 
-                // O script atual ignora argumentos extras.
-                // O próximo script poderá consumir esse 3º argumento sem quebrar compatibilidade.
                 command += ` "${tempLayoutPath}"`;
-                console.log(`[INFO] Layout OMR temporário salvo em: ${tempLayoutPath}`);
             }
 
             console.log(`[EXEC] Rodando script: ${command}`);
 
             exec(command, async (error, stdout, stderr) => {
+                
+                // DELETAR ARQUIVOS ESTÁ COMENTADO DE PROPÓSITO PARA DEBUG!
+                /*
                 try {
                     if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
                     if (tempLayoutPath && fs.existsSync(tempLayoutPath)) fs.unlinkSync(tempLayoutPath);
                 } catch (cleanupErr) {
                     console.warn('⚠️ Erro ao limpar arquivos temporários:', cleanupErr.message);
                 }
+                */
 
                 if (error) {
                     console.error("❌ ERRO NO SCRIPT PYTHON (EXEC):", stderr || error.message);
@@ -225,15 +236,12 @@ class ExamController {
                 try {
                     const result = JSON.parse(stdout);
                     console.log("✅ [PYTHON RESPONSE] IA retornou os dados brutos com sucesso.");
-
+                    
                     if (!result.success) {
-                        console.error("⚠️ Aviso da IA:", result.message || result.error);
                         return res.status(200).json(result);
                     }
 
                     if (result.type === 'BUBBLE_SHEET' && examId) {
-                        console.log(`[NODE] Iniciando correção baseada no gabarito da Prova ID: ${examId}...`);
-
                         const exam = await examService.getExamById(examId, schoolId);
 
                         let totalGrade = 0;
@@ -268,17 +276,13 @@ class ExamController {
                         result.objectiveGrade = objectiveGrade;
                         result.correctionDetails = detailedCorrection;
                         result.omrLayoutVersion = exam.settings?.omrLayout?.version || null;
-
                         console.log(`[NODE] Correção finalizada! Nota calculada: ${totalGrade}`);
-                        console.log(`[NODE] Detalhes das marcações:`, JSON.stringify(detailedCorrection, null, 2));
                     }
 
-                    console.log("📤 [RESPONSE] Enviando payload final para o App Mobile.");
                     res.status(200).json(result);
 
                 } catch (e) {
-                    console.error("❌ Falha crítica ao dar parse no retorno da IA ou calcular gabarito:", stdout);
-                    console.error("Detalhe do erro:", e.message);
+                    console.error("❌ Falha crítica ao dar parse no retorno da IA:", e.message);
                     res.status(200).json({
                         success: false,
                         message: "A leitura foi feita, mas houve um erro ao cruzar com o gabarito."
@@ -287,14 +291,14 @@ class ExamController {
             });
 
         } catch (error) {
+            // CATCH PRINCIPAL COMENTADO PARA NÃO APAGAR OS ARQUIVOS!
+            /*
             try {
                 if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
                 if (tempLayoutPath && fs.existsSync(tempLayoutPath)) fs.unlinkSync(tempLayoutPath);
-            } catch (cleanupErr) {
-                console.warn('⚠️ Erro ao limpar arquivos temporários no catch principal:', cleanupErr.message);
-            }
-
-            console.error('❌ ERRO GERAL NO ENDPOINT DE IMAGEM:', error.message);
+            } catch (cleanupErr) {}
+            */
+            
             res.status(400).json({ success: false, message: error.message });
         }
     }
