@@ -1,4 +1,3 @@
-
 import sys
 import cv2
 import numpy as np
@@ -25,13 +24,13 @@ OPTIONS = ["A", "B", "C", "D", "E"]
 MAX_RESIZE_SIDE = 1800
 
 # -----------------------------
-# ÂNCORAS QUADRADAS
+# ÂNCORAS TIPO "L" (CANTONEIRAS)
 # -----------------------------
 ANCHOR_MIN_AREA_RATIO = 0.00003
-ANCHOR_MAX_AREA_RATIO = 0.02
-ANCHOR_MIN_ASPECT = 0.75
-ANCHOR_MAX_ASPECT = 1.25
-ANCHOR_MIN_EXTENT = 0.72
+ANCHOR_MAX_AREA_RATIO = 0.05
+ANCHOR_MIN_ASPECT = 0.40  # Tolerância maior para L-shapes
+ANCHOR_MAX_ASPECT = 2.50
+ANCHOR_MIN_EXTENT = 0.15  # Extent de um 'L' é menor que de um quadrado (geralmente 0.3~0.5)
 ANCHOR_EDGE_BAND_X_RATIO = 0.24
 ANCHOR_EDGE_BAND_Y_RATIO = 0.20
 ANCHOR_MAX_CHILDREN = 0
@@ -43,10 +42,10 @@ ANCHOR_TOP_CANDIDATES = 30
 # DETECÇÃO VISUAL DA ÁREA DE RESPOSTAS
 # -----------------------------
 ANSWER_ROI_FALLBACK = {
-    "x1_ratio": 0.46,
-    "y1_ratio": 0.12,
-    "x2_ratio": 0.90,
-    "y2_ratio": 0.86,
+    "x1_ratio": 0.05,
+    "y1_ratio": 0.05,
+    "x2_ratio": 0.95,
+    "y2_ratio": 0.95,
 }
 
 # -----------------------------
@@ -216,7 +215,7 @@ def score_anchor_candidate(cand, image_shape):
     child_penalty = cand["children"] * 50000.0
 
     return (
-        (cand["area"] * cand["extent"] * 1.5) +
+        (cand["area"] * 1.5) +  # Removido o peso do extent para não penalizar formato de "L"
         (darkness_score * 40.0) +
         (uniformity_bonus * 35.0) +
         (edge_score * 50000.0) -
@@ -333,11 +332,11 @@ def find_anchor_squares(gray, debug_image=None, binary_debug_path=None):
         candidates.append(cand)
 
     if not candidates:
-        raise Exception("Nenhum candidato de âncora quadrada encontrado após filtragem.")
+        raise Exception("Nenhum candidato de âncora 'L' encontrado após filtragem.")
 
     candidates = sorted(candidates, key=lambda c: c["score"], reverse=True)[:ANCHOR_TOP_CANDIDATES]
 
-    log_info("Top candidatos de âncora quadrada:")
+    log_info("Top candidatos de âncora:")
     for i, cand in enumerate(candidates[:15], start=1):
         log_info(
             f"  #{i:02d} | score={cand['score']:.2f} | area={cand['area']:.1f} | "
@@ -460,14 +459,12 @@ def warp_using_detected_anchors(image, anchor_contours, layout):
 
 def detect_answer_roi(warped_bgr, debug_image=None):
     """
-    Tenta localizar visualmente o bloco grande das respostas.
-    Se falhar, usa fallback por proporção.
+    Tenta localizar visualmente o bloco central das respostas (agora sem o QR code ao lado).
     """
     h, w = warped_bgr.shape[:2]
     gray = cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    # Borda/linhas do retângulo e círculos
     th = cv2.adaptiveThreshold(
         blur,
         255,
@@ -496,22 +493,20 @@ def detect_answer_roi(warped_bgr, debug_image=None):
         cx = x + bw / 2.0
         cy = y + bh / 2.0
 
-        # caixa mais alta, na metade direita, sem ocupar a página inteira
-        if cx < w * 0.45:
+        # Sem QR Code, a caixa agora ficará quase centralizada
+        if not (0.3 <= aspect <= 5.0):
             continue
-        if not (1.2 <= aspect <= 3.6):
-            continue
-        if bw > w * 0.6 or bh > h * 0.9:
+        if bw > w * 0.95 or bh > h * 0.95:
             continue
 
-        score = area - abs(cx - (w * 0.68)) * 200 - abs(cy - (h * 0.48)) * 50
+        # Pontua melhor caixas grandes mais próximas ao centro
+        score = area - abs(cx - (w * 0.5)) * 100 - abs(cy - (h * 0.5)) * 100
         candidates.append((score, (x, y, bw, bh)))
 
     if candidates:
         candidates.sort(key=lambda t: t[0], reverse=True)
         x, y, bw, bh = candidates[0][1]
 
-        # pequena margem interna
         pad_x = int(round(bw * 0.04))
         pad_y = int(round(bh * 0.04))
         x1 = max(0, x + pad_x)
@@ -528,7 +523,7 @@ def detect_answer_roi(warped_bgr, debug_image=None):
 
         return roi, True
 
-    # fallback
+    # fallback (agora pegando praticamente a área toda limpa do meio)
     x1 = int(round(w * ANSWER_ROI_FALLBACK["x1_ratio"]))
     y1 = int(round(h * ANSWER_ROI_FALLBACK["y1_ratio"]))
     x2 = int(round(w * ANSWER_ROI_FALLBACK["x2_ratio"]))
@@ -569,9 +564,6 @@ def deduplicate_circles(circles, dist_factor=0.6):
 
 
 def detect_bubble_circles(answer_roi_bgr, total_questions, debug_image=None):
-    """
-    Detecta os círculos visualmente dentro da área de respostas.
-    """
     gray = cv2.cvtColor(answer_roi_bgr, cv2.COLOR_BGR2GRAY)
     blur = cv2.medianBlur(gray, 5)
 
@@ -605,7 +597,6 @@ def detect_bubble_circles(answer_roi_bgr, total_questions, debug_image=None):
     radii = np.array([r for _, _, r in detected], dtype=np.float32)
     median_r = float(np.median(radii))
 
-    # mantém apenas círculos com raio parecido com o das bolhas principais
     filtered = []
     for x, y, r in detected:
         if 0.70 * median_r <= r <= 1.35 * median_r:
@@ -796,14 +787,12 @@ def read_bubble_sheet_visual(
     debug_vis = warped_bgr.copy()
     grid_debug = warped_bgr.copy()
 
-    # desenha ROI
     cv2.rectangle(debug_vis, (x1, y1), (x2, y2), (0, 255, 255), 2)
     cv2.rectangle(grid_debug, (x1, y1), (x2, y2), (0, 255, 255), 2)
 
     answers = []
     debug_rows = []
 
-    # grade visual final: para cada célula, usa círculo detectado; se faltar, usa centro do cluster
     for q_idx in range(total_questions):
         row_stats = []
 
