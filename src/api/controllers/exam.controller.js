@@ -1,9 +1,5 @@
 const examService = require('../services/exam.service');
-const fs = require('fs');
-const path = require('path');
-const { exec } = require('child_process');
-const crypto = require('crypto');
-const os = require('os');
+const omrProcessingService = require('../services/omrProcessing.service');
 
 class ExamController {
     async create(req, res) {
@@ -120,7 +116,6 @@ class ExamController {
             console.log('Payload:', JSON.stringify(req.body, null, 2));
 
             const schoolId = req.user.school_id;
-
             const sheet = await examService.scanExamSheet(req.body, schoolId);
 
             console.log(`✅ Resultados computados para QR Code ${req.body.qrCodeUuid}`);
@@ -158,148 +153,104 @@ class ExamController {
     }
 
     async processOMRImage(req, res) {
-        let tempFilePath = null;
-        let tempLayoutPath = null;
+        let sessionDir = null;
 
         try {
             console.log('\n📸 [POST] /exams/process-omr - ANALISANDO GABARITO PELA IA');
 
-            const { imageBase64, correctionType = 'DIRECT_GRADE', examId } = req.body;
+            const {
+                imageBase64,
+                correctionType = 'DIRECT_GRADE',
+                examId,
+                qrCodeUuid = null,
+            } = req.body;
+
             const schoolId = req.user.school_id;
 
-            if (!imageBase64) throw new Error("Imagem não enviada.");
-
-            console.log(`[INFO] Tipo de Correção Solicitada: ${correctionType}`);
-            if (examId) console.log(`[INFO] ID da Prova vinculado: ${examId}`);
-
-            const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-
-            // ========================================================
-            // NOVA PASTA DE DEBUG (Use nodemon.json para ignorar)
-            // ========================================================
-            // process.cwd() garante que a pasta seja criada na raiz do projeto
-            const debugDir = path.join(process.cwd(), '..', 'omr_debug_external');
-            
-           if (!fs.existsSync(debugDir)) {
-    fs.mkdirSync(debugDir, { recursive: true });
-}
-
-            const uuid = crypto.randomUUID();
-            const tempFileName = `foto_aluno_${uuid}.jpg`;
-            tempFilePath = path.join(debugDir, tempFileName);
-
-            fs.writeFileSync(tempFilePath, base64Data, { encoding: 'base64' });
-
-            let omrLayout = null;
-            if (correctionType === 'BUBBLE_SHEET' && examId) {
-                try {
-                    omrLayout = await examService.getExamOmrLayout(examId, schoolId);
-                } catch (layoutErr) {
-                    console.warn(`⚠️ Falha ao carregar layout OMR da prova: ${layoutErr.message}`);
-                }
+            if (!imageBase64) {
+                throw new Error('Imagem não enviada.');
             }
 
-            const scriptPath = path.join(__dirname, '../../scripts/process_omr.py');
-
-            let command = `python "${scriptPath}" "${tempFilePath}" "${correctionType}"`;
-
-            if (omrLayout) {
-                const tempLayoutName = `mapa_coordenadas_${uuid}.json`;
-                tempLayoutPath = path.join(debugDir, tempLayoutName);
-                fs.writeFileSync(tempLayoutPath, JSON.stringify(omrLayout, null, 2), 'utf8');
-
-                command += ` "${tempLayoutPath}"`;
+            if (correctionType !== 'BUBBLE_SHEET') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'O novo motor OMR atende somente correctionType=BUBBLE_SHEET.',
+                });
             }
 
-            console.log(`[EXEC] Rodando script: ${command}`);
+            if (!examId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'examId é obrigatório para leitura do cartão-resposta.',
+                });
+            }
 
-            exec(command, async (error, stdout, stderr) => {
-                
-                // DELETAR ARQUIVOS ESTÁ COMENTADO DE PROPÓSITO PARA DEBUG!
-                /*
-                try {
-                    if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
-                    if (tempLayoutPath && fs.existsSync(tempLayoutPath)) fs.unlinkSync(tempLayoutPath);
-                } catch (cleanupErr) {
-                    console.warn('⚠️ Erro ao limpar arquivos temporários:', cleanupErr.message);
-                }
-                */
+            const exam = await examService.getExamById(examId, schoolId);
+            if (!exam) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Prova não encontrada.',
+                });
+            }
 
-                if (error) {
-                    console.error("❌ ERRO NO SCRIPT PYTHON (EXEC):", stderr || error.message);
-                    return res.status(200).json({
-                        success: false,
-                        message: "A IA falhou ao processar o formato da imagem. Tente enquadrar melhor."
-                    });
-                }
+            const omrLayout = await examService.getExamOmrLayout(examId, schoolId);
 
-                try {
-                    const result = JSON.parse(stdout);
-                    console.log("✅ [PYTHON RESPONSE] IA retornou os dados brutos com sucesso.");
-                    
-                    if (!result.success) {
-                        return res.status(200).json(result);
-                    }
+            const session = omrProcessingService.createDebugSession();
+            sessionDir = session.sessionDir;
 
-                    if (result.type === 'BUBBLE_SHEET' && examId) {
-                        const exam = await examService.getExamById(examId, schoolId);
+            const imagePath = omrProcessingService.writeBase64ImageToDisk(imageBase64, sessionDir);
+            const layoutPath = omrProcessingService.writeLayoutToDisk(omrLayout, sessionDir);
 
-                        let totalGrade = 0;
-                        let objectiveGrade = 0;
-                        const detailedCorrection = [];
-
-                        const objectiveQuestions = exam.questions.filter(q => q.type === 'OBJECTIVE');
-
-                        result.answers.forEach(ans => {
-                            const qIndex = ans.question - 1;
-
-                            if (qIndex < objectiveQuestions.length) {
-                                const dbQuestion = objectiveQuestions[qIndex];
-                                const isCorrect = (ans.marked === dbQuestion.correctAnswer);
-
-                                if (isCorrect) {
-                                    objectiveGrade += dbQuestion.weight;
-                                    totalGrade += dbQuestion.weight;
-                                }
-
-                                detailedCorrection.push({
-                                    questionNumber: ans.question,
-                                    studentMarked: ans.marked,
-                                    correctAnswer: dbQuestion.correctAnswer,
-                                    isCorrect,
-                                    earnedPoints: isCorrect ? dbQuestion.weight : 0
-                                });
-                            }
-                        });
-
-                        result.grade = totalGrade;
-                        result.objectiveGrade = objectiveGrade;
-                        result.correctionDetails = detailedCorrection;
-                        result.omrLayoutVersion = exam.settings?.omrLayout?.version || null;
-                        console.log(`[NODE] Correção finalizada! Nota calculada: ${totalGrade}`);
-                    }
-
-                    res.status(200).json(result);
-
-                } catch (e) {
-                    console.error("❌ Falha crítica ao dar parse no retorno da IA:", e.message);
-                    res.status(200).json({
-                        success: false,
-                        message: "A leitura foi feita, mas houve um erro ao cruzar com o gabarito."
-                    });
-                }
+            const { result } = await omrProcessingService.runPythonOmr({
+                imagePath,
+                correctionType,
+                layoutPath,
+                sessionDir,
             });
 
+            if (!result.success) {
+                return res.status(200).json(result);
+            }
+
+            const correction = examService.buildBubbleSheetCorrection(exam, result.answers);
+
+            const responsePayload = {
+                ...result,
+                grade: correction.grade,
+                objectiveGrade: correction.objectiveGrade,
+                correctionDetails: correction.correctionDetails,
+                omrLayoutVersion: exam.settings?.omrLayout?.version || null,
+            };
+
+            if (qrCodeUuid) {
+                const persistedSheet = await examService.scanExamSheet(
+                    {
+                        qrCodeUuid,
+                        grade: correction.grade,
+                        objectiveGrade: correction.objectiveGrade,
+                        answers: correction.persistableAnswers,
+                    },
+                    schoolId
+                );
+
+                responsePayload.persisted = true;
+                responsePayload.sheetId = persistedSheet._id;
+                responsePayload.sheetStatus = persistedSheet.status;
+            } else {
+                responsePayload.persisted = false;
+            }
+
+            return res.status(200).json(responsePayload);
         } catch (error) {
-            // CATCH PRINCIPAL COMENTADO PARA NÃO APAGAR OS ARQUIVOS!
-            /*
-            try {
-                if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
-                if (tempLayoutPath && fs.existsSync(tempLayoutPath)) fs.unlinkSync(tempLayoutPath);
-            } catch (cleanupErr) {}
-            */
-            
-            res.status(400).json({ success: false, message: error.message });
+            console.error('❌ ERRO AO PROCESSAR OMR:', error.message);
+            return res.status(400).json({
+                success: false,
+                message: error.message,
+            });
+        } finally {
+            if (sessionDir) {
+                omrProcessingService.cleanupSession(sessionDir);
+            }
         }
     }
 }

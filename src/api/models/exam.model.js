@@ -1,73 +1,59 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
-// Sub-schema para estruturar cada questão da prova
 const questionSchema = new Schema({
-    type: { 
-        type: String, 
-        enum: ['OBJECTIVE', 'DISSERTATIVE'], 
-        required: true 
+    type: {
+        type: String,
+        enum: ['OBJECTIVE', 'DISSERTATIVE'],
+        required: true
     },
-    text: { type: String, required: true }, // O enunciado da questão
-    
-    // Tratamento de Imagem com as opções de layout
+    text: { type: String, required: true },
+
     image: {
         url: { type: String, default: null },
-        layout: { 
-            type: String, 
-            enum: ['NONE', 'SMALL_INLINE', 'MEDIUM_CENTER', 'LARGE_FULL'], 
-            default: 'NONE' 
+        layout: {
+            type: String,
+            enum: ['NONE', 'SMALL_INLINE', 'MEDIUM_CENTER', 'LARGE_FULL'],
+            default: 'NONE'
         }
     },
-    
-    // Exclusivo para questões OBJETIVAS 
-    options: [{ type: String }], 
-    
-    // ======================================================================
-    // [NOVO] Gabarito para correção automática da IA
-    // Exemplo: 'A', 'B', 'C', 'D' ou 'E'
-    // ======================================================================
-    correctAnswer: { type: String, default: null },
-    
-    // Exclusivo para questões DISSERTATIVAS
+
+    options: [{ type: String }],
+
+    correctAnswer: {
+        type: String,
+        enum: ['A', 'B', 'C', 'D', 'E', null],
+        default: null
+    },
+
     linesToLeave: { type: Number, default: 5 },
-    
-    weight: { type: Number, default: 1 } // Quanto vale essa questão na soma total
+    weight: { type: Number, default: 1 }
 });
 
 const examSchema = new Schema({
     school_id: { type: Schema.Types.ObjectId, ref: 'School', required: true, index: true },
-    
-    // CORRIGIDO DE tutor_id PARA teacher_id
-    teacher_id: { type: Schema.Types.ObjectId, ref: 'User', required: true }, 
-    
+    teacher_id: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     class_id: { type: Schema.Types.ObjectId, ref: 'Class', required: true },
     subject_id: { type: Schema.Types.ObjectId, ref: 'Subject', required: true },
     schoolyear_id: { type: Schema.Types.ObjectId, ref: 'SchoolYear' },
-    
-    title: { type: String, required: true }, // Ex: "Prova Bimestral de Biologia"
+
+    title: { type: String, required: true },
     applicationDate: { type: Date, required: true },
-    totalValue: { type: Number, required: true }, // Ex: 10.0
-    
-    // ======================================================================
-    // [NOVO] Define como essa prova será corrigida (Lançamento ou Cartão)
-    // ======================================================================
+    totalValue: { type: Number, required: true },
+
     correctionType: {
         type: String,
         enum: ['DIRECT_GRADE', 'BUBBLE_SHEET'],
         default: 'DIRECT_GRADE'
     },
-    
-    // Array guardando todo o conteúdo da prova
+
     questions: [questionSchema],
 
-    // ======================================================================
-    // Configurações e Ligações Internas (Ponte com o Diário)
-    // ======================================================================
     settings: {
-        evaluationId: { type: Schema.Types.ObjectId, ref: 'Evaluation' }
+        evaluationId: { type: Schema.Types.ObjectId, ref: 'Evaluation', default: null },
+        omrLayout: { type: Schema.Types.Mixed, default: null }
     },
-    
+
     status: {
         type: String,
         enum: ['DRAFT', 'READY', 'PRINTED', 'GRADED'],
