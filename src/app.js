@@ -46,6 +46,7 @@ const invoiceCompensationRoutes = require('./api/routes/invoiceCompensation.rout
 
 const studentPortalAccessRoutes = require('./api/routes/studentPortalAccess.routes');
 const examRoutes = require('./api/routes/exam.routes.js');
+const reportCardRoutes = require('./api/routes/reportCard.routes.js');
 
 const app = express();
 
@@ -118,5 +119,7 @@ app.use('/api/auth/student', studentPortalAccessRoutes);
 app.use('/api/exams', examRoutes);
 
 app.use('/api/gemini-exam', geminiExamRoutes);
+
+app.use('/api/report-cards', reportCardRoutes);
 
 module.exports = app;
