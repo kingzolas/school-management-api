@@ -13,7 +13,8 @@ const questionSchema = new Schema({
         url: { type: String, default: null },
         layout: {
             type: String,
-            enum: ['NONE', 'SMALL_INLINE', 'MEDIUM_CENTER', 'LARGE_FULL'],
+            // 👇 AQUI ESTÁ A CORREÇÃO: Atualizado com os novos layouts do Flutter
+            enum: ['NONE', 'LEFT_SMALL', 'RIGHT_SMALL', 'CENTER_MEDIUM', 'CENTER_LARGE', 'FULL_WIDTH'],
             default: 'NONE'
         }
     },
