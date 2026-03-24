@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const studentController = require('../controllers/student.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
+const studentNoteController = require('../controllers/studentNote.controller');
 // [NOVO] Importa o middleware de upload
 const upload = require('../middlewares/upload');
 
@@ -36,5 +37,13 @@ router.delete('/:studentId/history/:recordId', authMiddleware.verifyToken, stude
 
 // --- Rota de Tutor ---
 router.put('/:studentId/tutors/:tutorId', authMiddleware.verifyToken, studentController.updateTutorRelationship);
+
+// =========================================================================
+// CORREÇÃO: Usando authMiddleware.verifyToken e ajustando os caminhos
+// =========================================================================
+// Rotas para anotações de um aluno específico
+router.post('/:studentId/notes', authMiddleware.verifyToken, studentNoteController.create);
+router.get('/:studentId/notes', authMiddleware.verifyToken, studentNoteController.listByStudent);
+router.delete('/notes/:noteId', authMiddleware.verifyToken, studentNoteController.delete);
 
 module.exports = router;

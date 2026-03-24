@@ -1,6 +1,41 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
+const AttendanceRecordSchema = new Schema({
+  studentId: {
+    type: Schema.Types.ObjectId,
+    ref: 'Student',
+    required: true
+  },
+  status: {
+    type: String,
+    enum: ['PRESENT', 'ABSENT'],
+    default: 'PRESENT'
+  },
+  observation: {
+    type: String,
+    default: ''
+  },
+  absenceState: {
+    type: String,
+    enum: ['NONE', 'PENDING', 'APPROVED', 'REJECTED', 'EXPIRED'],
+    default: 'NONE'
+  },
+  justificationId: {
+    type: Schema.Types.ObjectId,
+    ref: 'AbsenceJustification',
+    default: null
+  },
+  justificationDeadlineAt: {
+    type: Date,
+    default: null
+  },
+  justificationUpdatedAt: {
+    type: Date,
+    default: null
+  }
+}, { _id: false });
+
 const AttendanceSchema = new Schema({
   schoolId: {
     type: Schema.Types.ObjectId,
@@ -8,10 +43,10 @@ const AttendanceSchema = new Schema({
     required: true,
     index: true
   },
-  classId: { 
-    type: Schema.Types.ObjectId, 
-    ref: 'Class', 
-    required: true 
+  classId: {
+    type: Schema.Types.ObjectId,
+    ref: 'Class',
+    required: true
   },
   teacherId: {
     type: Schema.Types.ObjectId,
@@ -23,27 +58,24 @@ const AttendanceSchema = new Schema({
     required: true,
     default: Date.now
   },
-  // Array com o status de cada aluno
-  records: [{
-    studentId: {
-      type: Schema.Types.ObjectId,
-      ref: 'Student',
-      required: true
-    },
-    status: {
-      type: String,
-      enum: ['PRESENT', 'ABSENT', 'EXCUSED'], // Presente, Falta, Justificado
-      default: 'PRESENT'
-    },
-    observation: { type: String, default: '' }
-  }],
+  records: {
+    type: [AttendanceRecordSchema],
+    default: []
+  },
   metadata: {
-    device: { type: String, default: 'mobile' }, // Identifica se veio do app
-    syncedAt: { type: Date, default: Date.now }
+    device: {
+      type: String,
+      default: 'mobile'
+    },
+    syncedAt: {
+      type: Date,
+      default: Date.now
+    }
   }
 }, { timestamps: true });
 
-// Índice para evitar duplicidade e acelerar busca: Uma chamada por Turma por Dia
-AttendanceSchema.index({ schoolId: 1, classId: 1, date: 1 });
+AttendanceSchema.index({ schoolId: 1, classId: 1, date: 1 }, { unique: true });
+AttendanceSchema.index({ schoolId: 1, classId: 1, 'records.studentId': 1 });
+AttendanceSchema.index({ schoolId: 1, classId: 1, 'records.absenceState': 1 });
 
 module.exports = mongoose.model('Attendance', AttendanceSchema);

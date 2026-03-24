@@ -122,4 +122,6 @@ app.use('/api/gemini-exam', geminiExamRoutes);
 
 app.use('/api/report-cards', reportCardRoutes);
 
+app.use('/api/absence-justifications', require('./api/routes/absenceJustification.routes.js'));
+
 module.exports = app;
