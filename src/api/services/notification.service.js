@@ -17,13 +17,13 @@ try {
   try {
     appEmitter = require('../../loaders/eventEmitter');
   } catch (e2) {
-    console.warn("⚠️ appEmitter não encontrado.");
+    console.warn('⚠️ appEmitter não encontrado.');
   }
 }
 
 // Texto padrão para evitar cobranças indevidas por atraso de liquidação bancária
 const AVISO_LIQUIDACAO =
-  "\n\n_Obs: Se você já realizou o pagamento, por favor desconsidere esta mensagem. O banco pode levar até 3 dias úteis para processar a baixa em nosso sistema._";
+  '\n\n_Obs: Se você já realizou o pagamento, por favor desconsidere esta mensagem. O banco pode levar até 3 dias úteis para processar a baixa em nosso sistema._';
 
 const TEMPLATES_FUTURO = [
   `{saudacao} {nome}! Tudo bem? 😊\nPassando pra deixar o boleto da *{escola}* ({descricao}) já liberado pra você. Ele vence dia {vencimento}, mas sabemos que muita gente gosta de se organizar logo no início do mês!\nValor: R$ {valor}.${AVISO_LIQUIDACAO}`,
@@ -145,6 +145,114 @@ class NotificationService {
     return false;
   }
 
+  _buildSafeFileName(studentName, invoiceId, dueDate) {
+    const safeName = (studentName || 'Aluno')
+      .split(' ')[0]
+      .replace(/[^a-zA-Z0-9]/g, '_');
+
+    const venc = new Date(dueDate);
+    const dueKey = `${venc.getFullYear()}-${String(venc.getMonth() + 1).padStart(2, '0')}-${String(venc.getDate()).padStart(2, '0')}`;
+
+    return `Boleto_${safeName}_${String(invoiceId)}_${dueKey}.pdf`;
+  }
+
+  _composeSingleDeliveryMessage({ baseText, invoice }) {
+    const sections = [];
+    const addSection = (value) => {
+      const normalized = String(value || '').trim();
+      if (normalized) sections.push(normalized);
+    };
+
+    addSection(baseText);
+
+    const barcode = invoice?.boleto_barcode ? String(invoice.boleto_barcode).trim() : null;
+    const hasValidBarcode = this._isLikelyValidBarcode(barcode);
+    const gateway = String(invoice?.gateway || '').toLowerCase();
+
+    if (gateway === 'cora') {
+      if (invoice?.boleto_url) {
+        addSection(`📄 *Boleto em PDF / link para pagamento:*\n${invoice.boleto_url}`);
+      }
+
+      if (barcode) {
+        if (hasValidBarcode) {
+          addSection(`🔢 *Linha digitável:*\n${barcode}`);
+        } else {
+          addSection('⚠️ *Atenção:* por segurança, não enviamos a linha digitável. Utilize o PDF/link acima para concluir o pagamento.');
+        }
+      }
+
+      return {
+        text: sections.join('\n\n'),
+        shouldTryFile: Boolean(invoice?.boleto_url),
+      };
+    }
+
+    if (gateway === 'mercadopago') {
+      const pix = invoice?.pix_code || invoice?.mp_pix_copia_e_cola;
+
+      if (pix) {
+        addSection(`💠 *Pix Copia e Cola:*\n${String(pix).trim()}`);
+      }
+
+      if (!pix && invoice?.boleto_url) {
+        addSection(`🔗 *Link para pagamento:*\n${invoice.boleto_url}`);
+      }
+
+      if (!pix && barcode) {
+        if (hasValidBarcode) {
+          addSection(`🔢 *Linha digitável:*\n${barcode}`);
+        } else {
+          addSection('⚠️ *Atenção:* por segurança, não enviamos a linha digitável. Utilize o link de pagamento desta cobrança.');
+        }
+      }
+
+      return {
+        text: sections.join('\n\n'),
+        shouldTryFile: false,
+      };
+    }
+
+    if (invoice?.boleto_url) {
+      addSection(`🔗 *Link para pagamento:*\n${invoice.boleto_url}`);
+    }
+
+    if (barcode) {
+      if (hasValidBarcode) {
+        addSection(`🔢 *Linha digitável:*\n${barcode}`);
+      } else {
+        addSection('⚠️ *Atenção:* por segurança, não enviamos a linha digitável. Utilize o link/PDF desta cobrança para concluir o pagamento.');
+      }
+    }
+
+    return {
+      text: sections.join('\n\n'),
+      shouldTryFile: false,
+    };
+  }
+
+  async _dispatchSingleMessage({ log, invoice, deliveryMessage }) {
+    if (deliveryMessage.shouldTryFile && invoice?.boleto_url) {
+      const fileName = this._buildSafeFileName(log.student_name, invoice._id, invoice.dueDate);
+
+      try {
+        console.log(`📎 [Zap] Enviando cobrança consolidada em documento: ${fileName}`);
+        await whatsappService.sendFile(
+          log.school_id,
+          log.target_phone,
+          invoice.boleto_url,
+          fileName,
+          deliveryMessage.text,
+        );
+        return;
+      } catch (e) {
+        console.error('⚠️ Falha ao enviar documento consolidado. Fazendo fallback para texto único:', e?.message || e);
+      }
+    }
+
+    await whatsappService.sendText(log.school_id, log.target_phone, deliveryMessage.text);
+  }
+
   async _isInvoiceOnHold(invoice) {
     try {
       if (!invoice?._id || !invoice?.school_id) return false;
@@ -156,7 +264,7 @@ class NotificationService {
 
       return !!comp;
     } catch (e) {
-      console.error("⚠️ Erro ao checar HOLD de compensação:", e?.message || e);
+      console.error('⚠️ Erro ao checar HOLD de compensação:', e?.message || e);
       return false;
     }
   }
@@ -168,7 +276,7 @@ class NotificationService {
     try {
       objectIdSchool = new mongoose.Types.ObjectId(schoolId);
     } catch (e) {
-      console.error("ID da escola inválido para stats:", schoolId);
+      console.error('ID da escola inválido para stats:', schoolId);
       return { queued: 0, processing: 0, sent: 0, failed: 0, total_today: 0 };
     }
 
@@ -181,7 +289,7 @@ class NotificationService {
       },
       {
         $group: {
-          _id: "$status",
+          _id: '$status',
           count: { $sum: 1 }
         }
       }
@@ -239,7 +347,7 @@ class NotificationService {
         if (onHold) continue;
 
         forecast.total_expected++;
-        if(forecast.breakdown[check.type] !== undefined) forecast.breakdown[check.type]++;
+        if (forecast.breakdown[check.type] !== undefined) forecast.breakdown[check.type]++;
       }
     }
 
@@ -366,7 +474,7 @@ class NotificationService {
         }
       }
     } catch (e) {
-      console.error("❌ Erro varredura:", e);
+      console.error('❌ Erro varredura:', e);
     }
   }
 
@@ -536,8 +644,8 @@ class NotificationService {
 
   async _sendSingleNotification(log) {
     const invoice = log.invoice_id;
-    if (!invoice) throw new Error("Fatura não encontrada.");
-    if (invoice.status === 'paid' || invoice.status === 'canceled') throw new Error("Fatura já paga/cancelada.");
+    if (!invoice) throw new Error('Fatura não encontrada.');
+    if (invoice.status === 'paid' || invoice.status === 'canceled') throw new Error('Fatura já paga/cancelada.');
 
     const onHold = await this._isInvoiceOnHold(invoice);
     if (onHold) {
@@ -548,21 +656,21 @@ class NotificationService {
     }
 
     const school = await School.findById(log.school_id).select('name whatsapp').lean();
-    const nomeEscola = school?.name || "Escola";
+    const nomeEscola = school?.name || 'Escola';
 
     if (!school?.whatsapp || school.whatsapp.status !== 'connected') {
-      console.log(`⚠️ [Zap] Banco desconectado. Verificando API...`);
+      console.log('⚠️ [Zap] Banco desconectado. Verificando API...');
       const isReallyConnected = await whatsappService.ensureConnection(log.school_id);
       if (!isReallyConnected) {
-        throw new Error("WhatsApp desconectado (Confirmado pela API).");
+        throw new Error('WhatsApp desconectado (Confirmado pela API).');
       }
-      console.log(`✅ [Zap] Conexão ativa na API. Prosseguindo...`);
+      console.log('✅ [Zap] Conexão ativa na API. Prosseguindo...');
     }
 
     const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
     const venc = new Date(invoice.dueDate); venc.setHours(0, 0, 0, 0);
     const diffDays = Math.ceil((venc - hoje) / (1000 * 60 * 60 * 24));
-    
+
     // DADOS DINÂMICOS
     const diasAtraso = diffDays < 0 ? Math.abs(diffDays) : 0;
     const saudacao = this._getSaudacao();
@@ -580,7 +688,7 @@ class NotificationService {
 
     const templateIndex = Math.floor(Math.random() * list.length);
 
-    const text = list[templateIndex]
+    const baseText = list[templateIndex]
       .replace(/{escola}/g, nomeEscola)
       .replace(/{nome}/g, (log.tutor_name || '').split(' ')[0] || 'Olá')
       .replace(/{descricao}/g, invoice.description)
@@ -589,10 +697,17 @@ class NotificationService {
       .replace(/{saudacao}/g, saudacao)
       .replace(/{dias_atraso}/g, diasAtraso);
 
+    const deliveryMessage = this._composeSingleDeliveryMessage({
+      baseText,
+      invoice,
+    });
+
     log.template_group = templateGroup;
     log.template_index = templateIndex;
-    log.message_text = text;
-    log.message_preview = text.length > 140 ? `${text.slice(0, 140)}...` : text;
+    log.message_text = deliveryMessage.text;
+    log.message_preview = deliveryMessage.text.length > 140
+      ? `${deliveryMessage.text.slice(0, 140)}...`
+      : deliveryMessage.text;
 
     // Snapshot
     log.sent_gateway = invoice.gateway || null;
@@ -613,63 +728,11 @@ class NotificationService {
     await log.save();
     if (appEmitter) appEmitter.emit('notification:updated', log);
 
-    // 1) Envia Texto
-    await whatsappService.sendText(log.school_id, log.target_phone, text);
-    await new Promise(r => setTimeout(r, 2000));
-
-    // 2) CORA: envia boleto
-    if (invoice.gateway === 'cora' && invoice.boleto_url) {
-      const safeName = (log.student_name || 'Aluno')
-        .split(' ')[0]
-        .replace(/[^a-zA-Z0-9]/g, '_');
-
-      const dueKey = `${venc.getFullYear()}-${String(venc.getMonth() + 1).padStart(2, '0')}-${String(venc.getDate()).padStart(2, '0')}`;
-      const fileName = `Boleto_${safeName}_${String(invoice._id)}_${dueKey}.pdf`;
-
-      try {
-        console.log(`📎 [Zap] Enviando PDF: ${fileName}`);
-        await whatsappService.sendFile(
-          log.school_id,
-          log.target_phone,
-          invoice.boleto_url,
-          fileName,
-          "📄 Segue o seu boleto."
-        );
-      } catch (e) {
-        console.error("⚠️ Falha PDF:", e.message);
-        await whatsappService.sendText(log.school_id, log.target_phone, `📄 Baixe aqui: ${invoice.boleto_url}`);
-      }
-
-      if (invoice.boleto_barcode) {
-        const okBarcode = this._isLikelyValidBarcode(invoice.boleto_barcode);
-
-        if (okBarcode) {
-          await whatsappService.sendText(log.school_id, log.target_phone, String(invoice.boleto_barcode).trim());
-        } else {
-          log.error_code = log.error_code || 'BARCODE_INVALID_SUSPECT';
-          log.error_message = log.error_message || 'Barcode com formato suspeito; envio bloqueado para evitar pagamento errado.';
-          await log.save();
-          if (appEmitter) appEmitter.emit('notification:updated', log);
-
-          await whatsappService.sendText(
-            log.school_id,
-            log.target_phone,
-            "⚠️ *Atenção:* não enviamos o código de barras por segurança. Use o link/PDF acima para pagamento."
-          );
-        }
-      }
-
-      return;
-    }
-
-    // 3) MercadoPago: Pix
-    if (invoice.gateway === 'mercadopago') {
-      const pix = invoice.pix_code || invoice.mp_pix_copia_e_cola;
-      if (pix) {
-        await whatsappService.sendText(log.school_id, log.target_phone, "💠 Pix Copia e Cola:");
-        await whatsappService.sendText(log.school_id, log.target_phone, pix);
-      }
-    }
+    await this._dispatchSingleMessage({
+      log,
+      invoice,
+      deliveryMessage,
+    });
   }
 
   async getLogs(schoolId, status, page = 1, limit = 20, dateStr) {
@@ -706,7 +769,7 @@ class NotificationService {
     });
 
     if (failedLogs.length === 0) {
-      return { count: 0, message: "Nenhuma falha encontrada no dia selecionado." };
+      return { count: 0, message: 'Nenhuma falha encontrada no dia selecionado.' };
     }
 
     let count = 0;
