@@ -110,7 +110,19 @@ class InvoiceController {
 
       // Chama o serviço passando null no studentId para varrer a escola toda
       // Agora espera o retorno de 'stats'
-      const stats = await InvoiceService.syncPendingInvoices(null, schoolId);
+      const stats = await InvoiceService.syncPendingInvoices(null, schoolId, null, {
+        force: true,
+        reason: 'manual_api_refresh',
+      });
+
+      if (stats?.skipped) {
+        console.log(`🟡 [API] Sync ignorado para escola ${schoolId}: ${stats.reason || 'cooldown'}`);
+
+        return res.status(200).json({
+          message: 'Sincronização já está em andamento ou acabou de ser executada.',
+          stats,
+        });
+      }
 
       console.log(`✅ [API] Sync Finalizado. Atualizados: ${stats.updatedCount} de ${stats.totalChecked}`);
 

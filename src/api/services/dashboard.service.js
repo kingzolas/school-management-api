@@ -5,14 +5,23 @@ const Staff = require('../models/user.model');
 const ClassModel = require('../models/class.model');
 const Subject = require('../models/subject.model');
 const Expense = require('../models/expense.model');
+const financeRuntime = require('./school-finance.runtime.js');
 
 class DashboardService {
 
     async getDashboardData(schoolId) {
+        const currentYear = new Date().getFullYear();
+        const cachePayload = { year: currentYear };
+        const cached = financeRuntime.getCache('dashboard:financial', schoolId, cachePayload);
+
+        if (cached && !cached.stale) {
+            console.log(`📊 [DashboardService] Cache hit da inteligência financeira | schoolId=${schoolId} | year=${currentYear}`);
+            return cached.value;
+        }
+
         console.log(`📊 [DashboardService] Gerando Inteligência Financeira para SchoolID: ${schoolId}`);
         
         const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
-        const currentYear = new Date().getFullYear();
 
         // --- Definição de Datas ---
         const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
@@ -53,7 +62,7 @@ class DashboardService {
         ]);
 
         // --- Montagem do Objeto de Resposta ---
-        return {
+        const response = {
             counts: counts,
             
             // Visão do Mês Atual (Operacional)
@@ -101,6 +110,9 @@ class DashboardService {
             classData: classDistribution,
             birthdays: birthdays
         };
+
+        financeRuntime.setCache('dashboard:financial', schoolId, cachePayload, response);
+        return response;
     }
 
     // =========================================================================

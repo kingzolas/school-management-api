@@ -1,10 +1,15 @@
 const mongoose = require('mongoose'); // <--- ADICIONE ESTA LINHA OBRIGATORIAMENTE
 const Expense = require('../models/expense.model');
+const financeRuntime = require('./school-finance.runtime.js');
 
 // Criar nova despesa
 const createExpense = async (expenseData) => {
     const expense = new Expense(expenseData);
-    return await expense.save();
+    const saved = await expense.save();
+    if (saved?.schoolId) {
+        financeRuntime.invalidateSchool(saved.schoolId, 'dashboard:financial');
+    }
+    return saved;
 };
 
 // Listar despesas (com filtros opcionais)
@@ -33,16 +38,28 @@ const getExpenseById = async (expenseId, schoolId) => {
 
 // Atualizar despesa
 const updateExpense = async (expenseId, schoolId, updateData) => {
-    return await Expense.findOneAndUpdate(
+    const updated = await Expense.findOneAndUpdate(
         { _id: expenseId, schoolId },
         updateData,
         { new: true } // Retorna o objeto atualizado
     );
+
+    if (updated) {
+        financeRuntime.invalidateSchool(schoolId, 'dashboard:financial');
+    }
+
+    return updated;
 };
 
 // Deletar despesa
 const deleteExpense = async (expenseId, schoolId) => {
-    return await Expense.findOneAndDelete({ _id: expenseId, schoolId });
+    const deleted = await Expense.findOneAndDelete({ _id: expenseId, schoolId });
+
+    if (deleted) {
+        financeRuntime.invalidateSchool(schoolId, 'dashboard:financial');
+    }
+
+    return deleted;
 };
 
 // Resumo financeiro rápido (Soma total por status)

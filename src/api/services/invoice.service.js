@@ -5,6 +5,7 @@ const Tutor = require('../models/tutor.model.js');
 const School = require('../models/school.model.js');
 const whatsappService = require('./whatsapp.service.js');
 const NotificationService = require('./notification.service.js');
+const financeRuntime = require('./school-finance.runtime.js');
 const GatewayFactory = require('../gateways/gateway.factory.js');
 const tutorFinancialScoreService = require('./tutorFinancialScore.service.js');
 const { v4: uuidv4 } = require('uuid');
@@ -142,6 +143,7 @@ class InvoiceService {
       });
 
       await newInvoice.save();
+      financeRuntime.invalidateSchool(schoolId);
 
       if (payerPhone) {
         try {
@@ -226,6 +228,81 @@ class InvoiceService {
     };
   }
 
+  _scheduleFinanceSync(schoolId, { reason = 'background_refresh', force = false, studentId = null, singleInvoiceId = null } = {}) {
+    if (!schoolId) return { scheduled: false, reason: 'missing_school' };
+
+    const gate = financeRuntime.shouldAllowSync(schoolId, { force });
+
+    if (!gate.allowed) {
+      console.log(`🟡 [InvoiceService] Sync não agendada para escola ${schoolId}`, {
+        reason: gate.reason,
+        force,
+      });
+
+      return {
+        scheduled: false,
+        reason: gate.reason,
+        state: gate.state,
+      };
+    }
+
+    console.log(`🕒 [InvoiceService] Sync em background agendada`, {
+      schoolId,
+      reason,
+      force,
+    });
+
+    setImmediate(() => {
+      this.syncPendingInvoices(studentId, schoolId, singleInvoiceId, { force, reason })
+        .catch((error) => {
+          console.error(`⚠️ [InvoiceService] Background finance sync falhou (${reason}):`, error.message);
+        });
+    });
+
+    return {
+      scheduled: true,
+      reason,
+    };
+  }
+
+  _shouldRefreshInvoiceList(filters = {}) {
+    const status = String(filters?.status || '').trim().toLowerCase();
+
+    if (!status) return true;
+    return ['pending', 'overdue'].includes(status);
+  }
+
+  async _runLimitedConcurrency(items = [], limit = 5, handler = async () => {}) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return;
+    }
+
+    const maxConcurrency = Math.max(1, Math.min(Number(limit) || 1, items.length));
+    let cursor = 0;
+
+    const workers = Array.from({ length: maxConcurrency }, async () => {
+      while (cursor < items.length) {
+        const currentIndex = cursor++;
+        const currentItem = items[currentIndex];
+        await handler(currentItem, currentIndex);
+      }
+    });
+
+    await Promise.all(workers);
+  }
+
+  _normalizeInvoiceCachePayload(value = {}) {
+    const normalized = {};
+
+    for (const key of Object.keys(value).sort()) {
+      const currentValue = value[key];
+      if (currentValue === undefined || currentValue === null || currentValue === '') continue;
+      normalized[key] = String(currentValue);
+    }
+
+    return normalized;
+  }
+
   _translateGatewayError(error, payerName = 'o responsável') {
     let errorData = null;
 
@@ -296,6 +373,8 @@ class InvoiceService {
         console.error('⚠️ [InvoiceService] Erro ao recalcular score após cancelInvoice (não bloqueante):', scoreError.message);
       }
     }
+
+    financeRuntime.invalidateSchool(schoolId);
 
     return invoice;
   }
@@ -379,6 +458,7 @@ class InvoiceService {
       }
 
       await invoice.save();
+      financeRuntime.invalidateSchool(invoice.school_id);
 
       console.log(`✅ [DB UPDATE ${hookRunId}] Fatura ${invoice._id} atualizada`, {
         oldStatus,
@@ -450,7 +530,30 @@ class InvoiceService {
     return `${mm}/${yyyy}`;
   }
 
-  async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null) {
+  async syncPendingInvoices(studentId, schoolId, singleInvoiceId = null, options = {}) {
+    const syncStart = financeRuntime.tryStartSync(schoolId, {
+      force: options.force === true,
+      reason: options.reason || 'sync_pending_invoices',
+    });
+
+    if (!syncStart.started) {
+      console.log(`\n🟡 [sync-${schoolId}-${Date.now()}] Sync ignorado`, {
+        schoolId,
+        studentId: studentId || null,
+        singleInvoiceId: singleInvoiceId || null,
+        reason: syncStart.reason,
+      });
+
+      return {
+        totalChecked: 0,
+        updatedCount: 0,
+        details: [],
+        skipped: true,
+        reason: syncStart.reason,
+        syncState: syncStart.state,
+      };
+    }
+
     const syncRunId = `sync-${schoolId}-${Date.now()}`;
     const startedAt = Date.now();
 
@@ -470,8 +573,12 @@ class InvoiceService {
       singleInvoiceId: singleInvoiceId || null
     });
 
-    const pendingInvoices = await Invoice.find(filter).lean();
-    const stats = { totalChecked: pendingInvoices.length, updatedCount: 0, details: [] };
+    let stats = { totalChecked: 0, updatedCount: 0, details: [] };
+    let syncError = null;
+
+    try {
+      const pendingInvoices = await Invoice.find(filter).lean();
+      stats = { totalChecked: pendingInvoices.length, updatedCount: 0, details: [] };
 
     const coraPendings = pendingInvoices.filter(i => i.gateway === 'cora');
     const mpPendings = pendingInvoices.filter(i => i.gateway === 'mercadopago');
@@ -593,7 +700,7 @@ class InvoiceService {
     const MAX_INDIVIDUAL_CHECKS = 250;
     const toCheck = pendingInvoices.slice(0, MAX_INDIVIDUAL_CHECKS);
 
-    await Promise.all(toCheck.map(async (inv) => {
+    await this._runLimitedConcurrency(toCheck, 5, async (inv) => {
       try {
         if (!inv.external_id) return;
 
@@ -642,7 +749,7 @@ class InvoiceService {
           message: e.message
         });
       }
-    }));
+    });
 
     if (tutorsToRecalculate.size > 0) {
       try {
@@ -652,51 +759,179 @@ class InvoiceService {
       }
     }
 
-    console.log(`✅ [${syncRunId}] Sync finalizado`, {
-      totalChecked: stats.totalChecked,
-      updatedCount: stats.updatedCount,
-      durationMs: Date.now() - startedAt
-    });
+      if (stats.updatedCount > 0) {
+        financeRuntime.invalidateSchool(schoolId);
+      }
 
-    return stats;
+      console.log(`✅ [${syncRunId}] Sync finalizado`, {
+        totalChecked: stats.totalChecked,
+        updatedCount: stats.updatedCount,
+        durationMs: Date.now() - startedAt
+      });
+
+      return stats;
+    } catch (error) {
+      syncError = error;
+      console.error(`❌ [${syncRunId}] Sync falhou`, {
+        message: error.message,
+        durationMs: Date.now() - startedAt
+      });
+      throw error;
+    } finally {
+      financeRuntime.finishSync(schoolId, {
+        success: !syncError,
+        error: syncError,
+        updatedCount: stats.updatedCount,
+        durationMs: Date.now() - startedAt
+      });
+    }
   }
 
-  async getAllInvoices(filters = {}, schoolId) {
-    this.syncPendingInvoices(null, schoolId).catch((e) => {
-      console.error('❌ [InvoiceService] syncPendingInvoices falhou em getAllInvoices:', e.message);
-    });
+    async getAllInvoices(filters = {}, schoolId) {
+      const cachePayload = this._normalizeInvoiceCachePayload(filters);
+      const cached = financeRuntime.getCache('invoice:list', schoolId, cachePayload);
 
-    const query = { school_id: schoolId };
-    if (filters.status) query.status = filters.status;
+      if (cached && !cached.stale) {
+        if (this._shouldRefreshInvoiceList(filters)) {
+          this._scheduleFinanceSync(schoolId, { reason: 'invoice_list_cache_hit' });
+        }
 
-    return Invoice.find(query)
-      .sort({ dueDate: -1 })
-      .populate('student', 'fullName')
-      .populate('tutor', 'fullName financialScore');
-  }
+        return cached.value;
+      }
 
-  async getInvoiceById(invoiceId, schoolId) {
-    try {
-      await this.syncPendingInvoices(null, schoolId, invoiceId);
-    } catch (e) {
-      console.error('⚠️ [InvoiceService] syncPendingInvoices falhou em getInvoiceById:', e.message);
+      const query = { school_id: schoolId };
+      if (filters.status) query.status = filters.status;
+
+      const invoices = await Invoice.find(query)
+        .sort({ dueDate: -1 })
+        .populate('student', 'fullName')
+        .populate('tutor', 'fullName financialScore')
+        .lean();
+
+      financeRuntime.setCache('invoice:list', schoolId, cachePayload, invoices);
+
+      if (this._shouldRefreshInvoiceList(filters)) {
+        this._scheduleFinanceSync(schoolId, { reason: cached ? 'invoice_list_revalidate' : 'invoice_list_warmup' });
+      }
+
+      return invoices;
     }
 
-    return Invoice.findOne({ _id: invoiceId, school_id: schoolId })
-      .populate('student', 'fullName profilePicture')
-      .populate('tutor', 'fullName financialScore');
-  }
+    async getInvoiceById(invoiceId, schoolId) {
+      const cachePayload = this._normalizeInvoiceCachePayload({ invoiceId });
+      const cached = financeRuntime.getCache('invoice:by-id', schoolId, cachePayload);
+
+      if (cached && !cached.stale) {
+        const invoice = cached.value;
+
+        if (invoice && ['pending', 'overdue'].includes(invoice.status) && ['mercadopago', 'cora'].includes(invoice.gateway) && invoice.external_id) {
+          this._scheduleFinanceSync(schoolId, {
+            reason: 'invoice_by_id_cache_hit',
+            singleInvoiceId: invoiceId,
+          });
+        }
+
+        return invoice;
+      }
+
+      const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
+        .populate('student', 'fullName profilePicture')
+        .populate('tutor', 'fullName financialScore')
+        .lean();
+
+      if (invoice) {
+        financeRuntime.setCache('invoice:by-id', schoolId, cachePayload, invoice);
+
+        if (['pending', 'overdue'].includes(invoice.status) && ['mercadopago', 'cora'].includes(invoice.gateway) && invoice.external_id) {
+          this._scheduleFinanceSync(schoolId, {
+            reason: 'invoice_by_id_warmup',
+            singleInvoiceId: invoiceId,
+          });
+        }
+      }
+
+      return invoice;
+    }
 
   async getInvoicesByStudent(studentId, schoolId) {
-    try {
-      await this.syncPendingInvoices(studentId, schoolId);
-    } catch (e) {
-      console.error('⚠️ [InvoiceService] syncPendingInvoices falhou em getInvoicesByStudent:', e.message);
+      const cachePayload = this._normalizeInvoiceCachePayload({ studentId });
+      const cached = financeRuntime.getCache('invoice:by-student', schoolId, cachePayload);
+
+      if (cached && !cached.stale) {
+        if (Array.isArray(cached.value) && cached.value.some((invoice) => ['pending', 'overdue'].includes(invoice.status) && ['mercadopago', 'cora'].includes(invoice.gateway) && invoice.external_id)) {
+          this._scheduleFinanceSync(schoolId, {
+            reason: 'invoice_by_student_cache_hit',
+            studentId,
+          });
+        }
+
+        return cached.value;
+      }
+
+      const invoices = await Invoice.find({ student: studentId, school_id: schoolId })
+        .sort({ dueDate: -1 })
+        .populate('tutor', 'fullName financialScore')
+        .lean();
+
+      financeRuntime.setCache('invoice:by-student', schoolId, cachePayload, invoices);
+
+      if (Array.isArray(invoices) && invoices.some((invoice) => ['pending', 'overdue'].includes(invoice.status) && ['mercadopago', 'cora'].includes(invoice.gateway) && invoice.external_id)) {
+        this._scheduleFinanceSync(schoolId, {
+          reason: 'invoice_by_student_warmup',
+          studentId,
+        });
+      }
+
+      return invoices;
     }
 
-    return Invoice.find({ student: studentId, school_id: schoolId })
-      .sort({ dueDate: -1 })
-      .populate('tutor', 'fullName financialScore');
+  async processFinanceSyncSweep() {
+    const schoolIds = await Invoice.distinct('school_id', {
+      status: { $in: ['pending', 'overdue'] },
+      gateway: { $in: ['mercadopago', 'cora'] },
+      external_id: { $exists: true, $ne: null },
+    });
+
+    const stats = {
+      totalSchools: schoolIds.length,
+      startedSchools: 0,
+      skippedSchools: 0,
+      failedSchools: 0,
+      updatedCount: 0,
+      perSchool: [],
+    };
+
+    for (const schoolId of schoolIds) {
+      try {
+        const result = await this.syncPendingInvoices(null, schoolId, null, {
+          reason: 'cron_sweep',
+          force: false,
+        });
+
+        if (result?.skipped) {
+          stats.skippedSchools++;
+        } else {
+          stats.startedSchools++;
+          stats.updatedCount += result?.updatedCount || 0;
+        }
+
+        stats.perSchool.push({
+          schoolId: String(schoolId),
+          skipped: !!result?.skipped,
+          updatedCount: result?.updatedCount || 0,
+          reason: result?.reason || null,
+        });
+      } catch (error) {
+        stats.failedSchools++;
+        stats.perSchool.push({
+          schoolId: String(schoolId),
+          skipped: false,
+          error: error.message,
+        });
+      }
+    }
+
+    return stats;
   }
 
   async findOverdue(schoolId) {

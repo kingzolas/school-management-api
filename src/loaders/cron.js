@@ -4,6 +4,8 @@ const InvoiceService = require('../api/services/invoice.service');
 const WhatsappBotService = require('../api/services/whatsappBot.service');
 const tempAccessTokenService = require('../api/services/tempAccessToken.service');
 
+let financeSyncSweepRunning = false;
+
 const initCronJobs = () => {
     console.log('🕰️ Inicializando Cron Jobs...');
 
@@ -18,6 +20,39 @@ const initCronJobs = () => {
             await InvoiceService.processDailyReminders();
         } catch (error) {
             console.error('❌ Erro no Cron Job de Vencimento:', error);
+        }
+
+    }, {
+        scheduled: true,
+        timezone: "America/Sao_Paulo"
+    });
+
+    // ------------------------------------------------------------------
+    // 💰 JOB 1B - Sincronização financeira em background
+    // roda a cada 15 minutos, sem depender da navegação na tela
+    // ------------------------------------------------------------------
+    cron.schedule('*/15 * * * *', async () => {
+        if (financeSyncSweepRunning) {
+            console.log('🟡 [Cron] Finance sync sweep já está em execução. Pulando ciclo.');
+            return;
+        }
+
+        financeSyncSweepRunning = true;
+
+        try {
+            const result = await InvoiceService.processFinanceSyncSweep();
+
+            console.log('💰 [Cron] Finance sync sweep concluído', {
+                totalSchools: result?.totalSchools || 0,
+                startedSchools: result?.startedSchools || 0,
+                skippedSchools: result?.skippedSchools || 0,
+                failedSchools: result?.failedSchools || 0,
+                updatedCount: result?.updatedCount || 0,
+            });
+        } catch (error) {
+            console.error('❌ Erro no Cron Job de Sync Financeira:', error);
+        } finally {
+            financeSyncSweepRunning = false;
         }
 
     }, {
