@@ -185,6 +185,47 @@ class InvoiceService {
     }
   }
 
+  async resendNotification(invoiceId, schoolId) {
+    const invoice = await Invoice.findOne({
+      _id: invoiceId,
+      school_id: schoolId,
+    })
+      .populate('student')
+      .populate('tutor');
+
+    if (!invoice) throw new Error('Fatura não encontrada.');
+    if (invoice.status === 'paid' || invoice.status === 'canceled') {
+      throw new Error('Fatura já paga/cancelada.');
+    }
+
+    const result = await NotificationService.enqueueInvoiceManually({
+      schoolId,
+      invoice,
+      type: 'manual',
+    });
+
+    if (!result?.ok) {
+      throw new Error(result?.message || 'Não foi possível reenfileirar a mensagem.');
+    }
+
+    NotificationService.processQueue();
+
+    return {
+      ok: true,
+      message: 'Mensagem reenfileirada com sucesso.',
+    };
+  }
+
+  async processDailyReminders() {
+    await NotificationService.scanAndQueueInvoices();
+    NotificationService.processQueue();
+
+    return {
+      ok: true,
+      message: 'Varredura de lembretes iniciada com sucesso.',
+    };
+  }
+
   _translateGatewayError(error, payerName = 'o responsável') {
     let errorData = null;
 

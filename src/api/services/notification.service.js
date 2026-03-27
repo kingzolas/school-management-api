@@ -156,6 +156,35 @@ class NotificationService {
     return `Boleto_${safeName}_${String(invoiceId)}_${dueKey}.pdf`;
   }
 
+  _isNotificationTypeEnabled(type, config) {
+    if (!config) return true;
+
+    const normalizedType = String(type || '').toLowerCase();
+
+    if (normalizedType === 'due_today') {
+      return config.enableDueToday !== false;
+    }
+
+    if (normalizedType === 'overdue') {
+      return config.enableOverdue !== false;
+    }
+
+    if (normalizedType === 'reminder' || normalizedType === 'new_invoice') {
+      return config.enableReminder !== false;
+    }
+
+    return true;
+  }
+
+  async _hasNotificationLogForInvoice({ schoolId, invoiceId }) {
+    if (!schoolId || !invoiceId) return false;
+
+    return NotificationLog.exists({
+      school_id: schoolId,
+      invoice_id: invoiceId,
+    });
+  }
+
   _composeSingleDeliveryMessage({ baseText, invoice }) {
     const sections = [];
     const addSection = (value) => {
@@ -343,6 +372,12 @@ class NotificationService {
     for (const inv of invoices) {
       const check = this._checkEligibilityForDate(inv.dueDate, simData);
       if (check.shouldSend) {
+        const alreadyNotified = await this._hasNotificationLogForInvoice({
+          schoolId,
+          invoiceId: inv._id,
+        });
+        if (alreadyNotified) continue;
+
         const onHold = await this._isInvoiceOnHold(inv);
         if (onHold) continue;
 
@@ -378,15 +413,31 @@ class NotificationService {
     return check.shouldSend;
   }
 
-  async queueNotification({ schoolId, invoiceId, studentName, tutorName, phone, type = 'new_invoice' }) {
+  async queueNotification({
+    schoolId,
+    invoiceId,
+    studentName,
+    tutorName,
+    phone,
+    type = 'new_invoice',
+    force = false,
+  }) {
     try {
-      const exists = await NotificationLog.exists({
-        invoice_id: invoiceId,
-        type: type,
-        status: { $in: ['queued', 'processing'] }
-      });
+      if (!force) {
+        const exists = await this._hasNotificationLogForInvoice({
+          schoolId,
+          invoiceId,
+        });
 
-      if (exists) return;
+        if (exists) {
+          console.log(`↩️ [Fila] Ignorando duplicidade da invoice ${String(invoiceId)} (${type}).`);
+          return {
+            ok: false,
+            skipped: true,
+            reason: 'ALREADY_QUEUED_OR_SENT',
+          };
+        }
+      }
 
       const newLog = await NotificationLog.create({
         school_id: schoolId,
@@ -405,8 +456,18 @@ class NotificationService {
         appEmitter.emit('notification:created', newLog);
       }
 
+      return {
+        ok: true,
+        log: newLog,
+      };
+
     } catch (error) {
       console.error('❌ Erro ao enfileirar:', error);
+      return {
+        ok: false,
+        skipped: false,
+        error,
+      };
     }
   }
 
@@ -457,18 +518,23 @@ class NotificationService {
           const check = this._checkEligibilityForDate(inv.dueDate, new Date());
           if (!check.shouldSend) continue;
 
+          if (!this._isNotificationTypeEnabled(check.type, config)) {
+            console.log(`⏭️ [Config] Tipo ${check.type} desabilitado para a escola ${String(schoolId)}.`);
+            continue;
+          }
+
           const onHold = await this._isInvoiceOnHold(inv);
           if (onHold) {
             console.log(`⛔ [HOLD] Ignorando invoice ${String(inv._id)} (em compensação/hold).`);
             continue;
           }
 
-          const sentToday = await NotificationLog.exists({
-            invoice_id: inv._id,
-            createdAt: { $gte: hojeStart }
+          const alreadyNotified = await this._hasNotificationLogForInvoice({
+            schoolId,
+            invoiceId: inv._id,
           });
 
-          if (!sentToday) {
+          if (!alreadyNotified) {
             await this._prepareAndQueue(inv, check.type);
           }
         }
@@ -481,7 +547,6 @@ class NotificationService {
   // ✅ NOVO: GATILHO MANUAL DO MÊS (Para resolver o dia 2, 3, etc)
   async queueMonthInvoicesManually(schoolId) {
     const hojeStart = new Date(); hojeStart.setHours(0, 0, 0, 0);
-    const startOfMonth = new Date(hojeStart.getFullYear(), hojeStart.getMonth(), 1);
     const monthEnd = new Date(hojeStart.getFullYear(), hojeStart.getMonth() + 1, 0, 23, 59, 59, 999);
 
     const invoices = await Invoice.find({
@@ -495,14 +560,13 @@ class NotificationService {
       const onHold = await this._isInvoiceOnHold(inv);
       if (onHold) continue;
 
-      // Garante que não manda se já mandou ALGUM aviso esse mês pra essa fatura (evita spam)
-      const alreadySentThisMonth = await NotificationLog.exists({
-        invoice_id: inv._id,
-        status: { $in: ['queued', 'processing', 'sent'] },
-        createdAt: { $gte: startOfMonth }
+      // Garante que não manda se já existe qualquer aviso para essa fatura (evita spam)
+      const alreadyNotified = await this._hasNotificationLogForInvoice({
+        schoolId,
+        invoiceId: inv._id,
       });
 
-      if (!alreadySentThisMonth) {
+      if (!alreadyNotified) {
         await this._prepareAndQueue(inv, 'new_invoice');
         count++;
       }
@@ -561,7 +625,8 @@ class NotificationService {
       studentName: invoice.student?.fullName || 'Aluno',
       tutorName: name,
       phone,
-      type
+      type,
+      force: true
     });
 
     return { ok: true, message: 'Invoice reenfileirada com sucesso.' };
@@ -576,6 +641,7 @@ class NotificationService {
         status: 'queued',
         scheduled_for: { $lte: new Date() }
       })
+        .sort({ createdAt: 1 })
         .limit(1)
         .populate('invoice_id');
 
