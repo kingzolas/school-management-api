@@ -8,6 +8,13 @@ const SchoolSchema = new mongoose.Schema(
     stateRegistration: { type: String },
     municipalRegistration: { type: String },
 
+    // Diferencia a operação institucional da escola.
+    educationModel: {
+      type: String,
+      enum: ['regular', 'technical_apprenticeship'],
+      default: 'regular',
+    },
+
     // Novo campo para o Ato Autorizativo/Portaria
     authorizationProtocol: { type: String },
 

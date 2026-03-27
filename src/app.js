@@ -21,6 +21,12 @@ const assistantRoutes = require('./api/routes/assistant.routes.js');
 const negotiationRoutes = require('./api/routes/negotiation.routes.js'); 
 const whatsappRoutes = require('./api/routes/whatsapp.routes');
 const schoolRoutes = require('./api/routes/school.routes.js');
+const companyRoutes = require('./api/routes/company.routes.js');
+const technicalProgramRoutes = require('./api/routes/technicalProgram.routes.js');
+const technicalProgramModuleRoutes = require('./api/routes/technicalProgramModule.routes.js');
+const technicalEnrollmentRoutes = require('./api/routes/technicalEnrollment.routes.js');
+const technicalModuleRecordRoutes = require('./api/routes/technicalModuleRecord.routes.js');
+const technicalClassMovementRoutes = require('./api/routes/technicalClassMovement.routes.js');
 const dashboardRoutes = require('./api/routes/dashboard.routes');
 const expenseRoutes = require('./api/routes/expense.routes.js');
 
@@ -72,6 +78,12 @@ app.use('/api/auth/student', authStudentRoutes);  // Login Aluno
 
 // Funcionalidades Principais
 app.use('/api/schools', schoolRoutes);
+app.use('/api/companies', companyRoutes);
+app.use('/api/technical-programs', technicalProgramRoutes);
+app.use('/api/technical-program-modules', technicalProgramModuleRoutes);
+app.use('/api/technical-enrollments', technicalEnrollmentRoutes);
+app.use('/api/technical-module-records', technicalModuleRecordRoutes);
+app.use('/api/technical-class-movements', technicalClassMovementRoutes);
 app.use('/api/students', studentRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/tutors', tutorRoutes);
