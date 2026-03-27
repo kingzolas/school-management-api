@@ -1,4 +1,5 @@
 const TechnicalProgram = require('../models/technicalProgram.model');
+const { getProgramModuleWorkloadSummary } = require('./technicalCurriculum.helper');
 
 class TechnicalProgramService {
     async createTechnicalProgram(programData, schoolId) {
@@ -51,6 +52,20 @@ class TechnicalProgramService {
             if (existing) {
                 throw new Error(`O programa técnico '${updateData.name}' já existe nesta escola.`);
             }
+        }
+
+        if (Object.prototype.hasOwnProperty.call(updateData, 'totalWorkloadHours')) {
+            const nextTotalWorkloadHours = Number(updateData.totalWorkloadHours);
+            if (!Number.isFinite(nextTotalWorkloadHours) || nextTotalWorkloadHours < 0) {
+                throw new Error('A carga horária total do programa precisa ser um número válido.');
+            }
+
+            const workloadSummary = await getProgramModuleWorkloadSummary(id, schoolId);
+            if (workloadSummary.totalWorkloadHours > nextTotalWorkloadHours) {
+                throw new Error('A carga horária total do programa não pode ser menor que a soma das cargas horárias dos módulos já cadastrados.');
+            }
+
+            updateData.totalWorkloadHours = nextTotalWorkloadHours;
         }
 
         const updatedProgram = await TechnicalProgram.findOneAndUpdate(

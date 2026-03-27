@@ -2,130 +2,80 @@
 
 Mapa de implementacao para o app `academyhub` com base no estado final atual da API tecnica.
 
-## Objetivo
+## Interpretacao do dominio tecnico
 
-- manter o fluxo regular intacto
-- tratar o tecnico como um dominio proprio
-- evitar improvisar duplicacao conceitual entre curso, programa, disciplina e turma
+- `technicalProgram` e o curso/programa macro.
+- `technicalProgramModule` e o modulo/disciplina do curso.
+- `technicalProgramOffering` e a execucao concreta do curso.
+- `technicalProgramOfferingModule` e a execucao de um modulo dentro da oferta, com agenda embutida.
+- `technicalSpace` e o recurso fisico reutilizavel.
+- `TechnicalEnrollment` e o vinculo academico individual.
+- `TechnicalModuleRecord` e o historico individual por modulo.
+- `TechnicalClassMovement` continua sendo historico de turma legado.
 
-## Leia junto
+## Fluxo correto no front
 
-- `docs/technical_apprenticeship_backend_handoff.md`
-- `docs/technical_apprenticeship_api_contract.md`
-- `docs/technical_apprenticeship_legacy_reuse.md`
+1. Ler `School.educationModel`.
+2. Se for `technical_apprenticeship`, abrir o fluxo tecnico.
+3. Criar ou selecionar `Company`.
+4. Criar ou selecionar `TechnicalProgram`.
+5. Criar os `TechnicalProgramModule` do programa.
+6. Criar ou selecionar `TechnicalSpace`.
+7. Criar a `TechnicalProgramOffering`.
+8. Criar os `TechnicalProgramOfferingModule` e suas `scheduleSlots`.
+9. Criar o `TechnicalEnrollment` com `studentId`, `companyId` e `technicalProgramId`.
+10. Permitir `currentClassId` e `currentTechnicalProgramOfferingId` como opcionais no cadastro inicial.
+11. Registrar `TechnicalModuleRecord` com contexto de oferta e execucao quando existir.
+12. Registrar `TechnicalClassMovement` apenas quando houver uma turma atual e a operacao fizer sentido no legado.
 
-## Como interpretar o dominio tecnico
+## Models Flutter para criar ou ajustar
 
-### `technicalProgram`
+| Arquivo Flutter | Acao | Observacao |
+| --- | --- | --- |
+| `school_model.dart` | ajustar | Ler e enviar `educationModel` |
+| `company_model.dart` | ajustar | Incluir `contactPerson`, `logoUrl`, `status` e `address` com `cep` |
+| `technical_program_model.dart` | criar | Curso macro |
+| `technical_program_module_model.dart` | criar | Modulo/disciplina do curso |
+| `technical_program_offering_model.dart` | criar | Execucao concreta do curso |
+| `technical_program_offering_module_model.dart` | criar | Execucao do modulo na oferta e `scheduleSlots` |
+| `technical_space_model.dart` | criar | Espaco fisico reutilizavel |
+| `technical_enrollment_model.dart` | ajustar | `currentClassId` e `currentTechnicalProgramOfferingId` nulos sao validos |
+| `technical_module_record_model.dart` | criar | Historico por modulo com contexto da oferta |
+| `technical_class_movement_model.dart` | criar | Movimento de turma legado |
+| `user_model.dart` | reaproveitar | Professor nos slots chega como `User` populado |
+| `staff_profile_model.dart` | reaproveitar | Contexto de RH, nao espinha da execucao tecnica |
 
-- interpretar como curso/programa macro
-- usar como entidade principal da trilha tecnica
-- nao criar uma tela ou model paralelo de `course`
-- nao confundir com disciplina, modulo ou turma
+## Services Flutter para criar ou ajustar
 
-### `technicalProgramModule`
+| Arquivo Flutter | Acao | Observacao |
+| --- | --- | --- |
+| `school_service.dart` | ajustar | Ler e enviar `educationModel` |
+| `company_service.dart` | ajustar | Suportar `contactPerson` e upload de `logo` |
+| `technical_program_service.dart` | criar | CRUD do curso macro |
+| `technical_program_module_service.dart` | criar | CRUD dos modulos do curso |
+| `technical_program_offering_service.dart` | criar | CRUD da execucao concreta |
+| `technical_program_offering_module_service.dart` | criar | CRUD da execucao do modulo e agenda |
+| `technical_space_service.dart` | criar | CRUD do espaco fisico |
+| `technical_enrollment_service.dart` | ajustar | Criar sem turma e sem oferta, e alocar depois |
+| `technical_module_record_service.dart` | criar | Historico por modulo com oferta e execucao |
+| `technical_class_movement_service.dart` | criar | Movimento de turma legado |
 
-- interpretar como modulo/disciplinas do curso
-- usar como item de grade dentro de `technicalProgram`
-- `subjectId` e apenas catalogacao opcional
-- nao tratar como curso separado
+## Providers Flutter para criar ou ajustar
 
-### `TechnicalEnrollment`
+| Arquivo Flutter | Acao | Observacao |
+| --- | --- | --- |
+| `school_provider.dart` | ajustar | Alternar o fluxo com base em `educationModel` |
+| `company_provider.dart` | ajustar | Expor `contactPerson` e logo |
+| `technical_program_provider.dart` | criar | Estado do curso macro |
+| `technical_program_module_provider.dart` | criar | Estado dos modulos do curso |
+| `technical_program_offering_provider.dart` | criar | Estado da oferta concreta |
+| `technical_program_offering_module_provider.dart` | criar | Estado da execucao do modulo e slots |
+| `technical_space_provider.dart` | criar | Estado dos espacos fisicos |
+| `technical_enrollment_provider.dart` | ajustar | Matricula tecnica pode nascer pendente |
+| `technical_module_record_provider.dart` | criar | Historico individual por modulo |
+| `technical_class_movement_provider.dart` | criar | Movimento de turma legado |
 
-- interpretar como o vinculo academico individual
-- e o ponto de verdade da matricula tecnica do participante
-- o participante pode ter varios `TechnicalEnrollment`, um por curso
-- `currentClassId` pode vir `null` no cadastro inicial
-
-## Cadastro tecnico: fluxo correto no front
-
-1. carregar `School.educationModel`
-2. se for tecnico, exibir area tecnica
-3. criar ou selecionar a `Company`
-4. criar ou selecionar o `TechnicalProgram`
-5. criar os `TechnicalProgramModule` do programa
-6. criar o `TechnicalEnrollment` com `studentId`, `companyId` e `technicalProgramId`
-7. permitir `currentClassId` opcional no cadastro inicial
-8. alocar a turma depois, quando existir a definicao operacional
-
-## Models Flutter que devem ser criados ou ajustados
-
-### Ajustar
-
-- `school_model.dart`
-  - adicionar `educationModel`
-  - valores: `regular`, `technical_apprenticeship`
-
-- `company_model.dart`
-  - incluir `name`, `legalName`, `cnpj`, `stateRegistration`, `municipalRegistration`, `contactPhone`, `contactEmail`, `contactPerson`, `address`, `logoUrl`, `status`
-  - `contactPerson` precisa ser um submodelo proprio
-
-- `technical_enrollment_model.dart`
-  - `currentClassId` opcional/nullable
-  - `status` precisa aceitar `Pendente`
-
-### Criar
-
-- `technical_program_model.dart`
-- `technical_program_module_model.dart`
-- `technical_module_record_model.dart`
-- `technical_class_movement_model.dart`
-
-### Reaproveitar sem mudar o nucleo
-
-- `student_model.dart`
-- `class_model.dart`
-- `subject_model.dart`
-- `user_model.dart`
-
-## Services Flutter que devem ser criados ou ajustados
-
-### Ajustar
-
-- `school_service.dart`
-  - ler e enviar `educationModel`
-
-- `company_service.dart`
-  - suportar `contactPerson`
-  - suportar upload de `logo`
-  - consumir `GET /api/companies/:id/logo`
-
-- `technical_enrollment_service.dart`
-  - permitir criacao sem `currentClassId`
-  - permitir alocacao posterior da turma
-  - nao assumir que a turma define a matricula na criacao
-
-### Criar
-
-- `technical_program_service.dart`
-- `technical_program_module_service.dart`
-- `technical_module_record_service.dart`
-- `technical_class_movement_service.dart`
-
-## Providers Flutter que devem ser criados ou ajustados
-
-### Ajustar
-
-- `school_provider.dart`
-  - carregar `educationModel`
-  - usar esse campo para alternar o fluxo tecnico
-
-- `company_provider.dart`
-  - expor `contactPerson`
-  - tratar logo como recurso separado
-
-- `technical_enrollment_provider.dart`
-  - lidar com matricula sem turma no estado inicial
-  - apresentar a turma como dado opcional no cadastro
-
-### Criar
-
-- `technical_program_provider.dart`
-- `technical_program_module_provider.dart`
-- `technical_module_record_provider.dart`
-- `technical_class_movement_provider.dart`
-
-## Mapeamento API -> Flutter
+## Mapeamento API para Flutter
 
 | API | Flutter |
 | --- | --- |
@@ -133,22 +83,34 @@ Mapa de implementacao para o app `academyhub` com base no estado final atual da 
 | `Company` | `CompanyModel` |
 | `TechnicalProgram` | `TechnicalProgramModel` |
 | `TechnicalProgramModule` | `TechnicalProgramModuleModel` |
+| `TechnicalProgramOffering` | `TechnicalProgramOfferingModel` |
+| `TechnicalProgramOfferingModule` | `TechnicalProgramOfferingModuleModel` |
+| `TechnicalSpace` | `TechnicalSpaceModel` |
 | `TechnicalEnrollment` | `TechnicalEnrollmentModel` |
 | `TechnicalModuleRecord` | `TechnicalModuleRecordModel` |
 | `TechnicalClassMovement` | `TechnicalClassMovementModel` |
+| `User` | `UserModel` |
 
 ## Serializacao e desserializacao
 
-- requests usam IDs em string
-- responses podem trazer IDs como string ou objeto populado
-- o parser precisa aceitar ambos os formatos
-- campos de data devem virar `DateTime`
-- o serializer de request deve sempre enviar string de ID
-- `school_id` nunca deve ser enviado manualmente
-- `educationModel`, `status` e enums de dominio sao case-sensitive
-- `Company.contactPerson` pode vir `null`
-- `TechnicalEnrollment.currentClassId` pode vir `null`
-- `Company.logo` nao deve ser esperado como base do front; o consumo da imagem e pela rota `/api/companies/:id/logo`
+- Requests enviam IDs como string.
+- Responses podem trazer IDs como string ou como objeto populado.
+- O parser precisa aceitar ambos os formatos.
+- Campos de data devem virar `DateTime`.
+- O serializer de request deve sempre enviar string de ID.
+- `school_id` nunca deve ser enviado manualmente.
+- `educationModel`, `status` e enums de dominio sao case-sensitive.
+- `Company.contactPerson` pode vir `null`.
+- `Company.contactPerson.fullName` e `Company.contactPerson.jobTitle` sao obrigatorios quando o objeto existe.
+- `TechnicalEnrollment.currentClassId` pode vir `null`.
+- `TechnicalEnrollment.currentTechnicalProgramOfferingId` pode vir `null`.
+- `TechnicalProgramOffering.modules` vem populado na resposta, nao no request de criacao.
+- `TechnicalProgramOfferingModule.scheduleSlots` e embutido e pode vir vazio.
+- `scheduleSlots.teacherIds` pode vir populado como lista de `User`.
+- `scheduleSlots.spaceId` pode vir populado como `TechnicalSpace`.
+- `Company.logo` nao deve ser esperado como base do front; o consumo da imagem e pela rota `/api/companies/:id/logo`.
+- `Student.address` e `Company.address` usam `cep`.
+- `School.address` usa `zipCode`.
 
 ## Campos legados que podem ser reaproveitados no cadastro do participante
 
@@ -171,46 +133,52 @@ Mapa de implementacao para o app `academyhub` com base no estado final atual da 
 - `Student.tutors` apenas para regular
 - `Student.financialResp` apenas para regular
 - `Student.financialTutorId` apenas para regular
-
-## Address: ponto de divergencia que o front precisa respeitar
-
-- `Student.address` usa `addressSchema` com `cep`
-- `Company.address` usa o mesmo `addressSchema` com `cep`
-- `School.address` usa uma modelagem diferente com `zipCode`
-- nao crie um unico serializer de endereco que assuma a mesma chave para todos os dominios
+- `StaffProfile` apenas como contexto de RH e docente
+- `Horario` apenas como estrutura regular
 
 ## Campos obrigatorios e opcionais
-
-### School
-
-- obrigatorio: `name`
-- opcional: `educationModel`
 
 ### Company
 
 - obrigatorio: `name`, `cnpj`, `address`
-- opcional: `legalName`, `stateRegistration`, `municipalRegistration`, `contactPerson`, `contactPhone`, `contactEmail`, `logoUrl`
-- `contactPerson.fullName` e `contactPerson.jobTitle` sao obrigatorios quando o objeto existir
+- opcional: `legalName`, `stateRegistration`, `municipalRegistration`, `contactPerson`, `contactPhone`, `contactEmail`, `logoUrl`, `status`
+- `contactPerson.fullName` e `contactPerson.jobTitle` sao obrigatorios quando o objeto existe
 
 ### TechnicalProgram
 
 - obrigatorio: `name`, `totalWorkloadHours`
-- opcional: `description`
+- opcional: `description`, `status`
 
 ### TechnicalProgramModule
 
 - obrigatorio: `technicalProgramId`, `name`, `moduleOrder`, `workloadHours`
-- opcional: `subjectId`, `description`
+- opcional: `subjectId`, `description`, `status`
+
+### TechnicalSpace
+
+- obrigatorio: `name`, `type`, `capacity`
+- opcional: `notes`, `status`
+
+### TechnicalProgramOffering
+
+- obrigatorio: `technicalProgramId`, `name`, `plannedStartDate`, `plannedEndDate`
+- opcional: `code`, `status`, `actualStartDate`, `actualEndDate`, `shift`, `capacity`, `defaultSpaceId`, `notes`
+
+### TechnicalProgramOfferingModule
+
+- obrigatorio: `technicalProgramOfferingId`, `technicalProgramModuleId`
+- opcional: `executionOrder`, `moduleOrderSnapshot`, `plannedWorkloadHours`, `prerequisiteModuleIds`, `scheduleSlots`, `estimatedStartDate`, `status`, `notes`
+- `scheduleSlots` pode ficar vazio, mas se vier preenchido precisa respeitar `weekday`, `startTime` e `endTime`
 
 ### TechnicalEnrollment
 
 - obrigatorio: `studentId`, `companyId`, `technicalProgramId`
-- opcional: `currentClassId`, `notes`, `status`
+- opcional: `currentClassId`, `currentTechnicalProgramOfferingId`, `notes`, `status`
 
 ### TechnicalModuleRecord
 
 - obrigatorio: `technicalEnrollmentId`, `technicalProgramModuleId`
-- os demais campos podem ser controlados pela tela
+- opcional: `technicalProgramOfferingId`, `technicalProgramOfferingModuleId`, `status`, `completedHours`, `startedAt`, `finishedAt`, `notes`
 
 ### TechnicalClassMovement
 
@@ -225,33 +193,34 @@ Mapa de implementacao para o app `academyhub` com base no estado final atual da 
 - fluxo de `tutor`
 - fluxo de matricula regular
 - fluxo de boletim regular
-- qualquer tela que assuma que a turma define sozinha o progresso
-
-## Integracoes minimas primeiro
-
-1. ler `educationModel`
-2. habilitar/desabilitar area tecnica pela escola
-3. criar CRUD de `Company`
-4. criar CRUD de `TechnicalProgram`
-5. criar CRUD de `TechnicalProgramModule`
-6. criar cadastro e consulta de `TechnicalEnrollment`
-7. permitir matricula sem turma e alocacao posterior
-8. criar timeline de `TechnicalModuleRecord`
-9. criar historico de `TechnicalClassMovement`
+- telas que assumam que `Class` ou `Horario` sao o nucleo da execucao tecnica
+- tela de assistencia por slot
+- tela de conflitos de professor por slot
 
 ## Pontos que continuam ambiguos e nao devem ser improvisados
 
-- `contactPerson` e opcional no backend; nao force obrigatoriedade sem acordo
-- o backend hoje aceita `currentClassId: null` em `PATCH`, mas a UI nao deve expor "limpar turma" sem regra formal
-- `logoUrl` nao e gerado automaticamente; nao use como fonte principal de imagem
-- `subjectId` e opcional; nao obrigue a disciplina em todo modulo sem validacao de negocio
-- o mesmo participante nao pode repetir o mesmo `technicalProgram` por esse endpoint hoje
-- `TechnicalClassMovement` so faz sentido quando a matricula ja tem turma atual
+- `contactPerson` e opcional no backend; nao force obrigatoriedade sem acordo.
+- o backend aceita `currentClassId: null` e `currentTechnicalProgramOfferingId: null`, mas a UI nao deve expor "limpar vinculo" sem regra formal.
+- `logoUrl` nao e gerado automaticamente; nao use como fonte principal de imagem.
+- `subjectId` continua opcional; nao obrigue disciplina em todo modulo sem validacao de negocio.
+- o mesmo participante ainda nao pode repetir o mesmo `technicalProgram` por este endpoint.
+- `TechnicalClassMovement` continua dependente de `currentClassId`.
+- ainda nao existe historia por slot individual na API.
+- ainda nao existe conflito de agenda entre diferentes ofertas na API.
+
+## Atualizacao operacional desta rodada
+
+- `technicalEnrollment` continua sendo a matricula base, mas a visao de acompanhamento deve sair de `GET /api/technical-enrollments/:id/progress`.
+- `technicalEnrollment.currentTechnicalProgramOfferingId` e `technicalEnrollment.currentClassId` nao devem ser trocados por `PATCH` quando ja existirem; o front deve usar os endpoints de movimentacao.
+- `studentId` e `companyId` da matricula nao devem ser reapontados na edicao quando ja houver historico operacional.
+- `technicalEnrollmentOfferingMovement` e o novo fluxo para migrar o participante entre ofertas sem perder historico.
+- `technicalModuleRecord` deve ser enviado com `technicalProgramOfferingId` e `technicalProgramOfferingModuleId` quando a oferta atual existir, para manter o historico amarrado a execucao concreta.
+- `technicalProgramOfferingModule.scheduleSlots` e a fonte de verdade da grade tecnica; o front nao deve inventar a grade a partir de `Class` ou `Horario`.
+- `technicalProgramOfferingModule` e `technicalSpace` continuam sendo as referencias corretas para sala, professor e previsao da execucao.
 
 ## Recomendacao de implementacao
 
-- montar os models primeiro
-- depois os services
-- em seguida os providers
-- por fim as telas e os fluxos visuais
-
+1. montar os models primeiro
+2. depois os services
+3. em seguida os providers
+4. por fim as telas e os fluxos visuais

@@ -5,23 +5,35 @@ const technicalModuleRecordSchema = new Schema({
     technicalEnrollmentId: {
         type: Schema.Types.ObjectId,
         ref: 'TechnicalEnrollment',
-        required: [true, 'A referência da matrícula técnica é obrigatória.'],
+        required: [true, 'A referencia da matricula tecnica e obrigatoria.'],
         index: true
     },
     technicalProgramModuleId: {
         type: Schema.Types.ObjectId,
         ref: 'TechnicalProgramModule',
-        required: [true, 'A referência do módulo técnico é obrigatória.'],
+        required: [true, 'A referencia do modulo tecnico e obrigatoria.'],
+        index: true
+    },
+    technicalProgramOfferingId: {
+        type: Schema.Types.ObjectId,
+        ref: 'TechnicalProgramOffering',
+        default: null,
+        index: true
+    },
+    technicalProgramOfferingModuleId: {
+        type: Schema.Types.ObjectId,
+        ref: 'TechnicalProgramOfferingModule',
+        default: null,
         index: true
     },
     attemptNumber: {
         type: Number,
-        required: [true, 'O número da tentativa é obrigatório.'],
+        required: [true, 'O numero da tentativa e obrigatorio.'],
         min: 1
     },
     moduleWorkloadHours: {
         type: Number,
-        required: [true, 'A carga horária do módulo é obrigatória.'],
+        required: [true, 'A carga horaria do modulo e obrigatoria.'],
         min: 0
     },
     completedHours: {
@@ -50,7 +62,7 @@ const technicalModuleRecordSchema = new Schema({
     school_id: {
         type: Schema.Types.ObjectId,
         ref: 'School',
-        required: [true, 'A referência da escola (school_id) é obrigatória.'],
+        required: [true, 'A referencia da escola (school_id) e obrigatoria.'],
         index: true
     }
 }, {

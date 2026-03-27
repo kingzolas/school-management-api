@@ -5,19 +5,25 @@ const technicalEnrollmentSchema = new Schema({
     studentId: {
         type: Schema.Types.ObjectId,
         ref: 'Student',
-        required: [true, 'A referência do participante é obrigatória.'],
+        required: [true, 'A referÃªncia do participante Ã© obrigatÃ³ria.'],
         index: true
     },
     companyId: {
         type: Schema.Types.ObjectId,
         ref: 'Company',
-        required: [true, 'A referência da empresa é obrigatória.'],
+        required: [true, 'A referÃªncia da empresa Ã© obrigatÃ³ria.'],
         index: true
     },
     technicalProgramId: {
         type: Schema.Types.ObjectId,
         ref: 'TechnicalProgram',
-        required: [true, 'A referência do programa técnico é obrigatória.'],
+        required: [true, 'A referÃªncia do programa tÃ©cnico Ã© obrigatÃ³ria.'],
+        index: true
+    },
+    currentTechnicalProgramOfferingId: {
+        type: Schema.Types.ObjectId,
+        ref: 'TechnicalProgramOffering',
+        default: null,
         index: true
     },
     currentClassId: {
@@ -32,7 +38,7 @@ const technicalEnrollmentSchema = new Schema({
     },
     status: {
         type: String,
-        enum: ['Pendente', 'Ativa', 'Concluída', 'Cancelada'],
+        enum: ['Pendente', 'Ativa', 'ConcluÃ­da', 'Cancelada'],
         default: 'Pendente',
         index: true
     },
@@ -43,7 +49,7 @@ const technicalEnrollmentSchema = new Schema({
     school_id: {
         type: Schema.Types.ObjectId,
         ref: 'School',
-        required: [true, 'A referência da escola (school_id) é obrigatória.'],
+        required: [true, 'A referÃªncia da escola (school_id) Ã© obrigatÃ³ria.'],
         index: true
     }
 }, {

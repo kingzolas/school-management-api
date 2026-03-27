@@ -1,32 +1,90 @@
 const TechnicalModuleRecord = require('../models/technicalModuleRecord.model');
 const TechnicalEnrollment = require('../models/technicalEnrollment.model');
 const TechnicalProgramModule = require('../models/technicalProgramModule.model');
+const TechnicalProgramOffering = require('../models/technicalProgramOffering.model');
+const TechnicalProgramOfferingModule = require('../models/technicalProgramOfferingModule.model');
 
 const defaultPopulation = [
     {
         path: 'technicalEnrollmentId',
-        select: 'studentId companyId technicalProgramId currentClassId enrollmentDate status',
+        select: 'studentId companyId technicalProgramId currentTechnicalProgramOfferingId currentClassId enrollmentDate status',
         populate: [
             { path: 'studentId', select: 'fullName birthDate cpf' },
             { path: 'companyId', select: 'name legalName cnpj' },
             { path: 'technicalProgramId', select: 'name totalWorkloadHours' },
+            {
+                path: 'currentTechnicalProgramOfferingId',
+                select: 'technicalProgramId name code status plannedStartDate plannedEndDate actualStartDate actualEndDate shift capacity defaultSpaceId',
+                populate: [
+                    { path: 'technicalProgramId', select: 'name totalWorkloadHours status' },
+                    { path: 'defaultSpaceId', select: 'name type capacity status' },
+                    {
+                        path: 'modules',
+                        options: { sort: { executionOrder: 1 } },
+                        populate: [
+                            { path: 'technicalProgramModuleId', select: 'name moduleOrder workloadHours subjectId status', populate: { path: 'subjectId', select: 'name level' } },
+                            { path: 'prerequisiteModuleIds', select: 'name moduleOrder workloadHours status' },
+                            { path: 'scheduleSlots.teacherIds', select: 'fullName email roles status' },
+                            { path: 'scheduleSlots.spaceId', select: 'name type capacity status' }
+                        ]
+                    }
+                ]
+            },
             { path: 'currentClassId', select: 'name schoolYear grade shift' }
         ]
     },
     {
         path: 'technicalProgramModuleId',
-        select: 'name moduleOrder workloadHours subjectId status',
+        select: 'technicalProgramId subjectId name moduleOrder workloadHours status prerequisiteModuleIds',
         populate: [
-            { path: 'subjectId', select: 'name level' }
+            { path: 'subjectId', select: 'name level' },
+            { path: 'prerequisiteModuleIds', select: 'name moduleOrder workloadHours status' }
+        ]
+    },
+    {
+        path: 'technicalProgramOfferingId',
+        select: 'technicalProgramId name code status plannedStartDate plannedEndDate actualStartDate actualEndDate shift capacity defaultSpaceId',
+        populate: [
+            { path: 'technicalProgramId', select: 'name totalWorkloadHours status' },
+            { path: 'defaultSpaceId', select: 'name type capacity status' },
+            {
+                path: 'modules',
+                options: { sort: { executionOrder: 1 } },
+                populate: [
+                    { path: 'technicalProgramModuleId', select: 'name moduleOrder workloadHours subjectId status', populate: { path: 'subjectId', select: 'name level' } },
+                    { path: 'prerequisiteModuleIds', select: 'name moduleOrder workloadHours status' },
+                    { path: 'scheduleSlots.teacherIds', select: 'fullName email roles status' },
+                    { path: 'scheduleSlots.spaceId', select: 'name type capacity status' }
+                ]
+            }
+        ]
+    },
+    {
+        path: 'technicalProgramOfferingModuleId',
+        select: 'technicalProgramOfferingId technicalProgramModuleId executionOrder moduleOrderSnapshot plannedWorkloadHours plannedWeeklyMinutes estimatedWeeks estimatedStartDate estimatedEndDate status scheduleSlots',
+        populate: [
+            {
+                path: 'technicalProgramOfferingId',
+                select: 'technicalProgramId name code status plannedStartDate plannedEndDate actualStartDate actualEndDate shift capacity defaultSpaceId',
+                populate: [
+                    { path: 'technicalProgramId', select: 'name totalWorkloadHours status' },
+                    { path: 'defaultSpaceId', select: 'name type capacity status' }
+                ]
+            },
+            { path: 'technicalProgramModuleId', select: 'technicalProgramId subjectId name moduleOrder workloadHours status', populate: { path: 'subjectId', select: 'name level' } }
         ]
     }
 ];
+
+const hasValue = (value) => value !== undefined && value !== null && value !== '';
 
 class TechnicalModuleRecordService {
     async createTechnicalModuleRecord(recordData, schoolId) {
         const {
             technicalEnrollmentId,
-            technicalProgramModuleId
+            technicalProgramModuleId,
+            technicalProgramOfferingId,
+            technicalProgramOfferingModuleId
         } = recordData;
 
         const enrollment = await TechnicalEnrollment.findOne({
@@ -35,7 +93,7 @@ class TechnicalModuleRecordService {
         });
 
         if (!enrollment) {
-            throw new Error('Matrícula técnica não encontrada ou não pertence a esta escola.');
+            throw new Error('Matricula tecnica nao encontrada ou nao pertence a esta escola.');
         }
 
         const module = await TechnicalProgramModule.findOne({
@@ -44,11 +102,67 @@ class TechnicalModuleRecordService {
         });
 
         if (!module) {
-            throw new Error('Módulo técnico não encontrado ou não pertence a esta escola.');
+            throw new Error('Modulo tecnico nao encontrado ou nao pertence a esta escola.');
         }
 
         if (String(enrollment.technicalProgramId) !== String(module.technicalProgramId)) {
-            throw new Error('O módulo técnico não pertence ao mesmo programa da matrícula.');
+            throw new Error('O modulo tecnico nao pertence ao mesmo programa da matricula.');
+        }
+
+        let resolvedOfferingId = hasValue(technicalProgramOfferingId)
+            ? technicalProgramOfferingId
+            : (hasValue(enrollment.currentTechnicalProgramOfferingId) ? enrollment.currentTechnicalProgramOfferingId : null);
+        let resolvedOfferingModuleId = hasValue(technicalProgramOfferingModuleId) ? technicalProgramOfferingModuleId : null;
+
+        if (hasValue(resolvedOfferingModuleId)) {
+            const offeringModule = await TechnicalProgramOfferingModule.findOne({
+                _id: resolvedOfferingModuleId,
+                school_id: schoolId
+            });
+
+            if (!offeringModule) {
+                throw new Error('Execucao do modulo da oferta nao encontrada ou nao pertence a esta escola.');
+            }
+
+            if (String(offeringModule.technicalProgramModuleId) !== String(technicalProgramModuleId)) {
+                throw new Error('A execucao do modulo da oferta nao corresponde ao modulo informado no historico.');
+            }
+
+            resolvedOfferingModuleId = offeringModule._id;
+            resolvedOfferingId = offeringModule.technicalProgramOfferingId;
+        }
+
+        if (hasValue(resolvedOfferingId)) {
+            const offering = await TechnicalProgramOffering.findOne({
+                _id: resolvedOfferingId,
+                school_id: schoolId
+            });
+
+            if (!offering) {
+                throw new Error('Oferta tecnica nao encontrada ou nao pertence a esta escola.');
+            }
+
+            if (String(offering.technicalProgramId) !== String(enrollment.technicalProgramId)) {
+                throw new Error('A oferta tecnica nao pertence ao mesmo programa da matricula.');
+            }
+
+            if (!hasValue(resolvedOfferingModuleId)) {
+                const matchingOfferingModule = await TechnicalProgramOfferingModule.findOne({
+                    technicalProgramOfferingId: resolvedOfferingId,
+                    technicalProgramModuleId,
+                    school_id: schoolId
+                });
+
+                if (!matchingOfferingModule) {
+                    throw new Error('A oferta tecnica informada nao possui execucao deste modulo.');
+                }
+
+                resolvedOfferingModuleId = matchingOfferingModule._id;
+            }
+
+            if (hasValue(enrollment.currentTechnicalProgramOfferingId) && String(enrollment.currentTechnicalProgramOfferingId) !== String(resolvedOfferingId)) {
+                throw new Error('A oferta do historico nao corresponde a oferta atual da matricula tecnica.');
+            }
         }
 
         const lastRecord = await TechnicalModuleRecord.findOne({
@@ -66,11 +180,11 @@ class TechnicalModuleRecordService {
             : (status === 'Concluído' ? workloadHours : 0);
 
         if (completedHours < 0) {
-            throw new Error('A carga horária concluída não pode ser negativa.');
+            throw new Error('A carga horaria concluida nao pode ser negativa.');
         }
 
         if (completedHours > workloadHours) {
-            throw new Error('A carga horária concluída não pode ser maior que a carga horária do módulo.');
+            throw new Error('A carga horaria concluida nao pode ser maior que a carga horaria do modulo.');
         }
 
         const now = new Date();
@@ -86,13 +200,15 @@ class TechnicalModuleRecordService {
         }
 
         if (status === 'Concluído' && completedHours < workloadHours) {
-            throw new Error('Um módulo concluído precisa ter a carga horária completa registrada.');
+            throw new Error('Um modulo concluido precisa ter a carga horaria completa registrada.');
         }
 
         try {
             const newRecord = new TechnicalModuleRecord({
                 technicalEnrollmentId,
                 technicalProgramModuleId,
+                technicalProgramOfferingId: resolvedOfferingId,
+                technicalProgramOfferingModuleId: resolvedOfferingModuleId,
                 attemptNumber,
                 moduleWorkloadHours: workloadHours,
                 completedHours,
@@ -109,7 +225,7 @@ class TechnicalModuleRecordService {
             return newRecord;
         } catch (error) {
             if (error.code === 11000) {
-                throw new Error('Já existe um histórico para esta tentativa do módulo.');
+                throw new Error('Ja existe um historico para esta tentativa do modulo.');
             }
             throw error;
         }
@@ -134,7 +250,7 @@ class TechnicalModuleRecordService {
         }).populate(defaultPopulation);
 
         if (!record) {
-            throw new Error('Histórico do módulo não encontrado ou não pertence a esta escola.');
+            throw new Error('Historico do modulo nao encontrado ou nao pertence a esta escola.');
         }
 
         return record;
@@ -144,6 +260,8 @@ class TechnicalModuleRecordService {
         delete updateData.school_id;
         delete updateData.technicalEnrollmentId;
         delete updateData.technicalProgramModuleId;
+        delete updateData.technicalProgramOfferingId;
+        delete updateData.technicalProgramOfferingModuleId;
         delete updateData.attemptNumber;
         delete updateData.moduleWorkloadHours;
 
@@ -153,7 +271,7 @@ class TechnicalModuleRecordService {
         });
 
         if (!currentRecord) {
-            throw new Error('Histórico do módulo não encontrado para atualizar.');
+            throw new Error('Historico do modulo nao encontrado para atualizar.');
         }
 
         const nextStatus = updateData.status || currentRecord.status;
@@ -163,15 +281,15 @@ class TechnicalModuleRecordService {
         const workloadHours = currentRecord.moduleWorkloadHours;
 
         if (nextCompletedHours < 0) {
-            throw new Error('A carga horária concluída não pode ser negativa.');
+            throw new Error('A carga horaria concluida nao pode ser negativa.');
         }
 
         if (nextCompletedHours > workloadHours) {
-            throw new Error('A carga horária concluída não pode ser maior que a carga horária do módulo.');
+            throw new Error('A carga horaria concluida nao pode ser maior que a carga horaria do modulo.');
         }
 
         if (nextStatus === 'Concluído' && nextCompletedHours < workloadHours) {
-            throw new Error('Um módulo concluído precisa ter a carga horária completa registrada.');
+            throw new Error('Um modulo concluido precisa ter a carga horaria completa registrada.');
         }
 
         if (!updateData.startedAt && ['Em andamento', 'Concluído', 'Reprovado', 'Repetindo'].includes(nextStatus) && !currentRecord.startedAt) {
@@ -189,7 +307,7 @@ class TechnicalModuleRecordService {
         ).populate(defaultPopulation);
 
         if (!updatedRecord) {
-            throw new Error('Histórico do módulo não encontrado para atualizar.');
+            throw new Error('Historico do modulo nao encontrado para atualizar.');
         }
 
         return updatedRecord;

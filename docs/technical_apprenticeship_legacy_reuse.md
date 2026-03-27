@@ -1,6 +1,6 @@
 # Legacy Reuse Guide - Ensino Tecnico / Jovem Aprendiz
 
-Guia pratico para o projeto Flutter usar o legado com seguranca sem misturar o fluxo regular com o tecnico.
+Guia pratico para o Flutter usar o legado com seguranca sem misturar o fluxo regular com o tecnico.
 
 ## `student`
 
@@ -29,9 +29,9 @@ Guia pratico para o projeto Flutter usar o legado com seguranca sem misturar o f
 
 ### Regra pratica
 
-- `Student` identifica a pessoa
-- a jornada tecnica real fica em `TechnicalEnrollment`
-- o progresso por modulo nao deve ser inferido de `Student.classId`
+- `Student` identifica a pessoa.
+- a jornada tecnica real fica em `TechnicalEnrollment`.
+- o progresso por modulo nao deve ser inferido de `Student.classId`.
 
 ## `address`
 
@@ -55,9 +55,9 @@ O reuso de endereco existe, mas nao e uniforme entre todos os dominios.
 
 ### Importante
 
-- `School.address` usa outra forma de modelagem no codigo atual, com `zipCode`
-- nao trate `School.address` como se fosse o mesmo schema de `Student`/`Company`
-- se o Flutter criar um componente de endereco, ele precisa aceitar ao menos dois mapeamentos: `cep` e `zipCode`
+- `School.address` usa outra modelagem no codigo atual, com `zipCode`.
+- nao trate `School.address` como se fosse o mesmo schema de `Student` e `Company`.
+- se o Flutter criar um componente de endereco, ele precisa aceitar ao menos dois mapeamentos: `cep` e `zipCode`.
 
 ## `healthInfo`
 
@@ -66,8 +66,8 @@ O reuso de endereco existe, mas nao e uniforme entre todos os dominios.
 ### Como entra no tecnico
 
 - pode ser exibido no cadastro e na consulta do participante
-- ajuda a coordenação com contexto de saude, alergias e medicacao
-- nao interfere em curso, modulo, turma ou empresa
+- ajuda a coordenacao com contexto de saude, alergias e medicacao
+- nao interfere em curso, modulo, turma, oferta ou empresa
 
 ### Nao deve ser tratado como
 
@@ -77,11 +77,11 @@ O reuso de endereco existe, mas nao e uniforme entre todos os dominios.
 
 ## `class`
 
-`Class` continua util no tecnico, mas apenas como estrutura operacional.
+`Class` continua util no tecnico, mas apenas como estrutura operacional do regular e como referencia de compatibilidade.
 
 ### Reaproveitamento correto
 
-- turma atual do participante
+- turma atual do participante quando ainda houver essa operacao
 - historico de movimentacao entre turmas
 - filtros de turno, ano e organizacao operacional
 
@@ -90,6 +90,8 @@ O reuso de endereco existe, mas nao e uniforme entre todos os dominios.
 - definir sozinho o progresso academico
 - substituir `TechnicalProgram`
 - substituir `TechnicalProgramModule`
+- substituir `TechnicalProgramOffering`
+- substituir `TechnicalProgramOfferingModule`
 - representar a trilha macro do curso
 
 ## `subject`
@@ -99,7 +101,7 @@ O reuso de endereco existe, mas nao e uniforme entre todos os dominios.
 ### Reuso correto
 
 - `TechnicalProgramModule.subjectId` quando fizer sentido
-- catalogacao de disciplina/materia
+- catalogacao de disciplina e materia
 - apoio a filtros e nomenclaturas do modulo
 
 ### Nao deve ser usado como
@@ -108,6 +110,71 @@ O reuso de endereco existe, mas nao e uniforme entre todos os dominios.
 - espinha da jornada academica
 - obrigacao para todo modulo tecnico
 
+## `user`
+
+`User` e a identidade que o backend usa para professores nos slots da oferta tecnica.
+
+### Reuso correto
+
+- selecionar professores para `scheduleSlots.teacherIds`
+- exibir nome, e-mail, roles e status do docente
+- validar role `Professor` na camada tecnica
+
+### Nao deve ser confundido com
+
+- `StaffProfile`
+- empresa
+- participante
+
+## `staffProfile`
+
+`StaffProfile` e um contexto de RH e de perfil profissional. Ele pode ajudar a tela, mas nao e a base da agenda tecnica.
+
+### Reuso correto
+
+- dados contratuais e de perfil do colaborador
+- cargo principal
+- formacao academica
+- apoio ao cadastro interno de docentes
+
+### Nao deve ser usado como
+
+- origem principal do `teacherIds` nos slots
+- estrutura que define a execucao da oferta tecnica
+
+## `horario`
+
+`Horario` e uma estrutura do fluxo regular.
+
+### Reuso correto
+
+- apenas leitura historica ou apoio de compatibilidade, se existir
+
+### Nao deve ser usado como
+
+- grade tecnica
+- agenda da oferta
+- modelo de slot da execucao tecnica
+
+## `technicalSpace` e `technicalProgramOfferingModule`
+
+Estas duas estruturas sao novas e substituem o uso de `Class.room` e `Horario` como nucleo tecnico.
+
+### O que elas resolvem
+
+- espaco fisico reutilizavel
+- agenda embutida por slot
+- varios professores por slot
+- previsao temporal da execucao
+
+### O que nao devem herdar do regular
+
+- `schoolYear`
+- `grade`
+- `level`
+- `periodo`
+- `monthlyFee`
+
 ## O que nao deve ser herdado do regular
 
 - `Tutor` como centro do modelo tecnico
@@ -115,7 +182,7 @@ O reuso de endereco existe, mas nao e uniforme entre todos os dominios.
 - `grade`
 - `periodo`
 - `enrollment` regular como espinha do tecnico
-- qualquer logica que use bimestre/serie/periodo como unidade central do progresso
+- qualquer logica que use bimestre, serie ou periodo como unidade central do progresso
 - a ideia de que a turma define sozinha a jornada do participante
 
 ## Resumo pratico para o front
@@ -123,7 +190,18 @@ O reuso de endereco existe, mas nao e uniforme entre todos os dominios.
 - pessoa: `Student`
 - empresa: `Company`
 - curso macro: `TechnicalProgram`
-- modulo/disciplinas: `TechnicalProgramModule`
+- modulo e disciplinas: `TechnicalProgramModule`
+- oferta concreta: `TechnicalProgramOffering`
+- execucao do modulo: `TechnicalProgramOfferingModule`
+- recurso fisico: `TechnicalSpace`
+- professor no slot: `User`
 - turma atual: `TechnicalEnrollment.currentClassId`
+- oferta atual: `TechnicalEnrollment.currentTechnicalProgramOfferingId`
 - suporte clinico/contextual: `Student.healthInfo`
 
+## Nota final de arquitetura
+
+- `Class` e `Horario` permanecem como legado regular e nao devem virar a espinha do tecnico.
+- `technicalProgramOfferingModule.scheduleSlots` e a agenda real do tecnico.
+- `TechnicalEnrollmentOfferingMovement` e o historico certo para troca de oferta tecnica.
+- `TechnicalClassMovement` continua como compatibilidade para o eixo de turma.

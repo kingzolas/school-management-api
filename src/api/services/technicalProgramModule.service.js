@@ -1,8 +1,48 @@
 const TechnicalProgramModule = require('../models/technicalProgramModule.model');
 const TechnicalProgram = require('../models/technicalProgram.model');
 const Subject = require('../models/subject.model');
+const TechnicalProgramOfferingModule = require('../models/technicalProgramOfferingModule.model');
+const TechnicalModuleRecord = require('../models/technicalModuleRecord.model');
+const { getProgramModuleWorkloadSummary } = require('./technicalCurriculum.helper');
+
+const hasValue = (value) => value !== undefined && value !== null && value !== '';
 
 class TechnicalProgramModuleService {
+    async _assertModuleIsNotInUse(moduleId, schoolId) {
+        const [hasOfferingModules, hasRecords] = await Promise.all([
+            TechnicalProgramOfferingModule.exists({
+                technicalProgramModuleId: moduleId,
+                school_id: schoolId
+            }),
+            TechnicalModuleRecord.exists({
+                technicalProgramModuleId: moduleId,
+                school_id: schoolId
+            })
+        ]);
+
+        return Boolean(hasOfferingModules || hasRecords);
+    }
+
+    async _assertProgramWorkloadCapacity(technicalProgramId, schoolId, nextModuleWorkloadHours, excludeModuleId = null) {
+        const technicalProgram = await TechnicalProgram.findOne({
+            _id: technicalProgramId,
+            school_id: schoolId
+        });
+
+        if (!technicalProgram) {
+            throw new Error('Programa técnico não encontrado ou não pertence a esta escola.');
+        }
+
+        const workloadSummary = await getProgramModuleWorkloadSummary(technicalProgramId, schoolId, excludeModuleId);
+        const nextTotalWorkloadHours = workloadSummary.totalWorkloadHours + Number(nextModuleWorkloadHours || 0);
+
+        if (nextTotalWorkloadHours > Number(technicalProgram.totalWorkloadHours || 0)) {
+            throw new Error('A soma das cargas horárias dos módulos não pode ser maior que a carga horária total do programa.');
+        }
+
+        return technicalProgram;
+    }
+
     async createTechnicalProgramModule(moduleData, schoolId) {
         const technicalProgramId = moduleData.technicalProgramId;
 
@@ -29,6 +69,13 @@ class TechnicalProgramModuleService {
                 throw new Error('Disciplina não encontrada ou não pertence a esta escola.');
             }
         }
+
+        const nextModuleWorkloadHours = Number(moduleData.workloadHours);
+        if (!Number.isFinite(nextModuleWorkloadHours) || nextModuleWorkloadHours < 0) {
+            throw new Error('A carga horária do módulo precisa ser um número válido.');
+        }
+
+        await this._assertProgramWorkloadCapacity(technicalProgramId, schoolId, nextModuleWorkloadHours);
 
         const existing = await TechnicalProgramModule.findOne({
             technicalProgramId,
@@ -88,7 +135,6 @@ class TechnicalProgramModuleService {
             throw new Error('Módulo técnico não encontrado para atualizar.');
         }
 
-        const nextTechnicalProgramId = updateData.technicalProgramId || currentModule.technicalProgramId;
         const nextModuleOrder = updateData.moduleOrder ?? currentModule.moduleOrder;
 
         if (updateData.technicalProgramId) {
@@ -113,6 +159,33 @@ class TechnicalProgramModuleService {
             }
         }
 
+        const lockedModule = await this._assertModuleIsNotInUse(id, schoolId);
+
+        if (updateData.technicalProgramId && String(updateData.technicalProgramId) !== String(currentModule.technicalProgramId) && lockedModule) {
+            throw new Error('Não é permitido mover um módulo já utilizado para outro programa técnico.');
+        }
+
+        if (
+            (Object.prototype.hasOwnProperty.call(updateData, 'moduleOrder') ||
+            Object.prototype.hasOwnProperty.call(updateData, 'workloadHours') ||
+            Object.prototype.hasOwnProperty.call(updateData, 'technicalProgramId')) &&
+            lockedModule
+        ) {
+            throw new Error('Não é permitido alterar ordem, carga horária ou programa de um módulo já utilizado na oferta ou no histórico.');
+        }
+
+        const nextWorkloadHours = Object.prototype.hasOwnProperty.call(updateData, 'workloadHours')
+            ? Number(updateData.workloadHours)
+            : Number(currentModule.workloadHours);
+
+        if (Object.prototype.hasOwnProperty.call(updateData, 'workloadHours')) {
+            if (!Number.isFinite(nextWorkloadHours) || nextWorkloadHours < 0) {
+                throw new Error('A carga horária do módulo precisa ser um número válido.');
+            }
+        }
+
+        const nextTechnicalProgramId = updateData.technicalProgramId || currentModule.technicalProgramId;
+        await this._assertProgramWorkloadCapacity(nextTechnicalProgramId, schoolId, nextWorkloadHours, id);
         const existing = await TechnicalProgramModule.findOne({
             _id: { $ne: id },
             technicalProgramId: nextTechnicalProgramId,
