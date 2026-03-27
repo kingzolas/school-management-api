@@ -62,16 +62,8 @@ class NotificationController {
   async getForecast(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
-
-      let targetDate = new Date();
-      if (req.query.date) {
-        targetDate = new Date(req.query.date);
-        targetDate.setHours(12, 0, 0, 0);
-      } else {
-        targetDate.setDate(targetDate.getDate() + 1);
-      }
-
-      const forecast = await NotificationService.getForecast(schoolId, targetDate);
+      // O service interpreta YYYY-MM-DD como data local para evitar shift UTC.
+      const forecast = await NotificationService.getForecast(schoolId, req.query.date);
       res.status(200).json(forecast);
     } catch (error) {
       next(error);

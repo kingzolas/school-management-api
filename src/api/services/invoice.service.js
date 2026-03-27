@@ -291,6 +291,42 @@ class InvoiceService {
     await Promise.all(workers);
   }
 
+  _parseProviderDateValue(value) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+
+    if (typeof value === 'number') {
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+
+      // Cora date precedence:
+      // occurrence_date -> finalized_at -> paid_at.
+      // Date-only values do not carry timezone, so we anchor them at noon UTC
+      // to preserve the business day when rendered in local timezones.
+      const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (dateOnlyMatch) {
+        const [, yearRaw, monthRaw, dayRaw] = dateOnlyMatch;
+        const d = new Date(Date.UTC(Number(yearRaw), Number(monthRaw) - 1, Number(dayRaw), 12, 0, 0, 0));
+        return Number.isNaN(d.getTime()) ? null : d;
+      }
+
+      const d = new Date(trimmed);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    return null;
+  }
+
   _normalizeInvoiceCachePayload(value = {}) {
     const normalized = {};
 
@@ -435,11 +471,7 @@ class InvoiceService {
       }
     }
 
-    let paidAtParsed = null;
-    if (paidAtRaw) {
-      const d = new Date(paidAtRaw);
-      if (!Number.isNaN(d.getTime())) paidAtParsed = d;
-    }
+    const paidAtParsed = this._parseProviderDateValue(paidAtRaw);
 
     let wasUpdated = false;
 
@@ -453,8 +485,9 @@ class InvoiceService {
       invoice.status = novoStatus;
 
       if (novoStatus === 'paid') {
+        // Never invent paidAt here. If the provider did not send a trusted
+        // timestamp, preserve the existing value or keep it null.
         if (paidAtParsed) invoice.paidAt = paidAtParsed;
-        else if (!invoice.paidAt) invoice.paidAt = new Date();
       }
 
       await invoice.save();
@@ -751,6 +784,98 @@ class InvoiceService {
       }
     });
 
+    // Post-bulk backfill: keep the 250-item status fallback intact, but repair
+    // paidAt for every Cora invoice that the bulk sync marked as paid.
+    if (bulkPaidIdsStr.length > 0 && coraGateway && typeof coraGateway.getInvoicePaymentInfo === 'function') {
+      const backfillStartedAt = Date.now();
+      const backfillMissingFilter = {
+        school_id: schoolId,
+        gateway: 'cora',
+        external_id: { $in: bulkPaidIdsStr },
+        status: 'paid',
+        $or: [
+          { paidAt: { $exists: false } },
+          { paidAt: null }
+        ]
+      };
+
+      let backfillFilledCount = 0;
+      let backfillFailedCount = 0;
+
+      try {
+        const backfillCandidates = await Invoice.find(backfillMissingFilter)
+          .select('_id tutor external_id paidAt')
+          .lean();
+
+        console.log(`🧩 [${syncRunId}] CORA paidAt backfill iniciado`, {
+          candidateCount: backfillCandidates.length,
+          bulkCandidateCount: bulkPaidIdsStr.length,
+          concurrencyLimit: 5
+        });
+
+        await this._runLimitedConcurrency(backfillCandidates, 5, async (candidate) => {
+          try {
+            if (!candidate?.external_id) return;
+
+            const info = await coraGateway.getInvoicePaymentInfo(candidate.external_id);
+            const providerPaidAt = this._parseProviderDateValue(info?.paidAt);
+
+            if (!providerPaidAt) {
+              return;
+            }
+
+            const updateResult = await Invoice.updateOne(
+              {
+                _id: candidate._id,
+                school_id: schoolId,
+                gateway: 'cora',
+                external_id: String(candidate.external_id),
+                status: 'paid',
+                $or: [
+                  { paidAt: { $exists: false } },
+                  { paidAt: null }
+                ]
+              },
+              {
+                $set: { paidAt: providerPaidAt }
+              }
+            );
+
+            if (updateResult.modifiedCount > 0) {
+              backfillFilledCount += 1;
+              stats.updatedCount += 1;
+
+              if (candidate.tutor) {
+                tutorsToRecalculate.add(String(candidate.tutor));
+              }
+            }
+          } catch (backfillError) {
+            backfillFailedCount += 1;
+            console.warn(`⚠️ [${syncRunId}] erro no backfill CORA paidAt`, {
+              invoiceId: String(candidate?._id || ''),
+              external_id: String(candidate?.external_id || ''),
+              message: backfillError.message
+            });
+          }
+        });
+
+        const backfillRemainingCount = await Invoice.countDocuments(backfillMissingFilter);
+
+        console.log(`📦 [${syncRunId}] CORA paidAt backfill finalizado`, {
+          enteredCount: backfillCandidates.length,
+          filledCount: backfillFilledCount,
+          remainingWithoutPaidAt: backfillRemainingCount,
+          failedCount: backfillFailedCount,
+          durationMs: Date.now() - backfillStartedAt
+        });
+      } catch (backfillError) {
+        console.error(`❌ [${syncRunId}] Erro no backfill CORA paidAt`, {
+          message: backfillError.message,
+          durationMs: Date.now() - backfillStartedAt
+        });
+      }
+    }
+
     if (tutorsToRecalculate.size > 0) {
       try {
         await tutorFinancialScoreService.recalculateTutorsByIds([...tutorsToRecalculate], schoolId);
@@ -792,10 +917,6 @@ class InvoiceService {
       const cached = financeRuntime.getCache('invoice:list', schoolId, cachePayload);
 
       if (cached && !cached.stale) {
-        if (this._shouldRefreshInvoiceList(filters)) {
-          this._scheduleFinanceSync(schoolId, { reason: 'invoice_list_cache_hit' });
-        }
-
         return cached.value;
       }
 
@@ -810,10 +931,6 @@ class InvoiceService {
 
       financeRuntime.setCache('invoice:list', schoolId, cachePayload, invoices);
 
-      if (this._shouldRefreshInvoiceList(filters)) {
-        this._scheduleFinanceSync(schoolId, { reason: cached ? 'invoice_list_revalidate' : 'invoice_list_warmup' });
-      }
-
       return invoices;
     }
 
@@ -822,16 +939,7 @@ class InvoiceService {
       const cached = financeRuntime.getCache('invoice:by-id', schoolId, cachePayload);
 
       if (cached && !cached.stale) {
-        const invoice = cached.value;
-
-        if (invoice && ['pending', 'overdue'].includes(invoice.status) && ['mercadopago', 'cora'].includes(invoice.gateway) && invoice.external_id) {
-          this._scheduleFinanceSync(schoolId, {
-            reason: 'invoice_by_id_cache_hit',
-            singleInvoiceId: invoiceId,
-          });
-        }
-
-        return invoice;
+        return cached.value;
       }
 
       const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
@@ -841,13 +949,6 @@ class InvoiceService {
 
       if (invoice) {
         financeRuntime.setCache('invoice:by-id', schoolId, cachePayload, invoice);
-
-        if (['pending', 'overdue'].includes(invoice.status) && ['mercadopago', 'cora'].includes(invoice.gateway) && invoice.external_id) {
-          this._scheduleFinanceSync(schoolId, {
-            reason: 'invoice_by_id_warmup',
-            singleInvoiceId: invoiceId,
-          });
-        }
       }
 
       return invoice;
@@ -858,13 +959,6 @@ class InvoiceService {
       const cached = financeRuntime.getCache('invoice:by-student', schoolId, cachePayload);
 
       if (cached && !cached.stale) {
-        if (Array.isArray(cached.value) && cached.value.some((invoice) => ['pending', 'overdue'].includes(invoice.status) && ['mercadopago', 'cora'].includes(invoice.gateway) && invoice.external_id)) {
-          this._scheduleFinanceSync(schoolId, {
-            reason: 'invoice_by_student_cache_hit',
-            studentId,
-          });
-        }
-
         return cached.value;
       }
 
@@ -874,13 +968,6 @@ class InvoiceService {
         .lean();
 
       financeRuntime.setCache('invoice:by-student', schoolId, cachePayload, invoices);
-
-      if (Array.isArray(invoices) && invoices.some((invoice) => ['pending', 'overdue'].includes(invoice.status) && ['mercadopago', 'cora'].includes(invoice.gateway) && invoice.external_id)) {
-        this._scheduleFinanceSync(schoolId, {
-          reason: 'invoice_by_student_warmup',
-          studentId,
-        });
-      }
 
       return invoices;
     }

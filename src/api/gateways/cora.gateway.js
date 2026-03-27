@@ -90,6 +90,49 @@ class CoraGateway {
     }
   }
 
+  _parseProviderDateValue(value) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+
+    if (typeof value === 'number') {
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+
+      // Precedência de datas da Cora:
+      // 1) occurrence_date -> data efetiva do pagamento no banco
+      // 2) finalized_at -> finalização/compensação do pagamento
+      // 3) paid_at -> fallback legado
+      //
+      // Quando o provider envia apenas YYYY-MM-DD sem hora/timezone, não há
+      // timestamp real. Para não "empurrar" a competência para o dia anterior
+      // em fusos diferentes, ancoramos o valor ao meio-dia UTC.
+      const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (dateOnlyMatch) {
+        const [, yearRaw, monthRaw, dayRaw] = dateOnlyMatch;
+        const year = Number(yearRaw);
+        const month = Number(monthRaw);
+        const day = Number(dayRaw);
+        const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0, 0));
+        return Number.isNaN(d.getTime()) ? null : d;
+      }
+
+      const d = new Date(trimmed);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    return null;
+  }
+
   async authenticate() {
     if (!this.httpsAgent || !this.clientId) {
       throw new Error('Configuração da Cora inválida ou certificado ilegível.');
@@ -176,27 +219,34 @@ class CoraGateway {
   _extractPaidAtFromInvoice(data) {
     if (!data) return null;
 
-    if (data.paid_at) {
-      const d = new Date(data.paid_at);
-      if (!Number.isNaN(d.getTime())) return d.toISOString();
-    }
+    const candidates = [
+      data.occurrence_date,
+      data.occurrenceDate,
+      data.finalized_at,
+      data.finalizedAt,
+      data.paid_at,
+      data.paidAt
+    ];
 
     const payments = Array.isArray(data.payments) ? data.payments : [];
+    const preferredPayments = payments.filter((p) => {
+      const status = String(p?.status || '').trim().toUpperCase();
+      return !status || ['SUCCESS', 'PAID', 'LIQUIDATED', 'COMPLETED'].includes(status);
+    });
 
-    const withFinalized = payments
-      .map((p) => {
-        const iso = p?.finalized_at || p?.finalizedAt || null;
-        const status = (p?.status || '').toUpperCase();
-        return { iso, status };
-      })
-      .filter((x) => x.iso);
+    const orderedPayments = (preferredPayments.length > 0 ? preferredPayments : payments).slice().reverse();
 
-    if (withFinalized.length > 0) {
-      const success = withFinalized.filter((x) => x.status === 'SUCCESS');
-      const pick = (success.length > 0 ? success[success.length - 1] : withFinalized[withFinalized.length - 1]);
+    for (const payment of orderedPayments) {
+      candidates.push(
+        payment?.occurrence_date || payment?.occurrenceDate || null,
+        payment?.finalized_at || payment?.finalizedAt || null,
+        payment?.paid_at || payment?.paidAt || null
+      );
+    }
 
-      const d = new Date(pick.iso);
-      if (!Number.isNaN(d.getTime())) return d.toISOString();
+    for (const candidate of candidates) {
+      const parsed = this._parseProviderDateValue(candidate);
+      if (parsed) return parsed.toISOString();
     }
 
     return null;

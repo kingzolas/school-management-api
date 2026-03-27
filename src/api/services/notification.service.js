@@ -57,11 +57,37 @@ class NotificationService {
     return 'Boa noite';
   }
 
+  _parseLocalDateInput(dateValue) {
+    if (!dateValue) return null;
+
+    if (dateValue instanceof Date) {
+      const clone = new Date(dateValue);
+      return isNaN(clone.getTime()) ? null : clone;
+    }
+
+    const raw = String(dateValue).trim();
+    if (!raw) return null;
+
+    // Flutter envia YYYY-MM-DD. Parsear assim evita o deslocamento UTC do
+    // new Date('YYYY-MM-DD'), que empurra o range para o dia anterior no BRT.
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) {
+      const year = Number(match[1]);
+      const month = Number(match[2]) - 1;
+      const day = Number(match[3]);
+      const localDate = new Date(year, month, day);
+      return isNaN(localDate.getTime()) ? null : localDate;
+    }
+
+    const parsed = new Date(raw);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
+
   _getDayRange(dateStr) {
     let base = new Date();
     if (dateStr) {
-      const parsed = new Date(dateStr);
-      if (!isNaN(parsed.getTime())) base = parsed;
+      const parsed = this._parseLocalDateInput(dateStr);
+      if (parsed) base = parsed;
     }
 
     const startOfDay = new Date(base);
@@ -341,7 +367,11 @@ class NotificationService {
   }
 
   async getForecast(schoolId, targetDate) {
-    const simData = new Date(targetDate);
+    const parsedDate = this._parseLocalDateInput(targetDate);
+    const simData = parsedDate || new Date();
+    if (!parsedDate) {
+      simData.setDate(simData.getDate() + 1);
+    }
     simData.setHours(12, 0, 0, 0);
 
     const limitPassado = new Date(simData);
@@ -352,9 +382,12 @@ class NotificationService {
     futuroLimit.setDate(futuroLimit.getDate() + 5);
     futuroLimit.setHours(23, 59, 59, 999);
 
+    // Forecast here is an operational preview of open debts eligible for the
+    // next run, not a deduplicated send queue. The actual queue still prevents
+    // duplicate notification logs elsewhere.
     const invoices = await Invoice.find({
       school_id: schoolId,
-      status: 'pending',
+      status: { $in: ['pending', 'overdue'] },
       dueDate: { $gte: limitPassado, $lte: futuroLimit }
     }).select('dueDate value description student tutor status gateway external_id boleto_url boleto_barcode');
 
@@ -372,12 +405,6 @@ class NotificationService {
     for (const inv of invoices) {
       const check = this._checkEligibilityForDate(inv.dueDate, simData);
       if (check.shouldSend) {
-        const alreadyNotified = await this._hasNotificationLogForInvoice({
-          schoolId,
-          invoiceId: inv._id,
-        });
-        if (alreadyNotified) continue;
-
         const onHold = await this._isInvoiceOnHold(inv);
         if (onHold) continue;
 
