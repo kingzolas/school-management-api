@@ -4,9 +4,10 @@ const STATUS_RANK = Object.freeze({
   queued: 10,
   accepted_by_evolution: 20,
   server_ack: 30,
+  // ERROR is not terminal in the Evolution flow; a later DELIVERY_ACK/READ can still arrive.
+  failed: 35,
   delivered: 40,
   read: 50,
-  failed: 80,
   deleted: 90,
 });
 
