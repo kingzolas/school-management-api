@@ -273,6 +273,12 @@ class WebhookController {
             },
           });
 
+          await School.findByIdAndUpdate(school._id, {
+            'whatsapp.instanceName': resolvedInstanceName,
+            'whatsapp.lastSyncAt': new Date(),
+            'whatsapp.lastError': null,
+          });
+
           res.status(200).json({ status: 'recebido' });
           return;
         } catch (error) {

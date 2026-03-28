@@ -1,5 +1,7 @@
 const NotificationService = require('../services/notification.service');
 const Invoice = require('../models/invoice.model');
+const WhatsappTransportLog = require('../models/whatsapp_transport_log.model');
+const mongoose = require('mongoose');
 
 class NotificationController {
 
@@ -51,6 +53,89 @@ class NotificationController {
 
       const stats = await NotificationService.getDailyStats(schoolId, date);
       res.status(200).json(stats);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /transport-logs
+   * Ledger de transporte WhatsApp via Evolution.
+   */
+  async getTransportLogs(req, res, next) {
+    try {
+      const schoolId = req.user.schoolId || req.user.school_id;
+      const {
+        status,
+        providerStatus,
+        providerMessageId,
+        notificationLogId,
+        invoiceId,
+        destination,
+        instanceName,
+        source,
+        page = 1,
+        limit = 20,
+      } = req.query;
+
+      const filter = {
+        school_id: schoolId,
+      };
+
+      if (status) filter.status = String(status).trim();
+      if (providerStatus) filter.provider_status = String(providerStatus).trim().toUpperCase();
+      if (providerMessageId) filter.provider_message_id = String(providerMessageId).trim();
+      if (destination) filter.destination = String(destination).trim();
+      if (instanceName) filter.instance_name = String(instanceName).trim();
+      if (source) filter.source = String(source).trim();
+
+      const metadataOr = [];
+
+      if (notificationLogId) {
+        const normalized = String(notificationLogId).trim();
+        metadataOr.push({ 'metadata.notification_log_id': normalized });
+
+        if (/^[a-f\d]{24}$/i.test(normalized)) {
+          metadataOr.push({
+            'metadata.notification_log_id': new mongoose.Types.ObjectId(normalized),
+          });
+        }
+      }
+
+      if (invoiceId) {
+        const normalized = String(invoiceId).trim();
+        metadataOr.push({ 'metadata.invoice_id': normalized });
+
+        if (/^[a-f\d]{24}$/i.test(normalized)) {
+          metadataOr.push({
+            'metadata.invoice_id': new mongoose.Types.ObjectId(normalized),
+          });
+        }
+      }
+
+      if (metadataOr.length > 0) {
+        filter.$or = metadataOr;
+      }
+
+      const safePage = Math.max(parseInt(page, 10) || 1, 1);
+      const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+      const skip = (safePage - 1) * safeLimit;
+
+      const [logs, total] = await Promise.all([
+        WhatsappTransportLog.find(filter)
+          .sort({ last_event_at: -1, createdAt: -1 })
+          .skip(skip)
+          .limit(safeLimit)
+          .lean(),
+        WhatsappTransportLog.countDocuments(filter),
+      ]);
+
+      return res.status(200).json({
+        logs,
+        total,
+        page: safePage,
+        pages: Math.max(Math.ceil(total / safeLimit), 1),
+      });
     } catch (error) {
       next(error);
     }

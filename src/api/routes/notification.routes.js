@@ -27,6 +27,7 @@ router.post('/trigger', NotificationController.triggerManualRun);
 router.post('/trigger-month', NotificationController.triggerMonthInvoices);
 
 router.get('/stats', NotificationController.getDashboardStats);
+router.get('/transport-logs', NotificationController.getTransportLogs);
 router.get('/forecast', NotificationController.getForecast);
 
 // Configuração
