@@ -390,3 +390,199 @@
   external_id: 'inv_VtzTbq3mSlODV6CmNUaLxw',
   message: 'Configuração da Cora inválida ou certificado ilegível.'
 }
+❌ [CoraGateway] Falha ao formatar PEM. Verifique se as chaves no banco começam com -----BEGIN...
+❌ [sync-6917401a69974b9683ca06eb-1774733400030] Erro no Sync CORA (bulk): Configuração da Cora inválida ou certificado ilegível.
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '696fc95115b045f6ff326ed7',
+  gateway: 'cora',
+  external_id: 'inv_0l90j2V3ETX2D8tTIRhAEhQ',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '696fec8036ab81de5038f50e',
+  gateway: 'cora',
+  external_id: 'inv_igH7Uj17SaC91SKvmHeWacg',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697707ebc71e40f1fd6a2a9e',
+  gateway: 'cora',
+  external_id: 'inv_kzA7TUM91TF90wrzVE0crJlA',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '69770c5ad68189c5856547a5',
+  gateway: 'cora',
+  external_id: 'inv_02xWuxkZRaCgj0RdY3wDLw',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '69770c5ad68189c5856547a9',
+  gateway: 'cora',
+  external_id: 'inv_cK0YSh1kRNCChyAWAQU91KQ',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '69770c5ad68189c5856547a8',
+  gateway: 'cora',
+  external_id: 'inv_34VQk91UjRZK23mc1hXGhdQ',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '6977304b7f84a100e3b8340a',
+  gateway: 'cora',
+  external_id: 'inv_C1a5eEOKSrqgdqOXmk91lrA',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697cd5fdff1f8447e97c83c0',
+  gateway: 'cora',
+  external_id: 'inv_qVjejBJCTUicXIVtvD0fSg',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697ce0304d299a0e01baf0e9',
+  gateway: 'cora',
+  external_id: 'inv_P9971qNjnTcKUA91rJEgHhZA',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697ceaae1320538be4622343',
+  gateway: 'cora',
+  external_id: 'inv_tFelmSVXQHaze7x0mdtAjw',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697cf67110db95bdaf788cc2',
+  gateway: 'cora',
+  external_id: 'inv_fmKFNk8PTHiier90z1JWnRg',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697cf818cc54bdbfe30bd54d',
+  gateway: 'cora',
+  external_id: 'inv_LAHwBDmCRtCOBIz8eITaEg',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697cf956c47fc425fe95b0b5',
+  gateway: 'cora',
+  external_id: 'inv_QhN4f3WrT0KJ90Gn0dag74Q',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697cfa1b248f73d8784abca2',
+  gateway: 'cora',
+  external_id: 'inv_k908IwzN4TDejJo90Oie7zMA',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697cfd8ee6ccc35bc326d04e',
+  gateway: 'cora',
+  external_id: 'inv_ffJDgEYBQda245ioVeoS91g',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774733400030] erro check individual {
+  invoiceId: '697cfe2701a486ca740c8a32',
+  gateway: 'cora',
+  external_id: 'inv_VtzTbq3mSlODV6CmNUaLxw',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+❌ [CoraGateway] Falha ao formatar PEM. Verifique se as chaves no banco começam com -----BEGIN...
+❌ [sync-6917401a69974b9683ca06eb-1774734300018] Erro no Sync CORA (bulk): Configuração da Cora inválida ou certificado ilegível.
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '696fc95115b045f6ff326ed7',
+  gateway: 'cora',
+  external_id: 'inv_0l90j2V3ETX2D8tTIRhAEhQ',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '696fec8036ab81de5038f50e',
+  gateway: 'cora',
+  external_id: 'inv_igH7Uj17SaC91SKvmHeWacg',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697707ebc71e40f1fd6a2a9e',
+  gateway: 'cora',
+  external_id: 'inv_kzA7TUM91TF90wrzVE0crJlA',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '69770c5ad68189c5856547a5',
+  gateway: 'cora',
+  external_id: 'inv_02xWuxkZRaCgj0RdY3wDLw',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '69770c5ad68189c5856547a9',
+  gateway: 'cora',
+  external_id: 'inv_cK0YSh1kRNCChyAWAQU91KQ',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '69770c5ad68189c5856547a8',
+  gateway: 'cora',
+  external_id: 'inv_34VQk91UjRZK23mc1hXGhdQ',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '6977304b7f84a100e3b8340a',
+  gateway: 'cora',
+  external_id: 'inv_C1a5eEOKSrqgdqOXmk91lrA',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697cd5fdff1f8447e97c83c0',
+  gateway: 'cora',
+  external_id: 'inv_qVjejBJCTUicXIVtvD0fSg',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697ce0304d299a0e01baf0e9',
+  gateway: 'cora',
+  external_id: 'inv_P9971qNjnTcKUA91rJEgHhZA',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697ceaae1320538be4622343',
+  gateway: 'cora',
+  external_id: 'inv_tFelmSVXQHaze7x0mdtAjw',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697cf67110db95bdaf788cc2',
+  gateway: 'cora',
+  external_id: 'inv_fmKFNk8PTHiier90z1JWnRg',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697cf818cc54bdbfe30bd54d',
+  gateway: 'cora',
+  external_id: 'inv_LAHwBDmCRtCOBIz8eITaEg',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697cf956c47fc425fe95b0b5',
+  gateway: 'cora',
+  external_id: 'inv_QhN4f3WrT0KJ90Gn0dag74Q',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697cfa1b248f73d8784abca2',
+  gateway: 'cora',
+  external_id: 'inv_k908IwzN4TDejJo90Oie7zMA',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697cfd8ee6ccc35bc326d04e',
+  gateway: 'cora',
+  external_id: 'inv_ffJDgEYBQda245ioVeoS91g',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
+⚠️ [sync-6917401a69974b9683ca06eb-1774734300018] erro check individual {
+  invoiceId: '697cfe2701a486ca740c8a32',
+  gateway: 'cora',
+  external_id: 'inv_VtzTbq3mSlODV6CmNUaLxw',
+  message: 'Configuração da Cora inválida ou certificado ilegível.'
+}
