@@ -210,6 +210,7 @@ class WhatsappService {
   async connectSchool(schoolId) {
     const instanceName = this._getInstanceName(schoolId);
     const connectUrl = `${this.apiUrl}/instance/connect/${instanceName}`;
+    const createUrl = `${this.apiUrl}/instance/create`;
 
     console.log(`[Zap] Starting connection process for ${instanceName}`);
     console.log(`[Zap] Current config | apiUrl=${this.apiUrl} | webhookUrl=${this.webhookUrl}`);
@@ -226,6 +227,45 @@ class WhatsappService {
       try {
         const statusData = await this.getConnectionStatus(instanceName);
         currentStatus = statusData.status;
+
+        if (statusData.raw === null) {
+          console.log(`[Zap] Instance ${instanceName} not found on Evolution. Creating it...`);
+
+          const createResponse = await axios.post(
+            createUrl,
+            {
+              instanceName,
+              integration: 'WHATSAPP-BAILEYS',
+              qrcode: true,
+            },
+            {
+              headers: this._getHeaders(),
+            }
+          );
+
+          await this.setInstanceWebhook(instanceName);
+
+          const qrCode =
+            createResponse.data?.base64 ||
+            createResponse.data?.qrcode?.base64 ||
+            createResponse.data?.qrcode ||
+            null;
+
+          const nextStatus = qrCode ? 'qr_pending' : 'connecting';
+
+          await this._updateSchoolWhatsappState(schoolId, {
+            instanceName,
+            status: nextStatus,
+            qrCode,
+            lastError: null,
+          });
+
+          return {
+            status: nextStatus === 'qr_pending' ? 'qrcode' : 'connecting',
+            qrCode,
+            instanceName,
+          };
+        }
       } catch (err) {
         console.warn(`[Zap] Failed to check previous status: ${err.message}`);
       }
