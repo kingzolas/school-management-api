@@ -1,5 +1,6 @@
 const axios = require('axios');
 const School = require('../models/school.model');
+const WhatsappTransportLog = require('../models/whatsapp_transport_log.model');
 
 class WhatsappService {
   constructor() {
@@ -26,6 +27,73 @@ class WhatsappService {
     }
 
     return number;
+  }
+
+  _toDate(value) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+
+    if (typeof value === 'number') {
+      const normalized = value < 1e12 ? value * 1000 : value;
+      const date = new Date(normalized);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  _cleanObject(value = {}) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== '')
+    );
+  }
+
+  _extractSendResponseDetails(responseData = {}, fallback = {}) {
+    const directPayload = responseData?.key ? responseData : null;
+    const nestedPayload = responseData?.data?.key ? responseData.data : null;
+    const payload = directPayload || nestedPayload || responseData?.data || responseData || {};
+    const key = payload?.key || {};
+
+    const providerMessageId =
+      key.id ||
+      payload?.keyId ||
+      payload?.messageId ||
+      payload?.id ||
+      responseData?.messageId ||
+      null;
+
+    const remoteJid = key.remoteJid || payload?.remoteJid || fallback.remoteJid || null;
+    const instanceId = payload?.instanceId || responseData?.instanceId || fallback.instanceId || null;
+    const providerStatus = String(payload?.status || responseData?.status || '').trim() || null;
+    const providerMessageTimestamp = this._toDate(
+      payload?.messageTimestamp || responseData?.messageTimestamp || null
+    );
+
+    return {
+      providerMessageId,
+      remoteJid,
+      instanceId,
+      providerStatus,
+      providerMessageTimestamp,
+      rawPayload: responseData,
+    };
+  }
+
+  _buildTransportMetadata(context = {}, details = {}) {
+    return this._cleanObject({
+      ...(context || {}),
+      ...(details || {}),
+    });
   }
 
   _mapEvolutionStateToDbStatus(state, hasQrCode = false) {
@@ -61,7 +129,7 @@ class WhatsappService {
 
   async setInstanceWebhook(instanceName) {
     if (!this.webhookUrl) {
-      throw new Error('EVOLUTION_WEBHOOK_URL não configurada no ambiente.');
+      throw new Error('EVOLUTION_WEBHOOK_URL nao configurada no ambiente.');
     }
 
     const url = `${this.apiUrl}/webhook/set/${instanceName}`;
@@ -76,6 +144,9 @@ class WhatsappService {
         base64: false,
         events: [
           'MESSAGES_UPSERT',
+          'MESSAGES_UPDATE',
+          'MESSAGES_DELETE',
+          'SEND_MESSAGE',
           'QRCODE_UPDATED',
           'CONNECTION_UPDATE',
         ],
@@ -84,27 +155,25 @@ class WhatsappService {
 
     try {
       console.log(
-        `🔗 [Zap] Configurando webhook | instance=${instanceName} | apiUrl=${this.apiUrl} | webhookUrl=${this.webhookUrl}`
+        `[Zap] Configuring webhook | instance=${instanceName} | apiUrl=${this.apiUrl} | webhookUrl=${this.webhookUrl}`
       );
 
       const response = await axios.post(url, payload, {
         headers: this._getHeaders(),
       });
 
-      console.log(`✅ [Zap] Webhook configurado com sucesso para ${instanceName} | Base64: OFF`);
+      console.log(`[Zap] Webhook configured successfully for ${instanceName}`);
       return response.data;
     } catch (error) {
       const errorData = error.response?.data || null;
 
-      console.error(`❌ [Zap] Falha ao configurar webhook da instância ${instanceName}:`);
+      console.error(`[Zap] Failed to configure webhook for instance ${instanceName}`);
       console.error('status:', error.response?.status);
       console.error('data:', JSON.stringify(errorData, null, 2));
 
       throw new Error(
-        `Falha ao configurar webhook da instância ${instanceName}: ${
-          error.response?.data?.message
-            ? JSON.stringify(error.response.data.message)
-            : error.message
+        `Falha ao configurar webhook da instancia ${instanceName}: ${
+          error.response?.data?.message ? JSON.stringify(error.response.data.message) : error.message
         }`
       );
     }
@@ -114,8 +183,8 @@ class WhatsappService {
     const instanceName = this._getInstanceName(schoolId);
     const connectUrl = `${this.apiUrl}/instance/connect/${instanceName}`;
 
-    console.log(`🔌 [Zap] Iniciando processo de conexão para: ${instanceName}`);
-    console.log(`🧪 [Zap] Config atual | apiUrl=${this.apiUrl} | webhookUrl=${this.webhookUrl}`);
+    console.log(`[Zap] Starting connection process for ${instanceName}`);
+    console.log(`[Zap] Current config | apiUrl=${this.apiUrl} | webhookUrl=${this.webhookUrl}`);
 
     await this._updateSchoolWhatsappState(schoolId, {
       instanceName,
@@ -130,11 +199,11 @@ class WhatsappService {
         const statusData = await this.getConnectionStatus(instanceName);
         currentStatus = statusData.status;
       } catch (err) {
-        console.warn(`⚠️ [Zap] Erro ao checar status prévio: ${err.message}`);
+        console.warn(`[Zap] Failed to check previous status: ${err.message}`);
       }
 
       if (currentStatus === 'open') {
-        console.log(`✅ [Zap] Instância ${instanceName} já estava conectada.`);
+        console.log(`[Zap] Instance ${instanceName} was already connected.`);
 
         await this.setInstanceWebhook(instanceName);
 
@@ -154,17 +223,17 @@ class WhatsappService {
       }
 
       if (currentStatus !== 'disconnected') {
-        console.log(`🧹 [Zap] Limpando estado sujo (${currentStatus})...`);
+        console.log(`[Zap] Cleaning dirty state (${currentStatus})...`);
 
         try {
           await this.logoutSchool(schoolId, { preserveInstanceName: true });
           await new Promise((resolve) => setTimeout(resolve, 3000));
         } catch (cleanupError) {
-          console.warn(`⚠️ [Zap] Falha ao limpar estado anterior: ${cleanupError.message}`);
+          console.warn(`[Zap] Failed to clean previous state: ${cleanupError.message}`);
         }
       }
 
-      console.log(`🚀 [Zap] Solicitando nova conexão...`);
+      console.log(`[Zap] Requesting new connection...`);
 
       const response = await axios.get(connectUrl, {
         headers: this._getHeaders(),
@@ -205,7 +274,7 @@ class WhatsappService {
       });
 
       if (error.response?.status === 403) {
-        throw new Error('Sessão em limpeza. Aguarde alguns segundos e tente novamente.');
+        throw new Error('Sessao em limpeza. Aguarde alguns segundos e tente novamente.');
       }
 
       throw new Error(`Falha ao conectar: ${message}`);
@@ -220,14 +289,9 @@ class WhatsappService {
         headers: this._getHeaders(),
       });
 
-      const state =
-        response.data?.instance?.state ||
-        response.data?.state ||
-        'disconnected';
+      const state = response.data?.instance?.state || response.data?.state || 'disconnected';
 
-      console.log(
-        `📡 [Zap] Status consultado | instance=${instanceName} | state=${state}`
-      );
+      console.log(`[Zap] Status consulted | instance=${instanceName} | state=${state}`);
 
       return {
         status: state,
@@ -236,7 +300,9 @@ class WhatsappService {
       };
     } catch (error) {
       console.warn(
-        `⚠️ [Zap] Falha ao consultar status | instance=${instanceName} | statusHttp=${error.response?.status || 'N/A'} | message=${error.message}`
+        `[Zap] Failed to consult status | instance=${instanceName} | httpStatus=${
+          error.response?.status || 'N/A'
+        } | message=${error.message}`
       );
 
       if (error.response?.status === 404) {
@@ -265,16 +331,16 @@ class WhatsappService {
         headers: this._getHeaders(),
       });
 
-      console.log(`🔌 [Zap] Logout realizado para ${instanceName}`);
+      console.log(`[Zap] Logout completed for ${instanceName}`);
     } catch (error) {
       const status = error.response?.status;
 
       if (status === 404) {
-        console.log(`ℹ️ [Zap] Instância ${instanceName} não encontrada no logout. Considerando desconectada.`);
+        console.log(`[Zap] Instance ${instanceName} not found during logout. Treating as disconnected.`);
       } else if (status === 400) {
-        console.warn(`⚠️ [Zap] Logout retornou 400 para ${instanceName}. Tratando como estado já limpo/inválido.`);
+        console.warn(`[Zap] Logout returned 400 for ${instanceName}. Treating as already clean/invalid.`);
       } else {
-        console.warn(`⚠️ [Zap] Aviso no logout API: ${error.message}`);
+        console.warn(`[Zap] Logout warning from API: ${error.message}`);
       }
     } finally {
       await this._updateSchoolWhatsappState(schoolId, {
@@ -287,15 +353,22 @@ class WhatsappService {
     }
   }
 
-  async sendText(schoolId, phone, message) {
+  async sendText(schoolId, phone, message, context = {}) {
     const instanceName = this._getInstanceName(schoolId);
     const url = `${this.apiUrl}/message/sendText/${instanceName}`;
 
     const number = this._normalizePhone(phone);
+    const queuedAt = new Date();
+    const source = context?.source || 'whatsapp.service';
+    const transportMetadata = this._buildTransportMetadata(context, {
+      transport_kind: 'text',
+      target_phone: number,
+      request_preview: String(message || '').trim().slice(0, 1000),
+    });
 
     if (number.length < 12) {
-      console.error(`❌ [Zap] Número inválido detectado: ${phone}`);
-      throw new Error(`Número de telefone inválido (verifique o DDD): ${phone}`);
+      console.error(`[Zap] Invalid number detected: ${phone}`);
+      throw new Error(`Numero de telefone invalido (verifique o DDD): ${phone}`);
     }
 
     const payload = {
@@ -308,11 +381,40 @@ class WhatsappService {
     };
 
     try {
-      console.log(`📤 [Zap] Enviando texto | Instância: ${instanceName} | Número: ${number} | Texto: "${message}"`);
+      console.log(
+        `[Zap] Sending text | instance=${instanceName} | number=${number} | text="${String(message || '').slice(0, 120)}"`
+      );
 
-      await axios.post(url, payload, {
+      const response = await axios.post(url, payload, {
         headers: this._getHeaders(),
       });
+
+      const responseData = response.data || {};
+      const sendDetails = this._extractSendResponseDetails(responseData, {
+        remoteJid: `${number}@s.whatsapp.net`,
+      });
+
+      try {
+        await WhatsappTransportLog.recordSendAcceptance({
+          schoolId,
+          instanceName,
+          instanceId: sendDetails.instanceId,
+          providerMessageId: sendDetails.providerMessageId,
+          remoteJid: sendDetails.remoteJid,
+          destination: number,
+          providerStatus: sendDetails.providerStatus,
+          providerMessageTimestamp: sendDetails.providerMessageTimestamp,
+          queuedAt,
+          acceptedAt: new Date(),
+          rawSendResponse: sendDetails.rawPayload,
+          source,
+          metadata: transportMetadata,
+        });
+      } catch (transportError) {
+        console.error(
+          `[Zap] Failed to persist text transport log | instance=${instanceName} | error=${transportError.message}`
+        );
+      }
 
       await this._updateSchoolWhatsappState(schoolId, {
         instanceName,
@@ -322,7 +424,8 @@ class WhatsappService {
         lastError: null,
       });
 
-      console.log(`✅ [Zap] Mensagem enviada com sucesso!`);
+      console.log(`[Zap] Text accepted by Evolution | instance=${instanceName}`);
+      return responseData;
     } catch (error) {
       const errorData = error.response ? JSON.stringify(error.response.data) : error.message;
       const messageText =
@@ -330,7 +433,32 @@ class WhatsappService {
         error.message ||
         'Falha no envio de mensagem.';
 
-      console.error(`❌ [Zap] Erro Evolution Texto: ${errorData}`);
+      console.error(`[Zap] Evolution text send error: ${errorData}`);
+
+      try {
+        await WhatsappTransportLog.recordSendFailure({
+          schoolId,
+          instanceName,
+          destination: number,
+          remoteJid: `${number}@s.whatsapp.net`,
+          providerStatus: error.response?.data?.status || null,
+          queuedAt,
+          failedAt: new Date(),
+          errorMessage: messageText,
+          errorCode: error.code || error.response?.data?.code || null,
+          errorHttpStatus: error.response?.status || null,
+          rawError: error.response?.data || {
+            message: error.message,
+            stack: error.stack,
+          },
+          source,
+          metadata: transportMetadata,
+        });
+      } catch (transportError) {
+        console.error(
+          `[Zap] Failed to persist text error log | instance=${instanceName} | error=${transportError.message}`
+        );
+      }
 
       await this._updateSchoolWhatsappState(schoolId, {
         instanceName,
@@ -342,14 +470,23 @@ class WhatsappService {
     }
   }
 
-  async sendFile(schoolId, phone, fileUrl, fileName, caption) {
+  async sendFile(schoolId, phone, fileUrl, fileName, caption, context = {}) {
     const instanceName = this._getInstanceName(schoolId);
     const url = `${this.apiUrl}/message/sendMedia/${instanceName}`;
 
     const number = this._normalizePhone(phone);
+    const queuedAt = new Date();
+    const source = context?.source || 'whatsapp.service';
+    const transportMetadata = this._buildTransportMetadata(context, {
+      transport_kind: 'document',
+      target_phone: number,
+      file_name: fileName || null,
+      file_url: fileUrl || null,
+      caption_preview: String(caption || '').trim().slice(0, 500) || null,
+    });
 
     if (number.length < 12) {
-      throw new Error(`Número de telefone inválido (PDF): ${phone}`);
+      throw new Error(`Numero de telefone invalido (PDF): ${phone}`);
     }
 
     const payload = {
@@ -365,11 +502,38 @@ class WhatsappService {
     };
 
     try {
-      console.log(`📤 [Zap] Enviando arquivo | Instância: ${instanceName} | Número: ${number}`);
+      console.log(`[Zap] Sending file | instance=${instanceName} | number=${number}`);
 
-      await axios.post(url, payload, {
+      const response = await axios.post(url, payload, {
         headers: this._getHeaders(),
       });
+
+      const responseData = response.data || {};
+      const sendDetails = this._extractSendResponseDetails(responseData, {
+        remoteJid: `${number}@s.whatsapp.net`,
+      });
+
+      try {
+        await WhatsappTransportLog.recordSendAcceptance({
+          schoolId,
+          instanceName,
+          instanceId: sendDetails.instanceId,
+          providerMessageId: sendDetails.providerMessageId,
+          remoteJid: sendDetails.remoteJid,
+          destination: number,
+          providerStatus: sendDetails.providerStatus,
+          providerMessageTimestamp: sendDetails.providerMessageTimestamp,
+          queuedAt,
+          acceptedAt: new Date(),
+          rawSendResponse: sendDetails.rawPayload,
+          source,
+          metadata: transportMetadata,
+        });
+      } catch (transportError) {
+        console.error(
+          `[Zap] Failed to persist file transport log | instance=${instanceName} | error=${transportError.message}`
+        );
+      }
 
       await this._updateSchoolWhatsappState(schoolId, {
         instanceName,
@@ -379,7 +543,8 @@ class WhatsappService {
         lastError: null,
       });
 
-      console.log(`✅ [Zap] PDF enviado com sucesso!`);
+      console.log(`[Zap] Document accepted by Evolution | instance=${instanceName}`);
+      return responseData;
     } catch (error) {
       const errorData = error.response ? JSON.stringify(error.response.data) : error.message;
       const messageText =
@@ -387,7 +552,32 @@ class WhatsappService {
         error.message ||
         'Falha no envio do arquivo.';
 
-      console.error(`❌ [Zap] Erro Envio PDF: ${errorData}`);
+      console.error(`[Zap] Evolution file send error: ${errorData}`);
+
+      try {
+        await WhatsappTransportLog.recordSendFailure({
+          schoolId,
+          instanceName,
+          destination: number,
+          remoteJid: `${number}@s.whatsapp.net`,
+          providerStatus: error.response?.data?.status || null,
+          queuedAt,
+          failedAt: new Date(),
+          errorMessage: messageText,
+          errorCode: error.code || error.response?.data?.code || null,
+          errorHttpStatus: error.response?.status || null,
+          rawError: error.response?.data || {
+            message: error.message,
+            stack: error.stack,
+          },
+          source,
+          metadata: transportMetadata,
+        });
+      } catch (transportError) {
+        console.error(
+          `[Zap] Failed to persist file error log | instance=${instanceName} | error=${transportError.message}`
+        );
+      }
 
       await this._updateSchoolWhatsappState(schoolId, {
         instanceName,
@@ -408,7 +598,7 @@ class WhatsappService {
       const dbStatus = this._mapEvolutionStateToDbStatus(rawStatus);
 
       if (rawStatus === 'open') {
-        console.log(`✅ [Auto-Heal] Instância ${instanceName} ONLINE! Atualizando banco...`);
+        console.log(`[Auto-Heal] Instance ${instanceName} online. Updating database...`);
 
         await this.setInstanceWebhook(instanceName);
 
@@ -423,14 +613,12 @@ class WhatsappService {
         return true;
       }
 
-      console.warn(`⚠️ [Auto-Heal] Instância ${instanceName} não está aberta. Estado real: ${rawStatus}`);
+      console.warn(`[Auto-Heal] Instance ${instanceName} is not open. Real state: ${rawStatus}`);
 
       await this._updateSchoolWhatsappState(schoolId, {
         instanceName,
         status: dbStatus,
-        ...(dbStatus === 'disconnected'
-          ? { lastDisconnectedAt: new Date() }
-          : {}),
+        ...(dbStatus === 'disconnected' ? { lastDisconnectedAt: new Date() } : {}),
       });
 
       return false;
@@ -440,7 +628,7 @@ class WhatsappService {
       await this._updateSchoolWhatsappState(schoolId, {
         instanceName,
         status: 'error',
-        lastError: error.message || 'Erro ao validar conexão do WhatsApp.',
+        lastError: error.message || 'Erro ao validar conexao do WhatsApp.',
       });
 
       return false;

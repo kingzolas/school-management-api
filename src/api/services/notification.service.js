@@ -298,6 +298,17 @@ class NotificationService {
           invoice.boleto_url,
           fileName,
           deliveryMessage.text,
+          {
+            source: 'notification.service',
+            notification_log_id: log._id,
+            invoice_id: invoice?._id || null,
+            school_id: log.school_id,
+            notification_type: log.type,
+            request_kind: 'document',
+            fallback_from: null,
+            template_group: log.template_group || null,
+            template_index: log.template_index ?? null,
+          }
         );
         return;
       } catch (e) {
@@ -305,7 +316,17 @@ class NotificationService {
       }
     }
 
-    await whatsappService.sendText(log.school_id, log.target_phone, deliveryMessage.text);
+    await whatsappService.sendText(log.school_id, log.target_phone, deliveryMessage.text, {
+      source: 'notification.service',
+      notification_log_id: log._id,
+      invoice_id: invoice?._id || null,
+      school_id: log.school_id,
+      notification_type: log.type,
+      request_kind: 'text',
+      fallback_from: deliveryMessage.shouldTryFile && invoice?.boleto_url ? 'document' : null,
+      template_group: log.template_group || null,
+      template_index: log.template_index ?? null,
+    });
   }
 
   async _isInvoiceOnHold(invoice) {

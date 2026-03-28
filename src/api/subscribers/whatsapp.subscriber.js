@@ -31,7 +31,13 @@ module.exports = () => {
       // 4. Enviar Mensagem de Sucesso
       const msgSucesso = `✅ Olá ${tutor.fullName.split(' ')[0]}! Confirmamos o pagamento da fatura referente a *${invoice.description}*.\n\nMuito obrigado pela pontualidade! 🚀`;
 
-      await whatsappService.sendText(schoolId, phone, msgSucesso);
+      await whatsappService.sendText(schoolId, phone, msgSucesso, {
+        source: 'whatsapp.subscriber',
+        event: 'invoice:paid',
+        school_id: schoolId,
+        invoice_id: invoice._id,
+        tutor_id: tutorId,
+      });
       console.log('[Event] Mensagem de agradecimento enviada!');
 
     } catch (error) {

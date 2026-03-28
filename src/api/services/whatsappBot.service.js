@@ -340,7 +340,15 @@ class WhatsappBotService {
       finalMessage = presentation + finalMessage;
     }
 
-    await whatsappService.sendText(schoolId, phone, finalMessage);
+    await whatsappService.sendText(schoolId, phone, finalMessage, {
+      source: 'whatsappBot.service',
+      school_id: schoolId,
+      session_id: session?._id || null,
+      phone,
+      message_type: messageType,
+      detected_intent: detectedIntent,
+      current_step: session?.current_step || null,
+    });
 
     if (session) {
       session.last_bot_message = finalMessage;
@@ -1181,7 +1189,16 @@ class WhatsappBotService {
         await whatsappService.sendText(
           schoolId,
           phone,
-          '⚠️ Ocorreu uma instabilidade no atendimento automático.\n\nPor favor, tente novamente em instantes ou digite *atendimento* para falar com a escola.'
+          '⚠️ Ocorreu uma instabilidade no atendimento automático.\n\nPor favor, tente novamente em instantes ou digite *atendimento* para falar com a escola.',
+          {
+            source: 'whatsappBot.service',
+            school_id: schoolId,
+            session_id: session?._id || null,
+            phone,
+            message_type: 'error',
+            flow: 'fallback_error',
+            current_step: session?.current_step || null,
+          }
         );
       } catch (sendError) {
         console.error(`❌ [Bot] Falha ao enviar mensagem de erro ao usuário: ${sendError.message}`);
