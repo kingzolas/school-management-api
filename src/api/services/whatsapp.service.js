@@ -58,6 +58,34 @@ class WhatsappService {
     );
   }
 
+  _isHttpUrl(value) {
+    return typeof value === 'string' && /^https?:\/\//i.test(value.trim());
+  }
+
+  async _downloadRemoteFileAsBase64(fileUrl) {
+    const response = await axios.get(fileUrl, {
+      responseType: 'arraybuffer',
+      timeout: 20000,
+      maxRedirects: 5,
+      validateStatus: (status) => status >= 200 && status < 300,
+      headers: {
+        'User-Agent': 'AcademyHub/WhatsAppTransport',
+      },
+    });
+
+    const buffer = Buffer.from(response.data);
+    const contentType = String(response.headers?.['content-type'] || '')
+      .split(';')[0]
+      .trim()
+      .toLowerCase() || null;
+
+    return {
+      base64: buffer.toString('base64'),
+      contentType,
+      bytes: buffer.length,
+    };
+  }
+
   _extractSendResponseDetails(responseData = {}, fallback = {}) {
     const directPayload = responseData?.key ? responseData : null;
     const nestedPayload = responseData?.data?.key ? responseData.data : null;
@@ -418,9 +446,7 @@ class WhatsappService {
 
       await this._updateSchoolWhatsappState(schoolId, {
         instanceName,
-        status: 'connected',
-        qrCode: null,
-        lastConnectedAt: new Date(),
+        lastSyncAt: new Date(),
         lastError: null,
       });
 
@@ -477,11 +503,35 @@ class WhatsappService {
     const number = this._normalizePhone(phone);
     const queuedAt = new Date();
     const source = context?.source || 'whatsapp.service';
+    // Prefetch remote PDFs so Evolution receives a deterministic document payload instead of relying on URL inference.
+    const shouldDownloadRemoteFile = this._isHttpUrl(fileUrl);
+    let mediaPayload = fileUrl;
+    let mediaTransferMode = shouldDownloadRemoteFile ? 'url' : 'inline';
+    let mediaContentType = 'application/pdf';
+    let mediaBytes = null;
+
+    if (shouldDownloadRemoteFile) {
+      try {
+        const downloaded = await this._downloadRemoteFileAsBase64(fileUrl);
+        mediaPayload = downloaded.base64;
+        mediaTransferMode = 'base64_downloaded';
+        mediaContentType = downloaded.contentType || mediaContentType;
+        mediaBytes = downloaded.bytes;
+      } catch (downloadError) {
+        console.warn(
+          `[Zap] Failed to pre-download document | instance=${instanceName} | url=${fileUrl} | error=${downloadError.message}`
+        );
+      }
+    }
+
     const transportMetadata = this._buildTransportMetadata(context, {
       transport_kind: 'document',
       target_phone: number,
       file_name: fileName || null,
       file_url: fileUrl || null,
+      media_transfer_mode: mediaTransferMode,
+      media_content_type: mediaContentType,
+      media_size_bytes: mediaBytes,
       caption_preview: String(caption || '').trim().slice(0, 500) || null,
     });
 
@@ -496,8 +546,9 @@ class WhatsappService {
         presence: 'composing',
       },
       mediatype: 'document',
+      mimetype: mediaContentType,
       caption,
-      media: fileUrl,
+      media: mediaPayload,
       fileName,
     };
 
@@ -537,9 +588,7 @@ class WhatsappService {
 
       await this._updateSchoolWhatsappState(schoolId, {
         instanceName,
-        status: 'connected',
-        qrCode: null,
-        lastConnectedAt: new Date(),
+        lastSyncAt: new Date(),
         lastError: null,
       });
 

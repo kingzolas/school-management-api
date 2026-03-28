@@ -685,70 +685,140 @@ class NotificationService {
     this.isProcessing = true;
 
     try {
-      const logs = await NotificationLog.find({
+      const now = new Date();
+
+      const queuedCandidates = await NotificationLog.find({
         status: 'queued',
-        scheduled_for: { $lte: new Date() }
+        scheduled_for: { $lte: now }
       })
         .sort({ createdAt: 1 })
-        .limit(1)
-        .populate('invoice_id');
+        .select('_id school_id createdAt scheduled_for')
+        .lean();
 
-      if (logs.length > 0) console.log(`🔄 Processando lote de ${logs.length}...`);
+      if (queuedCandidates.length === 0) {
+        return;
+      }
 
-      for (const log of logs) {
-        log.status = 'processing';
-        await log.save();
-        if (appEmitter) appEmitter.emit('notification:updated', log);
+      const schoolIds = [...new Set(
+        queuedCandidates
+          .map((item) => String(item.school_id || '').trim())
+          .filter(Boolean)
+      )];
 
-        try {
-          const delay = Math.floor(Math.random() * 15000) + 15000;
-          console.log(`⏳ Aguardando ${Math.floor(delay / 1000)}s...`);
-          await new Promise(r => setTimeout(r, delay));
+      const activeConfigs = schoolIds.length > 0
+        ? await NotificationConfig.find({
+            school_id: { $in: schoolIds },
+            isActive: true,
+          })
+            .select('school_id')
+            .lean()
+        : [];
 
-          const result = await this._sendSingleNotification(log);
+      const activeSchoolIds = new Set(
+        activeConfigs.map((config) => String(config.school_id))
+      );
 
-          if (result?.skipped) {
-            log.status = 'sent';
-            log.sent_at = new Date();
-            log.error_message = null;
+      const nextCandidate = queuedCandidates.find((item) =>
+        activeSchoolIds.has(String(item.school_id))
+      );
 
-            log.error_code = 'SKIPPED_HOLD';
-            log.error_http_status = 200;
-            log.error_raw = JSON.stringify({
-              skipped: true,
-              reason: result.reason,
-              hold_until: result.hold_until || null
-            }).slice(0, 2000);
+      if (!nextCandidate) {
+        console.log('⏸️ [Fila] Nenhuma mensagem elegível para envio. Todas as escolas pendentes estão pausadas.');
+        return;
+      }
 
-            console.log(`⛔ [HOLD] SKIP envio (${log.tutor_name}) -> ${result.reason || 'HOLD ativo'}`);
-          } else {
-            log.status = 'sent';
-            log.sent_at = new Date();
-            log.error_message = null;
+      const log = await NotificationLog.findOneAndUpdate(
+        {
+          _id: nextCandidate._id,
+          status: 'queued',
+        },
+        {
+          $set: {
+            status: 'processing',
+          },
+        },
+        {
+          new: true,
+        }
+      ).populate('invoice_id');
 
-            log.error_code = null;
-            log.error_http_status = null;
-            log.error_raw = null;
+      if (!log) {
+        return;
+      }
 
-            console.log(`✅ [Zap] Enviado: ${log.tutor_name}`);
-          }
+      console.log(`🔄 Processando lote de 1...`);
+      if (appEmitter) appEmitter.emit('notification:updated', log);
 
-        } catch (error) {
-          const normalized = this._normalizeWhatsappError(error);
+      try {
+        const delay = Math.floor(Math.random() * 15000) + 15000;
+        console.log(`⏳ Aguardando ${Math.floor(delay / 1000)}s...`);
+        await new Promise(r => setTimeout(r, delay));
 
-          console.error(`❌ [Zap] Falha: ${log.tutor_name}`, normalized.message);
+        // Revalida a pausa aqui porque a fila pode ter sido suspensa enquanto o worker aguardava.
+        const schoolStillActive = await NotificationConfig.findOne({
+          school_id: log.school_id,
+          isActive: true,
+        })
+          .select('_id')
+          .lean();
 
-          log.status = 'failed';
-          log.error_message = normalized.message;
-          log.error_code = normalized.code;
-          log.error_http_status = normalized.httpStatus;
-          log.error_raw = normalized.raw;
-          log.attempts += 1;
+        if (!schoolStillActive) {
+          log.status = 'queued';
+          log.sent_at = null;
+          log.error_message = null;
+          log.error_code = null;
+          log.error_http_status = null;
+          log.error_raw = null;
+
+          const pausedLog = await log.save();
+          if (appEmitter) appEmitter.emit('notification:updated', pausedLog);
+
+          console.log(`⏸️ [Fila] Envio suspenso antes do disparo (${log.tutor_name}) porque a escola foi pausada.`);
+          return;
         }
 
-        const finalLog = await log.save();
-        if (appEmitter) appEmitter.emit('notification:updated', finalLog);
+        const result = await this._sendSingleNotification(log);
+
+        if (result?.skipped) {
+          log.status = 'sent';
+          log.sent_at = new Date();
+          log.error_message = null;
+
+          log.error_code = 'SKIPPED_HOLD';
+          log.error_http_status = 200;
+          log.error_raw = JSON.stringify({
+            skipped: true,
+            reason: result.reason,
+            hold_until: result.hold_until || null
+          }).slice(0, 2000);
+
+          console.log(`⛔ [HOLD] SKIP envio (${log.tutor_name}) -> ${result.reason || 'HOLD ativo'}`);
+        } else {
+          log.status = 'sent';
+          log.sent_at = new Date();
+          log.error_message = null;
+
+          log.error_code = null;
+          log.error_http_status = null;
+          log.error_raw = null;
+
+          console.log(`✅ [Zap] Enviado: ${log.tutor_name}`);
+        }
+      } catch (error) {
+        const normalized = this._normalizeWhatsappError(error);
+
+        console.error(`❌ [Zap] Falha: ${log.tutor_name}`, normalized.message);
+
+        log.status = 'failed';
+        log.error_message = normalized.message;
+        log.error_code = normalized.code;
+        log.error_http_status = normalized.httpStatus;
+        log.error_raw = normalized.raw;
+        log.attempts += 1;
       }
+
+      const finalLog = await log.save();
+      if (appEmitter) appEmitter.emit('notification:updated', finalLog);
     } catch (err) {
       console.error('Erro fila:', err);
     } finally {
