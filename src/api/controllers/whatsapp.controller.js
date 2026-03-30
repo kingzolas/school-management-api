@@ -61,6 +61,10 @@ class WhatsappController {
       const statusData = await whatsappService.getConnectionStatus(instanceName);
 
       const now = new Date();
+      const resolvedStatusQrCode =
+        typeof statusData?.qrcode === 'string'
+          ? statusData.qrcode
+          : statusData?.qrcode?.base64 || null;
       let dbStatus = 'disconnected';
       let qrCode = null;
 
@@ -69,12 +73,13 @@ class WhatsappController {
       } else if (
         statusData?.status === 'qrcode' ||
         statusData?.status === 'qr' ||
-        statusData?.qrcode
+        resolvedStatusQrCode
       ) {
         dbStatus = 'qr_pending';
-        qrCode = statusData.qrcode || null;
+        qrCode = resolvedStatusQrCode;
       } else if (statusData?.status === 'connecting') {
-        dbStatus = 'connecting';
+        dbStatus = resolvedStatusQrCode ? 'qr_pending' : 'connecting';
+        qrCode = resolvedStatusQrCode;
       } else {
         dbStatus = 'disconnected';
       }
@@ -82,20 +87,31 @@ class WhatsappController {
       await School.findByIdAndUpdate(schoolId, {
         'whatsapp.instanceName': instanceName,
         'whatsapp.status': dbStatus,
-        'whatsapp.qrCode': qrCode,
         'whatsapp.lastSyncAt': now,
         'whatsapp.lastError': null,
         ...(dbStatus === 'connected'
-          ? { 'whatsapp.lastConnectedAt': now }
+          ? { 'whatsapp.lastConnectedAt': now, 'whatsapp.qrCode': null }
           : {}),
         ...(dbStatus === 'disconnected'
-          ? { 'whatsapp.lastDisconnectedAt': now }
+          ? { 'whatsapp.lastDisconnectedAt': now, 'whatsapp.qrCode': null }
+          : {}),
+        ...(qrCode && (dbStatus === 'qr_pending' || dbStatus === 'connecting')
+          ? { 'whatsapp.qrCode': qrCode }
           : {}),
       });
+
+      const schoolSnapshot = await School.findById(schoolId).select('+whatsapp.qrCode');
+      const persistedQrCode = schoolSnapshot?.whatsapp?.qrCode || null;
+      const responseQrCode =
+        dbStatus === 'connected' || dbStatus === 'disconnected'
+          ? null
+          : qrCode || persistedQrCode || null;
 
       return res.status(200).json({
         ...statusData,
         persistedStatus: dbStatus,
+        qrcode: responseQrCode,
+        qrCode: responseQrCode,
       });
     } catch (error) {
       try {
