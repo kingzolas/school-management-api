@@ -3,6 +3,12 @@ const appEmitter = require('../../loaders/eventEmitter');
 const User = require('../models/user.model');
 const admin = require('../../config/firebase');
 
+function sendAttendanceError(res, error, fallbackMessage) {
+  const statusCode = error.statusCode || (error.name === 'CastError' ? 400 : 500);
+  const message = error.message || fallbackMessage;
+  return res.status(statusCode).json({ message });
+}
+
 exports.saveAttendance = async (req, res) => {
   try {
     const schoolId = req.user.schoolId;
@@ -15,7 +21,7 @@ exports.saveAttendance = async (req, res) => {
       teacherId
     };
 
-    const result = await attendanceService.createOrUpdate(attendanceData);
+    const result = await attendanceService.createOrUpdate(attendanceData, req.user);
 
     appEmitter.emit('attendance_updated', {
       classId: req.body.classId,
@@ -58,18 +64,22 @@ exports.saveAttendance = async (req, res) => {
     });
   } catch (error) {
     console.error('Erro ao salvar chamada:', error);
-    return res.status(500).json({ message: 'Erro interno ao processar chamada.' });
+    return sendAttendanceError(res, error, 'Erro interno ao processar chamada.');
   }
 };
 
 exports.getHistory = async (req, res) => {
   try {
     const { classId } = req.params;
-    const result = await attendanceService.getClassHistory(req.user.schoolId, classId);
+    const result = await attendanceService.getClassHistory(
+      req.user.schoolId,
+      classId,
+      req.user
+    );
     return res.status(200).json(result);
   } catch (error) {
     console.error('Erro ao buscar histórico:', error);
-    return res.status(500).json({ message: 'Erro ao buscar histórico.' });
+    return sendAttendanceError(res, error, 'Erro ao buscar histórico.');
   }
 };
 
@@ -94,11 +104,16 @@ exports.getAttendanceSheet = async (req, res) => {
       return res.status(400).json({ message: 'ID da turma é obrigatório.' });
     }
 
-    const result = await attendanceService.getDailyList(schoolId, classId, date);
+    const result = await attendanceService.getDailyList(
+      schoolId,
+      classId,
+      date,
+      req.user
+    );
 
     return res.status(200).json(result);
   } catch (error) {
     console.error('Erro ao buscar lista de chamada:', error);
-    return res.status(500).json({ message: 'Erro ao buscar dados.' });
+    return sendAttendanceError(res, error, 'Erro ao buscar dados.');
   }
 };

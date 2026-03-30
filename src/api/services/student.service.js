@@ -11,7 +11,142 @@ const tutorPopulation = {
     select: '-students -__v' 
 };
 
+const isValidObjectId = (value) =>
+    typeof value === 'string' && mongoose.Types.ObjectId.isValid(value);
+
 class StudentService {
+
+    _normalizeTutorAddress(address = {}) {
+        const rawAddress = address && typeof address === 'object' ? address : {};
+
+        return {
+            street: rawAddress.street || '',
+            neighborhood: rawAddress.neighborhood || '',
+            number: rawAddress.number || '',
+            block: rawAddress.block || '',
+            lot: rawAddress.lot || '',
+            cep: rawAddress.cep || rawAddress.zipCode || '',
+            city: rawAddress.city || '',
+            state: rawAddress.state || '',
+        };
+    }
+
+    _buildTutorPayload(tutorData = {}, schoolId) {
+        const {
+            relationship,
+            tutorId,
+            id,
+            _id,
+            financialScore,
+            students,
+            address,
+            ...rest
+        } = tutorData || {};
+
+        const tutorPayload = {
+            ...rest,
+            address: this._normalizeTutorAddress(address),
+            school_id: schoolId,
+        };
+
+        if (_id && !_id.startsWith('temp-')) {
+            tutorPayload._id = _id;
+        } else if (id && !id.startsWith('temp-')) {
+            tutorPayload._id = id;
+        }
+
+        if (financialScore) {
+            delete tutorPayload.financialScore;
+        }
+
+        if (students) {
+            delete tutorPayload.students;
+        }
+
+        return {
+            relationship,
+            tutorPayload,
+            incomingTutorId: tutorId || _id || id || null,
+        };
+    }
+
+    async _upsertTutorFromPayload(tutorData = {}, schoolId) {
+        const { relationship, tutorPayload, incomingTutorId } =
+            this._buildTutorPayload(tutorData, schoolId);
+
+        if (!relationship) {
+            return null;
+        }
+
+        let tutorDoc = null;
+
+        if (isValidObjectId(incomingTutorId)) {
+            tutorDoc = await Tutor.findOne({
+                _id: incomingTutorId,
+                school_id: schoolId,
+            });
+        }
+
+        if (!tutorDoc && tutorPayload.cpf) {
+            tutorDoc = await Tutor.findOne({
+                cpf: tutorPayload.cpf,
+                school_id: schoolId,
+            });
+        }
+
+        if (tutorDoc) {
+            Object.assign(tutorDoc, tutorPayload);
+            await tutorDoc.save();
+        } else {
+            tutorDoc = new Tutor(tutorPayload);
+            await tutorDoc.save();
+        }
+
+        return {
+            tutorDoc,
+            relationship,
+        };
+    }
+
+    async _resolveTutorLinks(tutorsFromFlutter = [], schoolId) {
+        if (!Array.isArray(tutorsFromFlutter) || tutorsFromFlutter.length === 0) {
+            return [];
+        }
+
+        const tutorsForStudentSchema = [];
+        const seenTutorIds = new Set();
+
+        for (const tutorData of tutorsFromFlutter) {
+            const resolved = await this._upsertTutorFromPayload(tutorData, schoolId);
+            if (!resolved?.tutorDoc) continue;
+
+            const tutorId = String(resolved.tutorDoc._id);
+            if (seenTutorIds.has(tutorId)) continue;
+            seenTutorIds.add(tutorId);
+
+            tutorsForStudentSchema.push({
+                tutorId: resolved.tutorDoc._id,
+                relationship: resolved.relationship,
+            });
+        }
+
+        return tutorsForStudentSchema;
+    }
+
+    async _syncTutorStudentLinks(tutorLinks = [], studentId) {
+        const tutorIds = tutorLinks
+            .map((link) => link?.tutorId)
+            .filter(Boolean);
+
+        if (!tutorIds.length) {
+            return;
+        }
+
+        await Tutor.updateMany(
+            { _id: { $in: tutorIds } },
+            { $addToSet: { students: studentId } }
+        );
+    }
 
     /**
      * Cria um novo aluno, GERA MATRÍCULA e salva FOTO.
@@ -28,38 +163,10 @@ class StudentService {
             };
         }
 
-        const tutorsForStudentSchema = []; 
-
-        // Lógica de Tutores (Mantida igual)
-        if (tutorsFromFlutter && tutorsFromFlutter.length > 0) {
-            for (const tutorData of tutorsFromFlutter) {
-                const { relationship, ...tutorDetails } = tutorData;
-                if (!relationship) continue; 
-
-                let tutorDoc; 
-                const tutorDataWithSchool = { ...tutorDetails, school_id: schoolId };
-
-                // [NOTA] Se quisesse auditar a criação de tutores, passaria user aqui também
-                if (tutorDetails.cpf) {
-                    tutorDoc = await Tutor.findOne({ cpf: tutorDetails.cpf, school_id: schoolId });
-                    if (tutorDoc) {
-                        Object.assign(tutorDoc, tutorDataWithSchool);
-                        await tutorDoc.save();
-                    } else {
-                        tutorDoc = new Tutor(tutorDataWithSchool);
-                        await tutorDoc.save();
-                    }
-                } else {
-                    tutorDoc = new Tutor(tutorDataWithSchool);
-                    await tutorDoc.save();
-                }
-                
-                tutorsForStudentSchema.push({
-                    tutorId: tutorDoc._id,
-                    relationship: relationship 
-                });
-            }
-        } 
+        const tutorsForStudentSchema = await this._resolveTutorLinks(
+            tutorsFromFlutter,
+            schoolId
+        );
         
         // 2. Instancia o aluno
         const newStudent = new Student({
@@ -78,10 +185,7 @@ class StudentService {
         await newStudent.save();
 
         // Atualiza os tutores
-        await Tutor.updateMany(
-            { _id: { $in: tutorsForStudentSchema.map(t => t.tutorId) } },
-            { $addToSet: { students: newStudent._id } } 
-        );
+        await this._syncTutorStudentLinks(tutorsForStudentSchema, newStudent._id);
 
         // 4. Retorno leve
         const populatedStudent = await Student.findById(newStudent._id)
@@ -123,6 +227,14 @@ class StudentService {
         
         const updatePayload = { ...studentData };
 
+        const tutorsFromFlutter = updatePayload.tutors;
+        if (Array.isArray(tutorsFromFlutter)) {
+            updatePayload.tutors = await this._resolveTutorLinks(
+                tutorsFromFlutter,
+                schoolId
+            );
+        }
+
         if (photoFile) {
             updatePayload.profilePicture = {
                 data: photoFile.buffer,
@@ -155,6 +267,11 @@ class StudentService {
         if (!updatedStudent) {
             throw new Error('Aluno não encontrado ou não pertence a esta escola.');
         }
+
+        if (Array.isArray(updatePayload.tutors) && updatePayload.tutors.length > 0) {
+            await this._syncTutorStudentLinks(updatePayload.tutors, updatedStudent._id);
+        }
+
         return updatedStudent;
     }
 

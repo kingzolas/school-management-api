@@ -1,5 +1,7 @@
 const Attendance = require('../models/attendance.model');
 const Enrollment = require('../models/enrollment.model');
+const Horario = require('../models/horario.model');
+const Class = require('../models/class.model');
 const mongoose = require('mongoose');
 
 const DEFAULT_JUSTIFICATION_DEADLINE_DAYS = Number(
@@ -13,6 +15,14 @@ const ABSENCE_STATES = {
   REJECTED: 'REJECTED',
   EXPIRED: 'EXPIRED'
 };
+
+const PRIVILEGED_ROLES = new Set([
+  'ADMIN',
+  'ADMINISTRADOR',
+  'COORDENADOR',
+  'DIRETOR',
+  'GESTOR'
+]);
 
 // ============================================================================
 // CORREÇÃO: Forçando o fuso local para evitar que a data recue um dia
@@ -59,6 +69,114 @@ function extractId(value) {
   return String(value);
 }
 
+function createHttpError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function normalizeRoles(roles) {
+  if (!Array.isArray(roles)) return [];
+  return roles
+    .map((role) => String(role || '').trim().toUpperCase())
+    .filter(Boolean);
+}
+
+function isPrivilegedActor(actor) {
+  const roles = normalizeRoles(actor?.roles || (actor?.role ? [actor.role] : []));
+  return roles.some((role) => PRIVILEGED_ROLES.has(role));
+}
+
+function buildAttendanceSummary(payload) {
+  const records = Array.isArray(payload?.records) ? payload.records : [];
+
+  const presentCount = records.filter((record) => normalizeStatus(record.status) === 'PRESENT').length;
+  const absentCount = records.filter((record) => normalizeStatus(record.status) === 'ABSENT').length;
+  const pendingCount = records.filter(
+    (record) =>
+      normalizeStatus(record.status) === 'ABSENT' &&
+      String(record.absenceState || '').toUpperCase() === ABSENCE_STATES.PENDING
+  ).length;
+  const approvedCount = records.filter(
+    (record) =>
+      normalizeStatus(record.status) === 'ABSENT' &&
+      String(record.absenceState || '').toUpperCase() === ABSENCE_STATES.APPROVED
+  ).length;
+  const rejectedCount = records.filter(
+    (record) =>
+      normalizeStatus(record.status) === 'ABSENT' &&
+      String(record.absenceState || '').toUpperCase() === ABSENCE_STATES.REJECTED
+  ).length;
+  const expiredCount = records.filter(
+    (record) =>
+      normalizeStatus(record.status) === 'ABSENT' &&
+      String(record.absenceState || '').toUpperCase() === ABSENCE_STATES.EXPIRED
+  ).length;
+
+  return {
+    ...payload,
+    totalStudents: records.length,
+    presentCount,
+    absentCount,
+    pendingCount,
+    approvedCount,
+    rejectedCount,
+    expiredCount,
+    presenceRate: records.length === 0 ? 0 : presentCount / records.length
+  };
+}
+
+function buildAttendanceResponse(document) {
+  if (!document) return null;
+
+  const payload =
+    typeof document.toObject === 'function'
+      ? document.toObject({ virtuals: false })
+      : { ...document };
+
+  return buildAttendanceSummary(payload);
+}
+
+async function ensureClassAccess(actor, schoolId, classId) {
+  if (!classId) {
+    throw createHttpError('ID da turma é obrigatório.', 400);
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(classId)) {
+    throw createHttpError('Turma inválida.', 400);
+  }
+
+  const classDoc = await Class.findOne({
+    _id: classId,
+    school_id: schoolId
+  }).select('_id name school_id');
+
+  if (!classDoc) {
+    throw createHttpError('Turma não encontrada ou não pertence à sua escola.', 404);
+  }
+
+  if (isPrivilegedActor(actor)) {
+    return classDoc;
+  }
+
+  const teacherId = extractId(actor?.id);
+  if (!teacherId) {
+    throw createHttpError('Acesso negado a esta turma.', 403);
+  }
+
+  const access = await Horario.exists({
+    school_id: schoolId,
+    classId: classDoc._id,
+    teacherId
+  });
+
+  if (!access) {
+    throw createHttpError('Turma não encontrada ou não pertence à sua escola.', 404);
+  }
+
+  return classDoc;
+}
+
 function normalizeStatus(status) {
   return String(status || 'PRESENT').toUpperCase() === 'ABSENT' ? 'ABSENT' : 'PRESENT';
 }
@@ -68,7 +186,10 @@ function buildDeadlineForAbsence(targetDate) {
 }
 
 async function populateAttendance(attendanceId) {
-  return Attendance.findById(attendanceId).populate('records.studentId', 'fullName photoUrl');
+  return Attendance.findById(attendanceId).populate(
+    'records.studentId',
+    'fullName photoUrl profilePictureUrl'
+  );
 }
 
 async function expireOverdueAbsencesForClass(schoolId, classId) {
@@ -101,7 +222,9 @@ async function expireOverdueAbsencesForClass(schoolId, classId) {
   );
 }
 
-exports.createOrUpdate = async (data) => {
+exports.createOrUpdate = async (data, actor) => {
+  await ensureClassAccess(actor, data.schoolId, data.classId);
+
   const targetStart = startOfDay(data.date || new Date());
   const targetEnd = endOfDay(data.date || new Date());
 
@@ -168,10 +291,12 @@ exports.createOrUpdate = async (data) => {
 
   await expireOverdueAbsencesForClass(data.schoolId, data.classId);
 
-  return populateAttendance(result._id);
+  return buildAttendanceResponse(await populateAttendance(result._id));
 };
 
-exports.getDailyList = async (schoolId, classId, dateString) => {
+exports.getDailyList = async (schoolId, classId, dateString, actor) => {
+  await ensureClassAccess(actor, schoolId, classId);
+
   // CORREÇÃO: Repassando o valor bruto diretamente para a nova função segura
   const targetStart = startOfDay(dateString || new Date());
   const targetEnd = endOfDay(dateString || new Date());
@@ -182,17 +307,17 @@ exports.getDailyList = async (schoolId, classId, dateString) => {
     schoolId,
     classId,
     date: { $gte: targetStart, $lte: targetEnd }
-  }).populate('records.studentId', 'fullName photoUrl');
+  }).populate('records.studentId', 'fullName photoUrl profilePictureUrl');
 
   if (existingAttendance) {
-    return { type: 'saved', data: existingAttendance };
+    return { type: 'saved', data: buildAttendanceResponse(existingAttendance) };
   }
 
   const enrollments = await Enrollment.find({
     school_id: schoolId,
     class: classId,
     status: 'Ativa'
-  }).populate('student', 'fullName photoUrl');
+  }).populate('student', 'fullName photoUrl profilePictureUrl');
 
   const proposedList = {
     schoolId,
@@ -211,103 +336,22 @@ exports.getDailyList = async (schoolId, classId, dateString) => {
       }))
   };
 
-  return { type: 'proposed', data: proposedList };
+  return { type: 'proposed', data: buildAttendanceSummary(proposedList) };
 };
 
-exports.getClassHistory = async (schoolId, classId) => {
+exports.getClassHistory = async (schoolId, classId, actor) => {
+  await ensureClassAccess(actor, schoolId, classId);
+
   await expireOverdueAbsencesForClass(schoolId, classId);
 
-  return Attendance.aggregate([
-    {
-      $match: {
-        schoolId: new mongoose.Types.ObjectId(schoolId),
-        classId: new mongoose.Types.ObjectId(classId)
-      }
-    },
-    { $sort: { date: -1 } },
-    {
-      $project: {
-        date: 1,
-        updatedAt: 1,
-        totalStudents: { $size: '$records' },
-        presentCount: {
-          $size: {
-            $filter: {
-              input: '$records',
-              as: 'record',
-              cond: { $eq: ['$$record.status', 'PRESENT'] }
-            }
-          }
-        },
-        absentCount: {
-          $size: {
-            $filter: {
-              input: '$records',
-              as: 'record',
-              cond: { $eq: ['$$record.status', 'ABSENT'] }
-            }
-          }
-        },
-        pendingCount: {
-          $size: {
-            $filter: {
-              input: '$records',
-              as: 'record',
-              cond: {
-                $and: [
-                  { $eq: ['$$record.status', 'ABSENT'] },
-                  { $eq: ['$$record.absenceState', 'PENDING'] }
-                ]
-              }
-            }
-          }
-        },
-        approvedCount: {
-          $size: {
-            $filter: {
-              input: '$records',
-              as: 'record',
-              cond: {
-                $and: [
-                  { $eq: ['$$record.status', 'ABSENT'] },
-                  { $eq: ['$$record.absenceState', 'APPROVED'] }
-                ]
-              }
-            }
-          }
-        },
-        rejectedCount: {
-          $size: {
-            $filter: {
-              input: '$records',
-              as: 'record',
-              cond: {
-                $and: [
-                  { $eq: ['$$record.status', 'ABSENT'] },
-                  { $eq: ['$$record.absenceState', 'REJECTED'] }
-                ]
-              }
-            }
-          }
-        },
-        expiredCount: {
-          $size: {
-            $filter: {
-              input: '$records',
-              as: 'record',
-              cond: {
-                $and: [
-                  { $eq: ['$$record.status', 'ABSENT'] },
-                  { $eq: ['$$record.absenceState', 'EXPIRED'] }
-                ]
-              }
-            }
-          }
-        },
-        records: 1
-      }
-    }
-  ]);
+  const history = await Attendance.find({
+    schoolId: new mongoose.Types.ObjectId(schoolId),
+    classId: new mongoose.Types.ObjectId(classId)
+  })
+    .sort({ date: -1, updatedAt: -1 })
+    .populate('records.studentId', 'fullName photoUrl profilePictureUrl');
+
+  return history.map((entry) => buildAttendanceResponse(entry));
 };
 
 exports.getHistoryByStudent = async (schoolId, studentId) => {
