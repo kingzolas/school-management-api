@@ -569,7 +569,13 @@ class DashboardService {
                 },
                 { $sort: { total: -1 } },
               ]
-            : [{ $limit: 0 }],
+            : [
+                {
+                  $match: {
+                    $expr: { $eq: [1, 0] },
+                  },
+                },
+              ],
         },
       },
     ];
