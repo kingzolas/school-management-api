@@ -11,7 +11,7 @@ class DashboardController {
                 return res.status(400).json({ message: 'Usuário não vinculado a uma escola.' });
             }
 
-            const data = await DashboardService.getDashboardData(schoolId);
+            const data = await DashboardService.getDashboardData(schoolId, req.query);
             
             res.status(200).json(data);
         } catch (error) {

@@ -1,439 +1,914 @@
 const mongoose = require('mongoose');
 const Student = require('../models/student.model');
 const Invoice = require('../models/invoice.model');
-const Staff = require('../models/user.model'); 
+const Staff = require('../models/user.model');
 const ClassModel = require('../models/class.model');
 const Subject = require('../models/subject.model');
 const Expense = require('../models/expense.model');
 const financeRuntime = require('./school-finance.runtime.js');
 
+const MONTH_NAMES_PT_BR = [
+  '',
+  'Janeiro',
+  'Fevereiro',
+  'Março',
+  'Abril',
+  'Maio',
+  'Junho',
+  'Julho',
+  'Agosto',
+  'Setembro',
+  'Outubro',
+  'Novembro',
+  'Dezembro',
+];
+
 class DashboardService {
+  async getDashboardData(schoolId, query = {}) {
+    const referenceDate = this._parseReferenceDate(
+      query.referenceDate || query.date || query.reference_date,
+    );
+    const period = this._buildPeriodContext(referenceDate);
+    const cachePayload = { referenceDate: period.referenceDateKey };
+    const cached = financeRuntime.getCache(
+      'dashboard:financial',
+      schoolId,
+      cachePayload,
+    );
 
-    async getDashboardData(schoolId) {
-        const currentYear = new Date().getFullYear();
-        const cachePayload = { year: currentYear };
-        const cached = financeRuntime.getCache('dashboard:financial', schoolId, cachePayload);
-
-        if (cached && !cached.stale) {
-            console.log(`📊 [DashboardService] Cache hit da inteligência financeira | schoolId=${schoolId} | year=${currentYear}`);
-            return cached.value;
-        }
-
-        console.log(`📊 [DashboardService] Gerando Inteligência Financeira para SchoolID: ${schoolId}`);
-        
-        const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
-
-        // --- Definição de Datas ---
-        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
-        const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0, 0, 0, 0);
-        const endOfMonth = new Date(startOfMonth); endOfMonth.setMonth(endOfMonth.getMonth() + 1);
-
-        // --- Execução Paralela de Todas as Consultas ---
-        const [
-            counts,
-            financialMetrics,
-            expenseMetrics,
-            monthlyPerformance,
-            dailyChart,
-            birthdays,
-            classDistribution
-        ] = await Promise.all([
-            // 1. Contagens Básicas (Alunos, Professores, etc)
-            this._getCounts(schoolId),
-
-            // 2. Métricas Financeiras do Mês Atual (Segmentado por Boleto/Pix e Status)
-            this._calculateFinancials(schoolObjectId, startOfDay, endOfDay, startOfMonth, endOfMonth),
-            
-            // 3. Despesas do Mês
-            this._calculateExpenses(schoolObjectId, startOfMonth, endOfMonth),
-            
-            // 4. Inteligência de Negócio: Performance Mensal (Jan vs Fev vs Mar...)
-            this._getMonthlyPerformance(schoolObjectId, currentYear),
-
-            // 5. Gráfico Diário (Evolução dia a dia do mês atual)
-            this._getCurrentMonthDaily(schoolObjectId),
-
-            // 6. Aniversariantes
-            this._getBirthdays(schoolObjectId),
-
-            // 7. Distribuição por Turma
-            this._getClassDistribution(schoolObjectId)
-        ]);
-
-        // --- Montagem do Objeto de Resposta ---
-        const response = {
-            counts: counts,
-            
-            // Visão do Mês Atual (Operacional)
-            financial: {
-                // Caixa Realizado (O que entrou)
-                saldoDia: financialMetrics.saldoDia,
-                saldoMes: financialMetrics.saldoMes,
-                
-                // Fluxo de Caixa (Previsão vs Atraso)
-                totalAVencer: financialMetrics.totalAVencer,     // Receita Futura
-                totalVencido: financialMetrics.totalInadimplente, // Receita Travada
-                
-                // Indicadores de Inadimplência
-                inadimplenciaAlunos: financialMetrics.qtdAlunosInadimplentes,
-                inadimplenciaTaxa: financialMetrics.inadimplenciaTaxa,
-                
-                // Segmentação por Método (Cora/Boleto vs MP/Pix)
-                metodos: {
-                    boleto: {
-                        recebido: financialMetrics.boletoRecebido,
-                        aReceber: financialMetrics.boletoAVencer,
-                        atrasado: financialMetrics.boletoVencido
-                    },
-                    pix: {
-                        recebido: financialMetrics.pixRecebido,
-                        aReceber: financialMetrics.pixAVencer,
-                        atrasado: financialMetrics.pixVencido
-                    }
-                },
-
-                // Resultado Líquido
-                despesaMes: expenseMetrics.totalMonth,
-                despesaPendente: expenseMetrics.totalPending,
-                saldoLiquido: financialMetrics.saldoMes - expenseMetrics.totalMonth
-            },
-
-            // Visão Estratégica (Evolução Anual)
-            history: {
-                year: currentYear,
-                performance: monthlyPerformance // Array com o comparativo de alunos e receita mês a mês
-            },
-
-            // Gráficos Auxiliares
-            dailyChart: dailyChart,
-            classData: classDistribution,
-            birthdays: birthdays
-        };
-
-        financeRuntime.setCache('dashboard:financial', schoolId, cachePayload, response);
-        return response;
+    if (cached && !cached.stale) {
+      console.log(
+        `📊 [DashboardService] Cache hit da inteligência financeira | schoolId=${schoolId} | referenceDate=${period.referenceDateKey}`,
+      );
+      return cached.value;
     }
 
-    // =========================================================================
-    // MÉTODOS PRIVADOS (CÁLCULOS E AGGREGATIONS)
-    // =========================================================================
+    console.log(
+      `📊 [DashboardService] Gerando inteligência financeira para schoolId=${schoolId} | referenceDate=${period.referenceDateKey}`,
+    );
 
-    async _getCounts(schoolId) {
-        const [students, teachers, classes, subjects] = await Promise.all([
-            Student.countDocuments({ school_id: schoolId, isActive: true }),
-            Staff.countDocuments({ school_id: schoolId, $or: [{ role: 'teacher' }, { roles: { $in: ['Professor', 'Teacher', 'teacher'] } }] }),
-            ClassModel.countDocuments({ school_id: schoolId }),
-            Subject.countDocuments({ school_id: schoolId })
-        ]);
-        return { students, teachers, classes, subjects };
+    const schoolObjectId = new mongoose.Types.ObjectId(schoolId);
+
+    const [
+      counts,
+      financialMetrics,
+      expenseMetrics,
+      monthlyPerformance,
+      birthdays,
+      classDistribution,
+    ] = await Promise.all([
+      this._getCounts(schoolId),
+      this._calculateFinancials(schoolObjectId, period),
+      this._calculateExpenses(
+        schoolObjectId,
+        period.currentMonthStart,
+        period.currentWindowEndExclusive,
+      ),
+      this._getMonthlyPerformance(schoolObjectId, period.year, period.referenceDate),
+      this._getBirthdays(schoolObjectId),
+      this._getClassDistribution(schoolObjectId),
+    ]);
+
+    const response = {
+      period: this._serializePeriod(period),
+      counts,
+      financial: {
+        ...financialMetrics,
+        despesaMes: expenseMetrics.totalMonth,
+        despesaPendente: expenseMetrics.totalPending,
+        saldoLiquido: financialMetrics.saldoMes - expenseMetrics.totalMonth,
+      },
+      history: {
+        year: period.year,
+        performance: monthlyPerformance,
+      },
+      dailyChart: financialMetrics.dailyChart,
+      comparisonChart: financialMetrics.comparisonChart,
+      classData: classDistribution,
+      birthdays,
+    };
+
+    financeRuntime.setCache(
+      'dashboard:financial',
+      schoolId,
+      cachePayload,
+      response,
+    );
+
+    return response;
+  }
+
+  // =========================================================================
+  // Helpers
+  // =========================================================================
+
+  _parseReferenceDate(rawValue) {
+    if (!rawValue) {
+      return this._startOfDay(new Date());
     }
 
-    // --- CÁLCULO FINANCEIRO DETALHADO (SEGMENTAÇÃO) ---
-   // ... dentro de dashboard.service.js
+    const value = Array.isArray(rawValue) ? rawValue[0] : String(rawValue).trim();
+    if (!value) {
+      return this._startOfDay(new Date());
+    }
 
-    async _calculateFinancials(schoolId, startOfDay, endOfDay, startOfMonth, endOfMonth) {
-        const now = new Date();
-        
-        const metrics = await Invoice.aggregate([
-            { $match: { school_id: schoolId } }, 
-            {
-                $group: {
-                    _id: null,
-                    
-                    // --- 1. GERAIS (MANTIDOS) ---
-                    totalOverdueValue: { 
-                        $sum: { 
-                            $cond: [ 
-                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, 
-                                { $divide: ["$value", 100] }, 0 
-                            ] 
-                        } 
-                    },
-                    countOverdueStudents: { 
-                        $addToSet: { 
-                            $cond: [ 
-                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", now] }] }, 
-                                "$student", null 
-                            ] 
-                        } 
-                    },
-                    totalFutureValue: {
-                        $sum: {
-                            $cond: [
-                                { $and: [{ $eq: ["$status", "pending"] }, { $gte: ["$dueDate", now] }] },
-                                { $divide: ["$value", 100] }, 0
-                            ]
-                        }
-                    },
-                    balanceDay: { 
-                        $sum: { 
-                            $cond: [ 
-                                { $and: [{ $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfDay] }, { $lte: ["$paidAt", endOfDay] }] }, 
-                                { $divide: ["$value", 100] }, 0 
-                            ] 
-                        } 
-                    },
-                    balanceMonth: { 
-                        $sum: { 
-                            $cond: [ 
-                                { $and: [{ $eq: ["$status", "paid"] }, { $gte: ["$paidAt", startOfMonth] }, { $lte: ["$paidAt", endOfMonth] }] }, 
-                                { $divide: ["$value", 100] }, 0 
-                            ] 
-                        } 
-                    },
-                    
-                    // --- CORREÇÃO AQUI: USANDO O CAMPO 'GATEWAY' ---
-                    
-                    // CORA (Geralmente Boleto)
-                    // Soma tudo que entrou via gateway 'cora' OU método 'boleto'
-                    boletoPaid: {
-                        $sum: { 
-                            $cond: [
-                                { 
-                                    $and: [
-                                        { $or: [{ $eq: ["$gateway", "cora"] }, { $eq: ["$paymentMethod", "boleto"] }] }, 
-                                        { $eq: ["$status", "paid"] }, 
-                                        { $gte: ["$paidAt", startOfMonth] } // Recebido no mês atual
-                                    ] 
-                                }, 
-                                { $divide: ["$value", 100] }, 
-                                0
-                            ] 
-                        }
-                    },
+    const isoDateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoDateOnly) {
+      const year = Number(isoDateOnly[1]);
+      const month = Number(isoDateOnly[2]);
+      const day = Number(isoDateOnly[3]);
+      return this._startOfDay(new Date(year, month - 1, day));
+    }
 
-                    // MERCADO PAGO (Geralmente Pix)
-                    // Soma tudo que entrou via gateway 'mercadopago' OU método 'pix'
-                    pixPaid: {
-                        $sum: { 
-                            $cond: [
-                                { 
-                                    $and: [
-                                        { $or: [{ $eq: ["$gateway", "mercadopago"] }, { $eq: ["$paymentMethod", "pix"] }] }, 
-                                        { $eq: ["$status", "paid"] }, 
-                                        { $gte: ["$paidAt", startOfMonth] }
-                                    ] 
-                                }, 
-                                { $divide: ["$value", 100] }, 
-                                0
-                            ] 
-                        }
-                    },
-                    
-                    totalPendingGeneral: { 
-                        $sum: { $cond: [{ $eq: ["$status", "pending"] }, { $divide: ["$value", 100] }, 0] } 
-                    }
-                }
-            }
-        ]);
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return this._startOfDay(parsed);
+    }
 
-        const result = metrics[0] || {};
-        
-        const uniqueOverdueStudents = result.countOverdueStudents 
-            ? result.countOverdueStudents.filter(id => id !== null).length 
-            : 0;
-        
-        const totalPortfolio = (result.totalPendingGeneral || 0) + (result.balanceMonth || 0);
-        const taxa = (result.totalOverdueValue > 0 && totalPortfolio > 0) 
-            ? ((result.totalOverdueValue / totalPortfolio) * 100).toFixed(1) 
-            : "0.0";
+    return this._startOfDay(new Date());
+  }
+
+  _startOfDay(date) {
+    const result = new Date(date);
+    result.setHours(0, 0, 0, 0);
+    return result;
+  }
+
+  _endOfDayExclusive(date) {
+    const result = new Date(date);
+    result.setHours(0, 0, 0, 0);
+    result.setDate(result.getDate() + 1);
+    return result;
+  }
+
+  _startOfMonth(date) {
+    return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
+  }
+
+  _endOfMonthExclusive(date) {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 1, 0, 0, 0, 0);
+  }
+
+  _daysInMonth(year, monthIndex) {
+    return new Date(year, monthIndex + 1, 0).getDate();
+  }
+
+  _formatDateBr(date) {
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}/${month}/${year}`;
+  }
+
+  _formatShortDateBr(date) {
+    return this._formatDateBr(date);
+  }
+
+  _formatMonthYear(date) {
+    return `${this._getMonthName(date.getMonth() + 1)} ${date.getFullYear()}`;
+  }
+
+  _buildPeriodContext(referenceDate) {
+    const normalized = this._startOfDay(referenceDate);
+    const year = normalized.getFullYear();
+    const monthIndex = normalized.getMonth();
+    const referenceDay = normalized.getDate();
+    const currentMonthDays = this._daysInMonth(year, monthIndex);
+
+    const currentMonthStart = this._startOfMonth(normalized);
+    const currentWindowEndExclusive = this._endOfDayExclusive(normalized);
+    const currentMonthEndExclusive = this._endOfMonthExclusive(normalized);
+
+    const previousMonthDate = new Date(year, monthIndex - 1, 1);
+    const previousYear = previousMonthDate.getFullYear();
+    const previousMonthIndex = previousMonthDate.getMonth();
+    const previousMonthDays = this._daysInMonth(previousYear, previousMonthIndex);
+    const comparisonDay = Math.min(referenceDay, previousMonthDays);
+    const previousWindowReference = new Date(
+      previousYear,
+      previousMonthIndex,
+      comparisonDay,
+    );
+    const previousMonthStart = this._startOfMonth(previousMonthDate);
+    const previousWindowEndExclusive = this._endOfDayExclusive(
+      previousWindowReference,
+    );
+    const previousMonthEndExclusive = this._endOfMonthExclusive(previousMonthDate);
+
+    const currentWindowLabel = `${this._formatShortDateBr(
+      currentMonthStart,
+    )} a ${this._formatShortDateBr(normalized)}`;
+    const previousWindowLabel = `${this._formatShortDateBr(
+      previousMonthStart,
+    )} a ${this._formatShortDateBr(previousWindowReference)}`;
+
+    return {
+      referenceDate: normalized,
+      referenceDateKey: normalized.toISOString().split('T')[0],
+      year,
+      monthIndex,
+      monthNumber: monthIndex + 1,
+      referenceDay,
+      comparisonDay,
+      currentMonthDays,
+      previousMonthDays,
+      currentMonthStart,
+      currentWindowEndExclusive,
+      currentMonthEndExclusive,
+      previousYear,
+      previousMonthIndex,
+      previousMonthStart,
+      previousWindowEndExclusive,
+      previousMonthEndExclusive,
+      currentMonthLabel: this._formatMonthYear(normalized),
+      previousMonthLabel: this._formatMonthYear(previousMonthDate),
+      currentWindowLabel,
+      previousWindowLabel,
+    };
+  }
+
+  _serializePeriod(period) {
+    return {
+      referenceDate: period.referenceDate.toISOString(),
+      referenceDateKey: period.referenceDateKey,
+      year: period.year,
+      month: period.monthNumber,
+      referenceDay: period.referenceDay,
+      comparisonDay: period.comparisonDay,
+      currentMonthDays: period.currentMonthDays,
+      previousMonthDays: period.previousMonthDays,
+      monthName: period.currentMonthLabel,
+      previousMonthName: period.previousMonthLabel,
+      currentWindowLabel: period.currentWindowLabel,
+      previousWindowLabel: period.previousWindowLabel,
+    };
+  }
+
+  _buildDelta(current, previous) {
+    const delta = current - previous;
+    const deltaPercent = previous > 0 ? (delta / previous) * 100 : current > 0 ? 100 : 0;
+
+    return {
+      current,
+      previous,
+      delta,
+      deltaPercent,
+      trend: delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat',
+    };
+  }
+
+  _getMonthName(monthIndex) {
+    return MONTH_NAMES_PT_BR[monthIndex] || '';
+  }
+
+  _humanizeGatewayLabel(gatewayKey) {
+    const key = String(gatewayKey || '').toLowerCase();
+
+    switch (key) {
+      case 'mercadopago':
+        return 'Mercado Pago';
+      case 'cora':
+        return 'Cora';
+      case 'manual':
+        return 'Manual';
+      default:
+        return key ? key.charAt(0).toUpperCase() + key.slice(1) : 'Manual';
+    }
+  }
+
+  _humanizePaymentMethodLabel(methodKey) {
+    const key = String(methodKey || '').toLowerCase();
+
+    switch (key) {
+      case 'pix':
+        return 'Pix';
+      case 'boleto':
+        return 'Boleto';
+      case 'credit_card':
+      case 'creditcard':
+        return 'Cartão';
+      case 'manual':
+        return 'Manual';
+      default:
+        return key ? key.charAt(0).toUpperCase() + key.slice(1) : 'Manual';
+    }
+  }
+
+  _buildSourceLabel(gatewayKey, paymentMethodKey) {
+    const gatewayLabel = this._humanizeGatewayLabel(gatewayKey);
+    const paymentLabel = this._humanizePaymentMethodLabel(paymentMethodKey);
+
+    if (
+      gatewayLabel === 'Manual' &&
+      (paymentLabel === 'Manual' || !String(paymentMethodKey || '').trim())
+    ) {
+      return 'Manual';
+    }
+
+    return `${gatewayLabel} • ${paymentLabel}`;
+  }
+
+  _buildDailySeries(dailyBuckets, dayLimit) {
+    const values = new Map();
+
+    for (const bucket of dailyBuckets || []) {
+      const day = bucket?.day ?? bucket?._id?.day;
+      const total = bucket?.value ?? bucket?.total ?? 0;
+
+      if (day) {
+        values.set(Number(day), Number(total) || 0);
+      }
+    }
+
+    const result = [];
+    for (let day = 1; day <= dayLimit; day++) {
+      result.push({
+        day,
+        value: values.get(day) || 0,
+      });
+    }
+
+    return result;
+  }
+
+  _toCumulativeSeries(series) {
+    let cumulative = 0;
+
+    return (series || []).map((point) => {
+      cumulative += Number(point?.value || 0);
+      return {
+        day: point.day,
+        value: Number(point?.value || 0),
+        cumulative,
+      };
+    });
+  }
+
+  _getBestDay(dailySeries, referenceDate) {
+    if (!dailySeries || dailySeries.length === 0) {
+      return null;
+    }
+
+    const best = dailySeries.reduce((winner, current) => {
+      if (!winner) return current;
+      return (current.value || 0) > (winner.value || 0) ? current : winner;
+    }, null);
+
+    if (!best || (best.value || 0) <= 0) {
+      return null;
+    }
+
+    const bestDate = new Date(
+      referenceDate.getFullYear(),
+      referenceDate.getMonth(),
+      best.day,
+    );
+
+    return {
+      day: best.day,
+      label: this._formatDateBr(bestDate),
+      amount: best.value,
+    };
+  }
+
+  _buildLegacyPaymentMethods(sourceSummary) {
+    const legacy = {
+      boleto: { recebido: 0, aReceber: 0, atrasado: 0 },
+      pix: { recebido: 0, aReceber: 0, atrasado: 0 },
+    };
+
+    for (const source of sourceSummary || []) {
+      const methodKey = String(source.paymentMethod || '').toLowerCase();
+      if (methodKey === 'boleto') {
+        legacy.boleto.recebido += source.amount || 0;
+      }
+      if (methodKey === 'pix') {
+        legacy.pix.recebido += source.amount || 0;
+      }
+    }
+
+    return legacy;
+  }
+
+  _buildSummaryFromFacet(result, period, includeSources = false) {
+    const received = this._firstFacet(result.received);
+    const expected = this._firstFacet(result.expected);
+    const overdue = this._firstFacet(result.overdue);
+    const future = this._firstFacet(result.future);
+    const dailyBuckets = result.daily || [];
+    const daily = this._buildDailySeries(dailyBuckets, period.referenceDay);
+
+    const sourceBuckets = includeSources ? (result.sources || []) : [];
+    const totalReceived = Number(received.total || 0);
+
+    const sources = sourceBuckets
+      .map((entry) => {
+        const gatewayKey = String(entry?._id?.gateway || '').toLowerCase();
+        const paymentMethodKey = String(entry?._id?.paymentMethod || '').toLowerCase();
+        const amount = Number(entry?.total || 0);
+        const count = Number(entry?.count || 0);
 
         return {
-            totalInadimplente: result.totalOverdueValue || 0,
-            totalAVencer: result.totalFutureValue || 0,
-            qtdAlunosInadimplentes: uniqueOverdueStudents,
-            saldoDia: result.balanceDay || 0,
-            saldoMes: result.balanceMonth || 0,
-            inadimplenciaTaxa: taxa,
-
-            // Retornando os valores corrigidos
-            boletoRecebido: result.boletoPaid || 0,
-            boletoAVencer: 0, // Simplificando para focar no recebido, ou implemente a mesma lógica do paid mudando status para pending
-            boletoVencido: 0,
-
-            pixRecebido: result.pixPaid || 0,
-            pixAVencer: 0,
-            pixVencido: 0
+          key: `${gatewayKey || 'manual'}|${paymentMethodKey || 'manual'}`,
+          label: this._buildSourceLabel(gatewayKey, paymentMethodKey),
+          gateway: gatewayKey || 'manual',
+          gatewayLabel: this._humanizeGatewayLabel(gatewayKey),
+          paymentMethod: paymentMethodKey || 'manual',
+          paymentMethodLabel: this._humanizePaymentMethodLabel(paymentMethodKey),
+          amount,
+          count,
+          share: totalReceived > 0 ? (amount / totalReceived) * 100 : 0,
         };
+      })
+      .sort((a, b) => b.amount - a.amount);
+
+    return {
+      receivedAmount: totalReceived,
+      receivedCount: Number(received.count || 0),
+      expectedAmount: Number(expected.total || 0),
+      expectedCount: Number(expected.count || 0),
+      overdueAmount: Number(overdue.total || 0),
+      overdueCount: Number(overdue.count || 0),
+      overdueStudentCount: Array.isArray(overdue.students)
+        ? overdue.students.filter((student) => student != null).length
+        : 0,
+      futureAmount: Number(future.total || 0),
+      futureCount: Number(future.count || 0),
+      daily,
+      sources,
+    };
+  }
+
+  _firstFacet(items) {
+    if (Array.isArray(items) && items.length > 0) {
+      return items[0] || {};
     }
 
-    // --- INTELIGÊNCIA DE NEGÓCIO (PERFORMANCE MENSAL) ---
-    async _getMonthlyPerformance(schoolId, year) {
-        const startOfYear = new Date(year, 0, 1);
-        const endOfYear = new Date(year, 11, 31, 23, 59, 59);
+    return {};
+  }
 
-        const performance = await Invoice.aggregate([
-            { 
-                $match: { 
-                    school_id: schoolId, 
-                    dueDate: { $gte: startOfYear, $lte: endOfYear }, // Filtra por COMPETÊNCIA (Vencimento)
-                    status: { $ne: 'canceled' }
-                } 
+  async _getWindowSummary(
+    schoolId,
+    windowStart,
+    windowEndExclusive,
+    { dayLimit, includeSources = false } = {},
+  ) {
+    const pipeline = [
+      { $match: { school_id: schoolId, status: { $ne: 'canceled' } } },
+      {
+        $addFields: {
+          resolvedPaidAt: { $ifNull: ['$paidAt', '$updatedAt'] },
+        },
+      },
+      {
+        $facet: {
+          received: [
+            {
+              $match: {
+                status: 'paid',
+                resolvedPaidAt: {
+                  $gte: windowStart,
+                  $lt: windowEndExclusive,
+                },
+              },
             },
             {
-                $group: {
-                    _id: { month: { $month: "$dueDate" } },
-                    
-                    // Receita Esperada (Total faturado no mês)
-                    totalExpected: { $sum: { $divide: ["$value", 100] } },
-                    
-                    // Receita Realizada (Total pago referente àquele mês)
-                    totalPaid: { 
-                        $sum: { 
-                            $cond: [{ $eq: ["$status", "paid"] }, { $divide: ["$value", 100] }, 0] 
-                        } 
-                    },
-                    
-                    // Inadimplência daquele mês específico
-                    totalOverdue: {
-                        $sum: {
-                            $cond: [
-                                { $and: [{ $eq: ["$status", "pending"] }, { $lt: ["$dueDate", new Date()] }] },
-                                { $divide: ["$value", 100] },
-                                0
-                            ]
-                        }
-                    },
-
-                    // Quantidade de Alunos distintos cobrados no mês (Proxy para Alunos Ativos)
-                    uniqueStudents: { $addToSet: "$student" }
-                }
+              $group: {
+                _id: null,
+                total: { $sum: { $divide: ['$value', 100] } },
+                count: { $sum: 1 },
+              },
             },
-            { $sort: { "_id.month": 1 } }
-        ]);
-
-        return performance.map(item => {
-            const studentCount = item.uniqueStudents ? item.uniqueStudents.length : 0;
-            const collectionRate = item.totalExpected > 0 
-                ? ((item.totalPaid / item.totalExpected) * 100).toFixed(1) 
-                : 0;
-
-            return {
-                month: item._id.month,
-                monthName: this._getMonthName(item._id.month),
-                studentCount: studentCount, 
-                financial: {
-                    expected: item.totalExpected, 
-                    paid: item.totalPaid,         
-                    overdue: item.totalOverdue,   
-                    collectionRate: Number(collectionRate) 
-                }
-            };
-        });
-    }
-
-    async _calculateExpenses(schoolId, startOfMonth, endOfMonth) {
-        const result = await Expense.aggregate([
-            { $match: { schoolId: schoolId } },
+          ],
+          expected: [
             {
-                $group: {
-                    _id: null,
-                    totalMonth: { 
-                        $sum: { 
-                            $cond: [ 
-                                { $and: [ { $gte: ["$date", startOfMonth] }, { $lte: ["$date", endOfMonth] } ]}, 
-                                "$amount", 0 
-                            ] 
-                        } 
-                    },
-                    totalPending: { 
-                        $sum: { 
-                            $cond: [{ $eq: ["$status", "pending"] }, "$amount", 0] 
-                        } 
-                    }
-                }
-            }
-        ]);
-        return result[0] || { totalMonth: 0, totalPending: 0 };
-    }
-
-    async _getCurrentMonthDaily(schoolId) {
-        const now = new Date();
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-
-        const dailyData = await Invoice.aggregate([
-            { 
-                $match: { 
-                    school_id: schoolId, 
-                    status: 'paid', 
-                    paidAt: { $gte: startOfMonth, $lte: endOfMonth } 
-                } 
-            },
-            { 
-                $group: { 
-                    _id: { day: { $dayOfMonth: "$paidAt" } }, 
-                    total: { $sum: { $divide: ["$value", 100] } } 
-                } 
-            },
-            { $sort: { "_id.day": 1 } }
-        ]);
-
-        const daysInMonth = endOfMonth.getDate();
-        const fullMonthData = [];
-        const dataMap = new Map();
-        
-        dailyData.forEach(d => dataMap.set(d._id.day, d.total));
-
-        for (let day = 1; day <= daysInMonth; day++) {
-            fullMonthData.push({
-                day: day,
-                value: dataMap.get(day) || 0.0
-            });
-        }
-        return fullMonthData;
-    }
-
-    async _getBirthdays(schoolId) {
-        const currentMonth = new Date().getMonth() + 1; 
-        return await Student.aggregate([
-            { $match: { school_id: schoolId, isActive: true, $expr: { $eq: [{ $month: "$birthDate" }, currentMonth] } } },
-            { $project: { fullName: 1, birthDate: 1, profilePicture: 1 } },
-            { $sort: { birthDate: 1 } }, 
-            { $limit: 5 } 
-        ]);
-    }
-
-    async _getClassDistribution(schoolId) {
-        const result = await Student.aggregate([
-            { $match: { school_id: schoolId, isActive: true } },
-            { 
-                $group: { 
-                    _id: "$class_id", 
-                    count: { $sum: 1 } 
-                } 
+              $match: {
+                dueDate: {
+                  $gte: windowStart,
+                  $lt: windowEndExclusive,
+                },
+              },
             },
             {
-                $lookup: {
-                    from: "classes",
-                    localField: "_id",
-                    foreignField: "_id",
-                    as: "classInfo"
-                }
+              $group: {
+                _id: null,
+                total: { $sum: { $divide: ['$value', 100] } },
+                count: { $sum: 1 },
+              },
             },
-            { $unwind: "$classInfo" },
-            { 
-                $project: { 
-                    className: "$classInfo.name", 
-                    count: 1 
-                } 
+          ],
+          overdue: [
+            {
+              $match: {
+                status: 'pending',
+                dueDate: { $lt: windowEndExclusive },
+              },
             },
-            { $sort: { count: -1 } }
-        ]);
+            {
+              $group: {
+                _id: null,
+                total: { $sum: { $divide: ['$value', 100] } },
+                count: { $sum: 1 },
+                students: { $addToSet: '$student' },
+              },
+            },
+          ],
+          future: [
+            {
+              $match: {
+                status: 'pending',
+                dueDate: { $gte: windowEndExclusive },
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                total: { $sum: { $divide: ['$value', 100] } },
+                count: { $sum: 1 },
+              },
+            },
+          ],
+          daily: [
+            {
+              $match: {
+                status: 'paid',
+                resolvedPaidAt: {
+                  $gte: windowStart,
+                  $lt: windowEndExclusive,
+                },
+              },
+            },
+            {
+              $group: {
+                _id: { day: { $dayOfMonth: '$resolvedPaidAt' } },
+                value: { $sum: { $divide: ['$value', 100] } },
+              },
+            },
+            { $sort: { '_id.day': 1 } },
+          ],
+          sources: includeSources
+            ? [
+                {
+                  $match: {
+                    status: 'paid',
+                    resolvedPaidAt: {
+                      $gte: windowStart,
+                      $lt: windowEndExclusive,
+                    },
+                  },
+                },
+                {
+                  $group: {
+                    _id: {
+                      gateway: { $ifNull: ['$gateway', 'manual'] },
+                      paymentMethod: { $ifNull: ['$paymentMethod', 'manual'] },
+                    },
+                    total: { $sum: { $divide: ['$value', 100] } },
+                    count: { $sum: 1 },
+                  },
+                },
+                { $sort: { total: -1 } },
+              ]
+            : [{ $limit: 0 }],
+        },
+      },
+    ];
 
-        const totalStudents = result.reduce((acc, curr) => acc + curr.count, 0);
-        return result.map(item => ({
-            className: item.className,
-            studentCount: item.count,
-            percentage: totalStudents > 0 ? ((item.count / totalStudents) * 100).toFixed(1) : "0"
-        }));
+    const [result = {}] = await Invoice.aggregate(pipeline);
+    return this._buildSummaryFromFacet(
+      result,
+      {
+        referenceDay: dayLimit,
+      },
+      includeSources,
+    );
+  }
+
+  async _calculateFinancials(schoolId, period) {
+    const [currentSummary, previousSummary, previousClosedSummary] =
+      await Promise.all([
+        this._getWindowSummary(
+          schoolId,
+          period.currentMonthStart,
+          period.currentWindowEndExclusive,
+          {
+            dayLimit: period.referenceDay,
+            includeSources: true,
+          },
+        ),
+        this._getWindowSummary(
+          schoolId,
+          period.previousMonthStart,
+          period.previousWindowEndExclusive,
+          {
+            dayLimit: period.comparisonDay,
+            includeSources: false,
+          },
+        ),
+        this._getWindowSummary(
+          schoolId,
+          period.previousMonthStart,
+          period.previousMonthEndExclusive,
+          {
+            dayLimit: period.previousMonthDays,
+            includeSources: false,
+          },
+        ),
+      ]);
+
+    const receivedDelta = currentSummary.receivedAmount - previousSummary.receivedAmount;
+    const receivedDeltaPercent =
+      previousSummary.receivedAmount > 0
+        ? (receivedDelta / previousSummary.receivedAmount) * 100
+        : currentSummary.receivedAmount > 0
+          ? 100
+          : 0;
+
+    const currentOpenPortfolio =
+      currentSummary.futureAmount + currentSummary.overdueAmount;
+    const previousOpenPortfolio =
+      previousSummary.futureAmount + previousSummary.overdueAmount;
+
+    const currentCollectionRate =
+      currentSummary.expectedAmount > 0
+        ? (currentSummary.receivedAmount / currentSummary.expectedAmount) * 100
+        : 0;
+    const previousCollectionRate =
+      previousSummary.expectedAmount > 0
+        ? (previousSummary.receivedAmount / previousSummary.expectedAmount) * 100
+        : 0;
+
+    const currentPaidCount = currentSummary.receivedCount;
+    const previousPaidCount = previousSummary.receivedCount;
+    const currentPendingCount = currentSummary.futureCount;
+    const previousPendingCount = previousSummary.futureCount;
+    const currentOverdueCount = currentSummary.overdueCount;
+    const previousOverdueCount = previousSummary.overdueCount;
+
+    const saldoDia = this._dailyAmountForDay(currentSummary.daily, period.referenceDay);
+    const bestDay = this._getBestDay(currentSummary.daily, period.referenceDate);
+    const sources = currentSummary.sources || [];
+    const metodos = this._buildLegacyPaymentMethods(sources);
+    const dominantSource = sources[0] || null;
+
+    return {
+      saldoDia,
+      saldoMes: currentSummary.receivedAmount,
+      totalAVencer: currentSummary.futureAmount,
+      totalVencido: currentSummary.overdueAmount,
+      inadimplenciaAlunos: currentSummary.overdueStudentCount,
+      inadimplenciaTaxa:
+        currentOpenPortfolio > 0
+          ? ((currentSummary.overdueAmount / currentOpenPortfolio) * 100).toFixed(1)
+          : '0.0',
+      metodos,
+      comparison: {
+        received: this._buildDelta(
+          currentSummary.receivedAmount,
+          previousSummary.receivedAmount,
+        ),
+        expected: this._buildDelta(
+          currentSummary.expectedAmount,
+          previousSummary.expectedAmount,
+        ),
+        openPortfolio: this._buildDelta(currentOpenPortfolio, previousOpenPortfolio),
+        collectionRate: this._buildDelta(
+          currentCollectionRate,
+          previousCollectionRate,
+        ),
+        paidCount: this._buildDelta(currentPaidCount, previousPaidCount),
+        pendingCount: this._buildDelta(currentPendingCount, previousPendingCount),
+        overdueCount: this._buildDelta(currentOverdueCount, previousOverdueCount),
+      },
+      receivedToDate: currentSummary.receivedAmount,
+      previousReceivedToDate: previousSummary.receivedAmount,
+      receivedDelta,
+      receivedDeltaPercent,
+      expectedToDate: currentSummary.expectedAmount,
+      previousExpectedToDate: previousSummary.expectedAmount,
+      openPortfolio: currentOpenPortfolio,
+      paidInvoicesCount: currentPaidCount,
+      pendingInvoicesCount: currentPendingCount,
+      overdueInvoicesCount: currentOverdueCount,
+      collectionRate: currentCollectionRate,
+      ticketAverage:
+        currentPaidCount > 0 ? currentSummary.receivedAmount / currentPaidCount : 0,
+      bestDay,
+      previousClosedMonth: {
+        label: period.previousMonthLabel,
+        received: previousClosedSummary.receivedAmount,
+        expected: previousClosedSummary.expectedAmount,
+        collectionRate:
+          previousClosedSummary.expectedAmount > 0
+            ? (previousClosedSummary.receivedAmount /
+                previousClosedSummary.expectedAmount) *
+              100
+            : 0,
+      },
+      dominantGateway: dominantSource ? dominantSource.gatewayLabel : null,
+      dominantPaymentMethod: dominantSource ? dominantSource.paymentMethodLabel : null,
+      sources,
+      dailyChart: currentSummary.daily,
+      comparisonChart: {
+        referenceDay: period.referenceDay,
+        currentLabel: period.currentMonthLabel,
+        previousLabel: period.previousMonthLabel,
+        current: currentSummary.daily,
+        previous: previousSummary.daily,
+      },
+    };
+  }
+
+  _dailyAmountForDay(dailySeries, day) {
+    if (!Array.isArray(dailySeries) || dailySeries.length === 0) {
+      return 0;
     }
 
-    _getMonthName(monthIndex) {
-        const months = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
-        return months[monthIndex] || "";
-    }
+    const entry = dailySeries.find((item) => item.day === day);
+    return entry ? Number(entry.value || 0) : 0;
+  }
+
+  // =========================================================================
+  // Existing analytics helpers
+  // =========================================================================
+
+  async _getCounts(schoolId) {
+    const [students, teachers, classes, subjects] = await Promise.all([
+      Student.countDocuments({ school_id: schoolId, isActive: true }),
+      Staff.countDocuments({
+        school_id: schoolId,
+        $or: [
+          { role: 'teacher' },
+          { roles: { $in: ['Professor', 'Teacher', 'teacher'] } },
+        ],
+      }),
+      ClassModel.countDocuments({ school_id: schoolId }),
+      Subject.countDocuments({ school_id: schoolId }),
+    ]);
+
+    return { students, teachers, classes, subjects };
+  }
+
+  async _getMonthlyPerformance(schoolId, year, referenceDate) {
+    const startOfYear = new Date(year, 0, 1);
+    const endOfYearExclusive = new Date(year + 1, 0, 1);
+    const cutoffDate = referenceDate ? this._endOfDayExclusive(referenceDate) : new Date();
+
+    const performance = await Invoice.aggregate([
+      {
+        $match: {
+          school_id: schoolId,
+          dueDate: { $gte: startOfYear, $lt: endOfYearExclusive },
+          status: { $ne: 'canceled' },
+        },
+      },
+      {
+        $group: {
+          _id: { month: { $month: '$dueDate' } },
+          totalExpected: { $sum: { $divide: ['$value', 100] } },
+          totalPaid: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$status', 'paid'] },
+                    { $lt: ['$paidAt', cutoffDate] },
+                  ],
+                },
+                { $divide: ['$value', 100] },
+                0,
+              ],
+            },
+          },
+          totalOverdue: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$status', 'pending'] },
+                    { $lt: ['$dueDate', cutoffDate] },
+                  ],
+                },
+                { $divide: ['$value', 100] },
+                0,
+              ],
+            },
+          },
+          uniqueStudents: { $addToSet: '$student' },
+        },
+      },
+      { $sort: { '_id.month': 1 } },
+    ]);
+
+    const map = new Map(
+      performance.map((item) => [item?._id?.month, item]),
+    );
+
+    return Array.from({ length: 12 }, (_, index) => {
+      const month = index + 1;
+      const item = map.get(month) || {};
+      const totalExpected = Number(item.totalExpected || 0);
+      const totalPaid = Number(item.totalPaid || 0);
+      const totalOverdue = Number(item.totalOverdue || 0);
+      const studentCount = Array.isArray(item.uniqueStudents)
+        ? item.uniqueStudents.filter((student) => student != null).length
+        : 0;
+
+      return {
+        month,
+        monthName: this._getMonthName(month),
+        studentCount,
+        financial: {
+          expected: totalExpected,
+          paid: totalPaid,
+          overdue: totalOverdue,
+          collectionRate: totalExpected > 0 ? (totalPaid / totalExpected) * 100 : 0,
+        },
+      };
+    });
+  }
+
+  async _calculateExpenses(schoolId, startOfMonth, endExclusive) {
+    const result = await Expense.aggregate([
+      { $match: { schoolId: schoolId } },
+      {
+        $group: {
+          _id: null,
+          totalMonth: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $gte: ['$date', startOfMonth] },
+                    { $lt: ['$date', endExclusive] },
+                  ],
+                },
+                '$amount',
+                0,
+              ],
+            },
+          },
+          totalPending: {
+            $sum: { $cond: [{ $eq: ['$status', 'pending'] }, '$amount', 0] },
+          },
+        },
+      },
+    ]);
+
+    return result[0] || { totalMonth: 0, totalPending: 0 };
+  }
+
+  async _getBirthdays(schoolId) {
+    const currentMonth = new Date().getMonth() + 1;
+    return await Student.aggregate([
+      {
+        $match: {
+          school_id: schoolId,
+          isActive: true,
+          $expr: { $eq: [{ $month: '$birthDate' }, currentMonth] },
+        },
+      },
+      { $project: { fullName: 1, birthDate: 1, profilePicture: 1 } },
+      { $sort: { birthDate: 1 } },
+      { $limit: 5 },
+    ]);
+  }
+
+  async _getClassDistribution(schoolId) {
+    const result = await Student.aggregate([
+      { $match: { school_id: schoolId, isActive: true } },
+      {
+        $group: {
+          _id: '$class_id',
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $lookup: {
+          from: 'classes',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'classInfo',
+        },
+      },
+      { $unwind: '$classInfo' },
+      {
+        $project: {
+          className: '$classInfo.name',
+          count: 1,
+        },
+      },
+      { $sort: { count: -1 } },
+    ]);
+
+    const totalStudents = result.reduce((acc, curr) => acc + curr.count, 0);
+    return result.map((item) => ({
+      className: item.className,
+      studentCount: item.count,
+      percentage:
+        totalStudents > 0 ? ((item.count / totalStudents) * 100).toFixed(1) : '0',
+    }));
+  }
 }
 
 module.exports = new DashboardService();
