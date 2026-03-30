@@ -395,6 +395,13 @@ class WebhookController {
         return;
       }
 
+      const providerMessageId =
+        data?.key?.id ||
+        data?.keyId ||
+        data?.id ||
+        data?.messageId ||
+        null;
+
       const messageText = this._extractMessageText(data);
 
       if (!messageText || !String(messageText).trim()) {
@@ -418,6 +425,8 @@ class WebhookController {
         phone,
         messageText,
         instanceName: resolvedInstanceName,
+        providerMessageId,
+        remoteJid,
       });
 
       console.log(

@@ -3,12 +3,18 @@ const mongoose = require('mongoose');
 const WhatsappSession = require('../models/whatsapp-session.model');
 const WhatsappMessage = require('../models/whatsapp-message.model');
 const WhatsappBotMetrics = require('../models/whatsapp-bot-metrics.model');
+const NotificationLog = require('../models/notification-log.model');
+const Invoice = require('../models/invoice.model');
 const Tutor = require('../models/tutor.model');
 const Student = require('../models/student.model');
 const School = require('../models/school.model');
 
 const whatsappService = require('./whatsapp.service');
 const tempAccessTokenService = require('./tempAccessToken.service');
+const invoiceCompensationService = require('./invoiceCompensation.service');
+const {
+  normalizeWhatsappPhone,
+} = require('../utils/timeContext');
 
 class WhatsappBotService {
   constructor() {
@@ -18,6 +24,8 @@ class WhatsappBotService {
     this.maxInvalidSelectionAttempts = 3;
 
     this.recentMessages = new Map();
+    this.recentProviderMessages = new Map();
+    this.billingLookbackDays = 90;
 
     this.globalCommands = {
       cancel: ['cancelar', 'sair', 'parar', 'encerrar'],
@@ -197,6 +205,9 @@ class WhatsappBotService {
     schoolId,
     sessionId,
     phone,
+    providerMessageId = null,
+    remoteJid = null,
+    source = null,
     direction,
     messageText,
     normalizedText = '',
@@ -211,6 +222,9 @@ class WhatsappBotService {
       school_id: schoolId,
       session_id: sessionId,
       phone,
+      provider_message_id: providerMessageId,
+      remote_jid: remoteJid,
+      source,
       direction,
       message_text: messageText,
       normalized_text: normalizedText,
@@ -336,7 +350,7 @@ class WhatsappBotService {
 
     if (session && prependGreeting && session.attempt_count === 1 && session.message_count_out === 0) {
       const greeting = this.getGreeting();
-      const presentation = `${greeting}! 🤖 Sou o assistente virtual do software *Academy Hub*.\n\n`;
+      const presentation = `${greeting}! 🤖 Sou o assistente automático do *Academy Hub*, sistema utilizado pela escola para apoiar o atendimento financeiro.\n\n`;
       finalMessage = presentation + finalMessage;
     }
 
@@ -365,6 +379,7 @@ class WhatsappBotService {
         schoolId,
         sessionId: session._id,
         phone,
+        source: 'whatsappBot.service',
         direction: 'outbound',
         messageText: finalMessage,
         normalizedText: this.normalizeText(finalMessage),
@@ -956,23 +971,365 @@ class WhatsappBotService {
     });
   }
 
-  async handleIncomingMessage({ schoolId, phone, messageText, instanceName = null }) {
+  _normalizeBillingPhone(phone) {
+    return normalizeWhatsappPhone(phone);
+  }
+
+  _formatCurrencyFromCents(value) {
+    if (typeof value !== 'number' || Number.isNaN(value)) {
+      return null;
+    }
+
+    return new Intl.NumberFormat('pt-BR', {
+      style: 'currency',
+      currency: 'BRL',
+    }).format(value / 100);
+  }
+
+  _formatBillingDate(dateValue) {
+    if (!dateValue) return null;
+
+    const date = new Date(dateValue);
+    if (Number.isNaN(date.getTime())) return null;
+
+    return date.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
+  }
+
+  _describeBillingInvoice(invoice) {
+    if (!invoice) {
+      return {
+        description: 'sua cobrança',
+        dueDate: null,
+        value: null,
+      };
+    }
+
+    return {
+      description: String(invoice.description || 'sua cobrança').trim(),
+      dueDate: this._formatBillingDate(invoice.dueDate),
+      value: this._formatCurrencyFromCents(invoice.value),
+    };
+  }
+
+  _getInvoiceResponsiblePhone(invoice) {
+    const candidates = [
+      invoice?.tutor?.phoneNumber,
+      invoice?.tutor?.telefone,
+      invoice?.tutor?.celular,
+      invoice?.student?.phoneNumber,
+      invoice?.student?.phone,
+      invoice?.student?.telefone,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this._normalizeBillingPhone(candidate);
+      if (normalized) return normalized;
+    }
+
+    return '';
+  }
+
+  _classifyBillingIntent(normalized) {
+    const text = this.normalizeText(normalized);
+    if (!text) return null;
+
+    if (text.includes('nao paguei') || text.includes('não paguei')) {
+      return null;
+    }
+
+    if (
+      text.includes('comprovante') ||
+      text.includes('vou mandar comprovante') ||
+      text.includes('mandar comprovante') ||
+      text.includes('enviei comprovante') ||
+      text.includes('já enviei o comprovante') ||
+      text.includes('ja enviei o comprovante')
+    ) {
+      return 'proof_sent';
+    }
+
+    if (
+      text.includes('pix direto') ||
+      text.includes('pix na escola') ||
+      text.includes('pix para a escola') ||
+      text.includes('pix na secretaria') ||
+      text.includes('transferi') ||
+      text.includes('transferencia') ||
+      text.includes('transferência')
+    ) {
+      return 'pix_direct';
+    }
+
+    if (
+      text.includes('ja paguei') ||
+      text.includes('já paguei') ||
+      text.includes('paguei') ||
+      text.includes('ja quitei') ||
+      text.includes('já quitei') ||
+      text.includes('foi pago') ||
+      text.includes('pagamento feito') ||
+      text.includes('pagamento realizado') ||
+      text.includes('nao baixou') ||
+      text.includes('não baixou') ||
+      text.includes('nao consta') ||
+      text.includes('não consta') ||
+      text.includes('cobranca') ||
+      text.includes('cobrança') ||
+      text.includes('em aberto') ||
+      text.includes('cobranca duplicada') ||
+      text.includes('cobrança duplicada') ||
+      text.includes('nao reconhece') ||
+      text.includes('não reconhece')
+    ) {
+      return 'already_paid';
+    }
+
+    return null;
+  }
+
+  _buildBillingIntroMessage() {
+    return 'Olá! Sou o assistente automático do Academy Hub, sistema utilizado pela escola para apoiar o atendimento financeiro.';
+  }
+
+  async _resolveBillingContext({ schoolId, phone }) {
+    const normalizedPhone = this._normalizeBillingPhone(phone);
+    const lookbackStart = new Date();
+    lookbackStart.setDate(lookbackStart.getDate() - this.billingLookbackDays);
+
+    const recentLogs = await NotificationLog.find({
+      school_id: schoolId,
+      invoice_id: { $exists: true, $ne: null },
+      createdAt: { $gte: lookbackStart },
+    })
+      .select(
+        '_id invoice_id target_phone target_phone_normalized status sent_at createdAt business_day error_code dispatch_origin'
+      )
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean();
+
+    const matchedLogs = recentLogs.filter((log) => {
+      const logPhone = this._normalizeBillingPhone(
+        log?.target_phone_normalized || log?.target_phone
+      );
+      return Boolean(logPhone && normalizedPhone && logPhone === normalizedPhone);
+    });
+
+    if (!matchedLogs.length) {
+      return {
+        matched: false,
+        normalizedPhone,
+        matchedLogs: [],
+        invoices: [],
+        openInvoices: [],
+        paidInvoices: [],
+        cancelledInvoices: [],
+        hold: null,
+        holdActive: false,
+      };
+    }
+
+    const invoiceIds = [...new Set(
+      matchedLogs
+        .map((log) => String(log.invoice_id || '').trim())
+        .filter(Boolean)
+    )];
+
+    const invoices = await Invoice.find({
+      school_id: schoolId,
+      _id: { $in: invoiceIds },
+    })
+      .select(
+        'description value dueDate status paidAt gateway external_id boleto_url boleto_barcode student tutor'
+      )
+      .populate('student', 'fullName phoneNumber phone')
+      .populate('tutor', 'fullName phoneNumber telefone celular')
+      .lean();
+
+    const openInvoices = invoices.filter((invoice) =>
+      ['pending', 'overdue'].includes(invoice.status)
+    );
+    const paidInvoices = invoices.filter((invoice) => invoice.status === 'paid');
+    const cancelledInvoices = invoices.filter((invoice) => invoice.status === 'canceled');
+
+    let hold = null;
+    if (openInvoices.length === 1) {
+      hold = await invoiceCompensationService.getCompensationByInvoice({
+        school_id: schoolId,
+        invoice_id: openInvoices[0]._id,
+      });
+    }
+
+    return {
+      matched: true,
+      normalizedPhone,
+      matchedLogs,
+      invoices,
+      openInvoices,
+      paidInvoices,
+      cancelledInvoices,
+      hold,
+      holdActive: Boolean(hold),
+      ambiguous: openInvoices.length > 1,
+    };
+  }
+
+  _buildBillingResponseMessage({ intent, context }) {
+    const intro = this._buildBillingIntroMessage();
+
+    if (!context?.matched) {
+      return [
+        intro,
+        '',
+        'Não consegui relacionar sua mensagem a uma cobrança específica com segurança.',
+        'Para segurança, envie o comprovante diretamente à secretaria para validação manual.',
+      ].join('\n');
+    }
+
+    if (context.ambiguous) {
+      return [
+        intro,
+        '',
+        'Encontrei mais de uma cobrança em aberto para este número.',
+        'Para evitar qualquer informação incorreta, não vou adivinhar qual pagamento você quis informar.',
+        'Por segurança, envie o comprovante diretamente à secretaria.',
+      ].join('\n');
+    }
+
+    if (context.openInvoices.length === 1) {
+      const invoice = context.openInvoices[0];
+      const summary = this._describeBillingInvoice(invoice);
+      const baseLine = [
+        `Verifiquei que o boleto de *${summary.description}* ainda consta em aberto no sistema.`,
+        summary.dueDate ? `Vencimento: ${summary.dueDate}.` : null,
+        summary.value ? `Valor: ${summary.value}.` : null,
+      ]
+        .filter(Boolean)
+        .join(' ');
+
+      if (context.holdActive) {
+        return [
+          intro,
+          '',
+          baseLine,
+          'Já existe uma validação manual em andamento pela secretaria.',
+          'Por favor, envie o comprovante diretamente à secretaria para concluir a conferência.',
+        ].join('\n');
+      }
+
+      if (intent === 'proof_sent') {
+        return [
+          intro,
+          '',
+          baseLine,
+          'Perfeito. Assim que a secretaria receber o comprovante, ela faz a conferência e segue com a regularização necessária.',
+        ].join('\n');
+      }
+
+      if (intent === 'pix_direct' || intent === 'already_paid') {
+        return [
+          intro,
+          '',
+          baseLine,
+          'Se o pagamento foi feito por Pix direto para a escola, e não pelo próprio boleto, a secretaria precisa validar manualmente a baixa.',
+          'Por favor, envie o comprovante diretamente à secretaria para regularização.',
+        ].join('\n');
+      }
+
+      return [
+        intro,
+        '',
+        baseLine,
+        'Se o pagamento foi feito por Pix direto para a escola, e não pelo próprio boleto, a secretaria precisa validar manualmente a baixa.',
+        'Por favor, envie o comprovante diretamente à secretaria para regularização.',
+      ].join('\n');
+    }
+
+    if (context.paidInvoices.length === 1) {
+      const invoice = context.paidInvoices[0];
+      const summary = this._describeBillingInvoice(invoice);
+
+      return [
+        intro,
+        '',
+        `Verifiquei que *${summary.description}* já aparece baixado no sistema${summary.dueDate ? `, com vencimento em ${summary.dueDate}` : ''}.`,
+        'Se você tiver pago por outro meio e ainda houver alguma divergência, envie o comprovante diretamente à secretaria para conferência.',
+      ].join('\n');
+    }
+
+    return [
+      intro,
+      '',
+      'Não consegui validar isso automaticamente.',
+      'Para segurança, a secretaria da escola precisa conferir o caso e orientar a regularização.',
+    ].join('\n');
+  }
+
+  async handleBillingSupportMessage({ session, schoolId, phone, rawText, normalized }) {
+    const intent = this._classifyBillingIntent(normalized);
+    if (!intent) {
+      return false;
+    }
+
+    const context = await this._resolveBillingContext({ schoolId, phone });
+    const message = this._buildBillingResponseMessage({ intent, context });
+
+    await this.sendAndPersist({
+      schoolId,
+      phone,
+      message,
+      session,
+      messageType: 'system',
+      detectedIntent: `BILLING_${String(intent).toUpperCase()}`,
+      metadata: {
+        billing_context: {
+          intent,
+          normalized_phone: context.normalizedPhone,
+          matched_logs: context.matchedLogs.length,
+          invoices_found: context.invoices.length,
+          open_invoices: context.openInvoices.length,
+          paid_invoices: context.paidInvoices.length,
+          hold_active: context.holdActive,
+          invoice_ids: context.invoices.map((invoice) => String(invoice._id)),
+        },
+      },
+      prependGreeting: false,
+    });
+
+    return true;
+  }
+
+  async handleIncomingMessage({
+    schoolId,
+    phone,
+    messageText,
+    instanceName = null,
+    providerMessageId = null,
+    remoteJid = null,
+  }) {
     const rawText = String(messageText || '').trim();
     const normalized = this.normalizeText(rawText);
 
     if (!normalized) return;
 
-    const dedupKey = `${schoolId}:${phone}:${normalized}`;
+    const dedupKey = providerMessageId
+      ? `${schoolId}:provider:${providerMessageId}`
+      : `${schoolId}:${phone}:${normalized}`;
     const now = Date.now();
-    const lastSeen = this.recentMessages.get(dedupKey);
+    const dedupMap = providerMessageId ? this.recentProviderMessages : this.recentMessages;
+    const lastSeen = dedupMap.get(dedupKey);
+    const dedupWindowMs = providerMessageId
+      ? (24 * 60 * 60 * 1000)
+      : 1500;
 
-    if (lastSeen && now - lastSeen < 1500) {
+    if (lastSeen && now - lastSeen < dedupWindowMs) {
       console.log(`♻️ [Anti-Duplicação] Mensagem ignorada: ${normalized}`);
       return;
     }
 
-    this.recentMessages.set(dedupKey, now);
-    if (this.recentMessages.size > 200) this.recentMessages.clear();
+    dedupMap.set(dedupKey, now);
+    if (providerMessageId && dedupMap.size > 5000) dedupMap.clear();
+    if (!providerMessageId && dedupMap.size > 200) dedupMap.clear();
 
     let session;
 
@@ -986,13 +1343,16 @@ class WhatsappBotService {
       await this.touchSession(session, { save: false });
       await session.save();
 
-      await this.persistMessage({
-        schoolId,
-        sessionId: session._id,
-        phone,
-        direction: 'inbound',
-        messageText: rawText,
-        normalizedText: normalized,
+        await this.persistMessage({
+          schoolId,
+          sessionId: session._id,
+          phone,
+          providerMessageId,
+          remoteJid,
+          source: 'evolution.webhook',
+          direction: 'inbound',
+          messageText: rawText,
+          normalizedText: normalized,
         messageType: 'text',
         currentStep: session.current_step,
         detectedIntent: null,
@@ -1117,6 +1477,18 @@ class WhatsappBotService {
         });
       }
 
+      const handledBilling = await this.handleBillingSupportMessage({
+        session,
+        schoolId,
+        phone,
+        rawText,
+        normalized,
+      });
+
+      if (handledBilling) {
+        return;
+      }
+
       if (session.current_step === 'awaiting_cpf') {
         return this.handleCpfStep({ session, schoolId, phone, rawText, instanceName });
       }
@@ -1170,6 +1542,9 @@ class WhatsappBotService {
             schoolId,
             sessionId: session._id,
             phone,
+            providerMessageId,
+            remoteJid,
+            source: 'whatsappBot.service',
             direction: 'system',
             messageText: `Erro interno: ${error.message}`,
             normalizedText: '',

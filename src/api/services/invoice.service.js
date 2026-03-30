@@ -157,7 +157,8 @@ class InvoiceService {
               studentName: student.fullName,
               tutorName: payerName,
               phone: payerPhone,
-              type: 'new_invoice'
+              type: 'new_invoice',
+              dispatchOrigin: 'invoice_create'
             });
           }
         } catch (queueError) {
@@ -204,6 +205,8 @@ class InvoiceService {
       schoolId,
       invoice,
       type: 'manual',
+      force: true,
+      dispatchOrigin: 'manual_force',
     });
 
     if (!result?.ok) {
@@ -219,7 +222,9 @@ class InvoiceService {
   }
 
   async processDailyReminders() {
-    await NotificationService.scanAndQueueInvoices();
+    await NotificationService.scanAndQueueInvoices({
+      dispatchOrigin: 'daily_reminder',
+    });
     NotificationService.processQueue();
 
     return {

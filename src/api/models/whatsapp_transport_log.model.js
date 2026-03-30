@@ -187,6 +187,9 @@ WhatsappTransportLogSchema.index(
   }
 );
 
+WhatsappTransportLogSchema.index({ school_id: 1, 'metadata.notification_log_id': 1 });
+WhatsappTransportLogSchema.index({ school_id: 1, 'metadata.invoice_id': 1 });
+
 function normalizeString(value) {
   return String(value || '').trim();
 }

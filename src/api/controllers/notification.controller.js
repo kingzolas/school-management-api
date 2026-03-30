@@ -162,7 +162,9 @@ class NotificationController {
   async triggerManualRun(req, res, next) {
     try {
       console.log('⚡ [API] Trigger Manual acionado pelo painel...');
-      await NotificationService.scanAndQueueInvoices();
+      await NotificationService.scanAndQueueInvoices({
+        dispatchOrigin: 'manual_trigger',
+      });
       NotificationService.processQueue();
 
       res.status(200).json({

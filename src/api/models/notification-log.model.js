@@ -32,6 +32,47 @@ const NotificationLogSchema = new mongoose.Schema(
     student_name: { type: String, required: true },
     tutor_name: { type: String, required: true },
     target_phone: { type: String, required: true },
+    target_phone_normalized: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
+    delivery_channel: {
+      type: String,
+      default: 'whatsapp',
+      index: true,
+    },
+
+    business_day: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
+    business_timezone: {
+      type: String,
+      default: 'America/Sao_Paulo',
+      index: true,
+    },
+
+    delivery_key: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
+    dispatch_origin: {
+      type: String,
+      default: 'cron_scan',
+      index: true,
+    },
+
+    dispatch_reference_key: {
+      type: String,
+      default: null,
+      index: true,
+    },
 
     // Tipo da mensagem (para o template)
     type: {
@@ -80,6 +121,16 @@ const NotificationLogSchema = new mongoose.Schema(
   },
   {
     timestamps: true
+  }
+);
+
+NotificationLogSchema.index(
+  { school_id: 1, delivery_key: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      delivery_key: { $type: 'string' },
+    },
   }
 );
 

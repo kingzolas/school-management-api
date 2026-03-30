@@ -22,6 +22,24 @@ const WhatsappMessageSchema = new mongoose.Schema(
       index: true,
     },
 
+    provider_message_id: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
+    remote_jid: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
+    source: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
     direction: {
       type: String,
       enum: ['inbound', 'outbound', 'system'],

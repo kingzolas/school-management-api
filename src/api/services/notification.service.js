@@ -2,12 +2,20 @@ const NotificationLog = require('../models/notification-log.model');
 const Invoice = require('../models/invoice.model');
 const School = require('../models/school.model');
 const NotificationConfig = require('../models/notification-config.model');
+const WhatsappTransportLog = require('../models/whatsapp_transport_log.model');
 const whatsappService = require('./whatsapp.service');
 const cron = require('node-cron');
 const mongoose = require('mongoose');
+const { v4: uuidv4 } = require('uuid');
 
 // Serviço de compensação/HOLD
 const invoiceCompensationService = require('./invoiceCompensation.service');
+const {
+  DEFAULT_TIME_ZONE,
+  getBusinessDayRange,
+  normalizeWhatsappPhone,
+  getTimeZoneParts,
+} = require('../utils/timeContext');
 
 // --- IMPORTAÇÃO SEGURA DO EVENT EMITTER ---
 let appEmitter;
@@ -47,6 +55,9 @@ const TEMPLATES_ATRASO = [
 class NotificationService {
   constructor() {
     this.isProcessing = false;
+    this.businessTimeZone = DEFAULT_TIME_ZONE;
+    this.processingStaleTimeoutMinutes = 60;
+    this.deliveryChannel = 'whatsapp';
   }
 
   // ✅ SAUDAÇÃO DINÂMICA
@@ -90,13 +101,93 @@ class NotificationService {
       if (parsed) base = parsed;
     }
 
-    const startOfDay = new Date(base);
-    startOfDay.setHours(0, 0, 0, 0);
+    return getBusinessDayRange(base, this.businessTimeZone);
+  }
 
-    const endOfDay = new Date(base);
-    endOfDay.setHours(23, 59, 59, 999);
+  _getBusinessDayContext(date = new Date()) {
+    return getBusinessDayRange(date, this.businessTimeZone);
+  }
 
-    return { startOfDay, endOfDay };
+  _normalizePhoneForDelivery(phone) {
+    return normalizeWhatsappPhone(phone);
+  }
+
+  _buildDeliveryKey({
+    schoolId,
+    invoiceId,
+    phone,
+    businessDay,
+    channel = this.deliveryChannel,
+  }) {
+    const normalizedPhone = this._normalizePhoneForDelivery(phone);
+
+    return [
+      String(schoolId || '').trim(),
+      String(invoiceId || '').trim(),
+      normalizedPhone || String(phone || '').replace(/\D/g, ''),
+      String(channel || this.deliveryChannel).trim(),
+      String(businessDay || '').trim(),
+    ].join(':');
+  }
+
+  async _findExistingDeliveryLog({
+    schoolId,
+    invoiceId,
+    phone,
+    referenceDate = new Date(),
+    channel = this.deliveryChannel,
+  }) {
+    const { startOfDay, endOfDay, businessDayKey, timeZone } =
+      this._getBusinessDayContext(referenceDate);
+    const normalizedPhone = this._normalizePhoneForDelivery(phone);
+    const deliveryKey = this._buildDeliveryKey({
+      schoolId,
+      invoiceId,
+      phone: normalizedPhone || phone,
+      businessDay: businessDayKey,
+      channel,
+    });
+
+    const logs = await NotificationLog.find({
+      school_id: schoolId,
+      invoice_id: invoiceId,
+      createdAt: { $gte: startOfDay, $lte: endOfDay },
+    })
+      .select(
+        '_id school_id invoice_id student_name tutor_name target_phone target_phone_normalized delivery_channel business_day business_timezone delivery_key dispatch_origin dispatch_reference_key type status sent_at scheduled_for attempts error_message error_code error_http_status error_raw createdAt updatedAt'
+      )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const existing = logs.find((log) => {
+      const logPhone = this._normalizePhoneForDelivery(
+        log?.target_phone_normalized || log?.target_phone
+      );
+
+      if (normalizedPhone && logPhone && logPhone !== normalizedPhone) {
+        return false;
+      }
+
+      if (!normalizedPhone && logPhone) {
+        return false;
+      }
+
+      if (channel && log?.delivery_channel && String(log.delivery_channel) !== String(channel)) {
+        return false;
+      }
+
+      return true;
+    });
+
+    return {
+      existing,
+      deliveryKey,
+      normalizedPhone,
+      businessDay: businessDayKey,
+      businessTimeZone: timeZone,
+      startOfDay,
+      endOfDay,
+    };
   }
 
   _normalizeWhatsappError(error) {
@@ -202,12 +293,27 @@ class NotificationService {
     return true;
   }
 
-  async _hasNotificationLogForInvoice({ schoolId, invoiceId }) {
+  async _hasNotificationLogForInvoice({ schoolId, invoiceId, phone = null, referenceDate = new Date() }) {
     if (!schoolId || !invoiceId) return false;
+
+    if (phone) {
+      const { existing } = await this._findExistingDeliveryLog({
+        schoolId,
+        invoiceId,
+        phone,
+        referenceDate,
+        channel: this.deliveryChannel,
+      });
+
+      return Boolean(existing);
+    }
+
+    const { startOfDay, endOfDay } = this._getBusinessDayContext(referenceDate);
 
     return NotificationLog.exists({
       school_id: schoolId,
       invoice_id: invoiceId,
+      createdAt: { $gte: startOfDay, $lte: endOfDay },
     });
   }
 
@@ -322,6 +428,10 @@ class NotificationService {
       invoice_id: invoice?._id || null,
       school_id: log.school_id,
       notification_type: log.type,
+      delivery_key: log.delivery_key || null,
+      business_day: log.business_day || null,
+      business_timezone: log.business_timezone || null,
+      dispatch_origin: log.dispatch_origin || null,
       request_kind: 'text',
       fallback_from: deliveryMessage.shouldTryFile && invoice?.boleto_url ? 'document' : null,
       template_group: log.template_group || null,
@@ -353,7 +463,7 @@ class NotificationService {
       objectIdSchool = new mongoose.Types.ObjectId(schoolId);
     } catch (e) {
       console.error('ID da escola inválido para stats:', schoolId);
-      return { queued: 0, processing: 0, sent: 0, failed: 0, total_today: 0 };
+      return { queued: 0, processing: 0, sent: 0, failed: 0, cancelled: 0, total_today: 0 };
     }
 
     const stats = await NotificationLog.aggregate([
@@ -376,6 +486,7 @@ class NotificationService {
       processing: 0,
       sent: 0,
       failed: 0,
+      cancelled: 0,
       total_today: 0
     };
 
@@ -383,7 +494,8 @@ class NotificationService {
       if (result[s._id] !== undefined) result[s._id] = s.count;
     });
 
-    result.total_today = result.queued + result.processing + result.sent + result.failed;
+    result.total_today =
+      result.queued + result.processing + result.sent + result.failed + result.cancelled;
     return result;
   }
 
@@ -469,23 +581,91 @@ class NotificationService {
     phone,
     type = 'new_invoice',
     force = false,
+    dispatchOrigin = 'cron_scan',
   }) {
     try {
-      if (!force) {
-        const exists = await this._hasNotificationLogForInvoice({
-          schoolId,
-          invoiceId,
-        });
+      const now = new Date();
+      const {
+        existing,
+        deliveryKey,
+        normalizedPhone,
+        businessDay,
+        businessTimeZone,
+      } = await this._findExistingDeliveryLog({
+        schoolId,
+        invoiceId,
+        phone,
+        referenceDate: now,
+        channel: this.deliveryChannel,
+      });
 
-        if (exists) {
-          console.log(`↩️ [Fila] Ignorando duplicidade da invoice ${String(invoiceId)} (${type}).`);
+      if (!force && existing) {
+        if (existing.status === 'cancelled' && existing.error_code === 'SKIPPED_HOLD') {
+          const revived = await NotificationLog.findOneAndUpdate(
+            {
+              _id: existing._id,
+              status: 'cancelled',
+              error_code: 'SKIPPED_HOLD',
+            },
+            {
+              $set: {
+                status: 'queued',
+                scheduled_for: now,
+                error_message: null,
+                error_code: null,
+                error_http_status: null,
+                error_raw: null,
+                business_day: businessDay,
+                business_timezone: businessTimeZone,
+                delivery_channel: this.deliveryChannel,
+                delivery_key: existing.delivery_key || deliveryKey,
+                dispatch_origin: dispatchOrigin || existing.dispatch_origin || 'cron_scan',
+                dispatch_reference_key: existing.dispatch_reference_key || null,
+                target_phone_normalized: normalizedPhone || null,
+              },
+            },
+            { new: true }
+          );
+
+          if (revived) {
+            console.log(`♻️ [Fila] HOLD liberado, reativando invoice ${String(invoiceId)} (${type}).`);
+
+            if (appEmitter && typeof appEmitter.emit === 'function') {
+              appEmitter.emit('notification:updated', revived);
+            }
+
+            return {
+              ok: true,
+              log: revived,
+              revived: true,
+            };
+          }
+        }
+
+        if (existing.status === 'failed') {
+          console.log(
+            `⏭️ [Fila] Invoice ${String(invoiceId)} já possui tentativa falha neste dia. Use retry manual para reenfileirar.`
+          );
           return {
             ok: false,
             skipped: true,
-            reason: 'ALREADY_QUEUED_OR_SENT',
+            reason: 'FAILED_NEEDS_MANUAL_RETRY',
+            log: existing,
           };
         }
+
+        console.log(`↩️ [Fila] Ignorando duplicidade da invoice ${String(invoiceId)} (${type}).`);
+        return {
+          ok: false,
+          skipped: true,
+          reason: 'ALREADY_QUEUED_OR_SENT_TODAY',
+          log: existing,
+        };
       }
+
+      const deliveryKeyToUse = force
+        ? `${deliveryKey}:force:${uuidv4()}`
+        : deliveryKey;
 
       const newLog = await NotificationLog.create({
         school_id: schoolId,
@@ -493,9 +673,16 @@ class NotificationService {
         student_name: studentName,
         tutor_name: tutorName,
         target_phone: phone,
+        target_phone_normalized: normalizedPhone || null,
+        delivery_channel: this.deliveryChannel,
+        business_day: businessDay,
+        business_timezone: businessTimeZone,
+        delivery_key: deliveryKeyToUse,
+        dispatch_origin: force ? (dispatchOrigin || 'manual_force') : (dispatchOrigin || 'cron_scan'),
+        dispatch_reference_key: force ? deliveryKey : null,
         type: type,
         status: 'queued',
-        scheduled_for: new Date()
+        scheduled_for: now
       });
 
       console.log(`📥 [Fila] + ADICIONADO: ${studentName} (${type})`);
@@ -510,6 +697,22 @@ class NotificationService {
       };
 
     } catch (error) {
+      if (error?.code === 11000) {
+        const duplicateLog = await NotificationLog.findOne({
+          school_id: schoolId,
+          invoice_id: invoiceId,
+        })
+          .sort({ createdAt: -1 })
+          .lean();
+
+        return {
+          ok: false,
+          skipped: true,
+          reason: 'ALREADY_QUEUED_OR_SENT_TODAY',
+          log: duplicateLog || null,
+        };
+      }
+
       console.error('❌ Erro ao enfileirar:', error);
       return {
         ok: false,
@@ -519,14 +722,16 @@ class NotificationService {
     }
   }
 
-  async scanAndQueueInvoices() {
+  async scanAndQueueInvoices(options = {}) {
     console.log('🔎 [Cron] INICIANDO VARREDURA INTELIGENTE');
     try {
       const activeConfigs = await NotificationConfig.find({ isActive: true });
       if (!activeConfigs.length) return;
 
       const now = new Date();
-      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+      const currentTimeParts = getTimeZoneParts(now, this.businessTimeZone);
+      const currentMinutes = currentTimeParts.hour * 60 + currentTimeParts.minute;
+      const dispatchOrigin = options.dispatchOrigin || 'cron_scan';
 
       for (const config of activeConfigs) {
         const [startH, startM] = config.windowStart.split(':').map(Number);
@@ -577,14 +782,9 @@ class NotificationService {
             continue;
           }
 
-          const alreadyNotified = await this._hasNotificationLogForInvoice({
-            schoolId,
-            invoiceId: inv._id,
+          await this._prepareAndQueue(inv, check.type, {
+            dispatchOrigin,
           });
-
-          if (!alreadyNotified) {
-            await this._prepareAndQueue(inv, check.type);
-          }
         }
       }
     } catch (e) {
@@ -608,21 +808,18 @@ class NotificationService {
       const onHold = await this._isInvoiceOnHold(inv);
       if (onHold) continue;
 
-      // Garante que não manda se já existe qualquer aviso para essa fatura (evita spam)
-      const alreadyNotified = await this._hasNotificationLogForInvoice({
-        schoolId,
-        invoiceId: inv._id,
+      const result = await this._prepareAndQueue(inv, 'new_invoice', {
+        dispatchOrigin: 'manual_month',
       });
 
-      if (!alreadyNotified) {
-        await this._prepareAndQueue(inv, 'new_invoice');
+      if (result?.ok) {
         count++;
       }
     }
     return count;
   }
 
-  async _prepareAndQueue(invoice, type) {
+  async _prepareAndQueue(invoice, type, options = {}) {
     let name, phone;
     if (invoice.tutor) {
       name = invoice.tutor.fullName;
@@ -633,18 +830,25 @@ class NotificationService {
     }
 
     if (name && phone) {
-      await this.queueNotification({
+      return this.queueNotification({
         schoolId: invoice.school_id,
         invoiceId: invoice._id,
         studentName: invoice.student?.fullName || 'Aluno',
         tutorName: name,
         phone: phone,
-        type: type
+        type: type,
+        dispatchOrigin: options.dispatchOrigin || 'cron_scan',
       });
     }
+
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'MISSING_CONTACT',
+    };
   }
 
-  async enqueueInvoiceManually({ schoolId, invoice, type = 'manual' }) {
+  async enqueueInvoiceManually({ schoolId, invoice, type = 'manual', force = false, dispatchOrigin = 'manual_queue' }) {
     const onHold = await this._isInvoiceOnHold(invoice);
     if (onHold) {
       return {
@@ -667,17 +871,119 @@ class NotificationService {
       return { ok: false, reason: 'MISSING_CONTACT', message: 'Tutor/aluno sem telefone válido.' };
     }
 
-    await this.queueNotification({
+    const result = await this.queueNotification({
       schoolId,
       invoiceId: invoice._id,
       studentName: invoice.student?.fullName || 'Aluno',
       tutorName: name,
       phone,
       type,
-      force: true
+      force,
+      dispatchOrigin: force ? 'manual_force' : dispatchOrigin,
     });
 
-    return { ok: true, message: 'Invoice reenfileirada com sucesso.' };
+    if (!result?.ok) {
+      return result;
+    }
+
+    return {
+      ok: true,
+      message: 'Invoice reenfileirada com sucesso.',
+      log: result.log,
+      revived: result.revived || false,
+    };
+  }
+
+  async _recoverStaleProcessingLogs() {
+    const cutoff = new Date(Date.now() - (this.processingStaleTimeoutMinutes * 60 * 1000));
+    const stuckLogs = await NotificationLog.find({
+      status: 'processing',
+      updatedAt: { $lte: cutoff },
+    })
+      .select('_id school_id invoice_id target_phone target_phone_normalized delivery_key dispatch_origin createdAt updatedAt attempts')
+      .lean();
+
+    if (!stuckLogs.length) {
+      return { recovered: 0 };
+    }
+
+    let recovered = 0;
+
+    for (const log of stuckLogs) {
+      const transport = await WhatsappTransportLog.findOne({
+        school_id: log.school_id,
+        'metadata.notification_log_id': log._id,
+      })
+        .sort({ last_event_at: -1, createdAt: -1 })
+        .select('status accepted_at last_event_at')
+        .lean();
+
+      const acceptedStatuses = new Set([
+        'accepted_by_evolution',
+        'server_ack',
+        'delivered',
+        'read',
+      ]);
+
+      if (log.sent_at) {
+        await NotificationLog.updateOne(
+          { _id: log._id, status: 'processing' },
+          {
+            $set: {
+              status: 'sent',
+              error_message: null,
+              error_code: null,
+              error_http_status: null,
+              error_raw: null,
+            },
+          }
+        );
+
+        recovered += 1;
+        continue;
+      }
+
+      if (transport && acceptedStatuses.has(transport.status)) {
+        const sentAt = transport.accepted_at || transport.last_event_at || new Date();
+        await NotificationLog.updateOne(
+          { _id: log._id, status: 'processing' },
+          {
+            $set: {
+              status: 'sent',
+              sent_at: sentAt,
+              error_message: null,
+              error_code: null,
+              error_http_status: null,
+              error_raw: null,
+            },
+          }
+        );
+
+        recovered += 1;
+        continue;
+      }
+
+      await NotificationLog.updateOne(
+        { _id: log._id, status: 'processing' },
+        {
+          $set: {
+            status: 'queued',
+            scheduled_for: new Date(),
+            error_message: 'Recuperado de processing preso.',
+            error_code: 'PROCESSING_TIMEOUT_RECOVERED',
+            error_http_status: null,
+            error_raw: JSON.stringify({
+              cutoff: cutoff.toISOString(),
+              recovered_at: new Date().toISOString(),
+            }).slice(0, 2000),
+          },
+        }
+      );
+
+      recovered += 1;
+    }
+
+    return { recovered };
   }
 
   async processQueue() {
@@ -685,6 +991,8 @@ class NotificationService {
     this.isProcessing = true;
 
     try {
+      await this._recoverStaleProcessingLogs();
+
       const now = new Date();
 
       const queuedCandidates = await NotificationLog.find({
@@ -780,19 +1088,20 @@ class NotificationService {
         const result = await this._sendSingleNotification(log);
 
         if (result?.skipped) {
-          log.status = 'sent';
-          log.sent_at = new Date();
+          log.status = result.status || 'cancelled';
+          log.sent_at = null;
           log.error_message = null;
 
-          log.error_code = 'SKIPPED_HOLD';
+          log.error_code = result.error_code || 'SKIPPED_HOLD';
           log.error_http_status = 200;
           log.error_raw = JSON.stringify({
             skipped: true,
             reason: result.reason,
+            skip_status: result.status || 'cancelled',
             hold_until: result.hold_until || null
           }).slice(0, 2000);
 
-          console.log(`⛔ [HOLD] SKIP envio (${log.tutor_name}) -> ${result.reason || 'HOLD ativo'}`);
+          console.log(`⏭️ [Fila] SKIP envio (${log.tutor_name}) -> ${result.reason || 'Cobrança bloqueada'}`);
         } else {
           log.status = 'sent';
           log.sent_at = new Date();
@@ -829,12 +1138,21 @@ class NotificationService {
   async _sendSingleNotification(log) {
     const invoice = log.invoice_id;
     if (!invoice) throw new Error('Fatura não encontrada.');
-    if (invoice.status === 'paid' || invoice.status === 'canceled') throw new Error('Fatura já paga/cancelada.');
+    if (invoice.status === 'paid' || invoice.status === 'canceled') {
+      return {
+        skipped: true,
+        status: 'cancelled',
+        error_code: 'INVOICE_NO_LONGER_ELIGIBLE',
+        reason: 'Fatura já paga/cancelada.',
+      };
+    }
 
     const onHold = await this._isInvoiceOnHold(invoice);
     if (onHold) {
       return {
         skipped: true,
+        status: 'cancelled',
+        error_code: 'SKIPPED_HOLD',
         reason: 'Invoice está com compensação/HOLD ativo. Cobrança bloqueada até o fim do hold.',
       };
     }
@@ -965,6 +1283,7 @@ class NotificationService {
       log.error_raw = null;
 
       log.scheduled_for = new Date();
+      log.dispatch_origin = 'manual_retry';
 
       await log.save();
       if (appEmitter) appEmitter.emit('notification:updated', log);
