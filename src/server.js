@@ -7,6 +7,7 @@ const { initWebSocket } = require('./loaders/websocket');
 const whatsappSubscriber = require('./api/subscribers/whatsapp.subscriber');
 
 const { runCoraPaidAtFixIfEnabled } = require('./loaders/migrations'); // ✅
+const { runTechnicalSchoolProductionBootstrap } = require('./loaders/technicalProductionBootstrap');
 
 const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0';
@@ -27,6 +28,10 @@ const startServer = async () => {
   // ✅ roda em background, com lock + checkpoint
   runCoraPaidAtFixIfEnabled().catch((e) => {
     console.error('❌ [Migration] cora paidAt fix failed:', e.message);
+  });
+
+  runTechnicalSchoolProductionBootstrap().catch((e) => {
+    console.error('❌ [Bootstrap] technical production bootstrap failed to start:', e.message);
   });
 };
 
