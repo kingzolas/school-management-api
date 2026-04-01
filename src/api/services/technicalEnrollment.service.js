@@ -26,6 +26,8 @@ const defaultPopulation = [
                     { path: 'technicalProgramModuleId', select: 'name moduleOrder workloadHours subjectId status', populate: { path: 'subjectId', select: 'name level' } },
                     { path: 'prerequisiteModuleIds', select: 'name moduleOrder workloadHours status' },
                     { path: 'scheduleSlots.teacherIds', select: 'fullName email roles status' },
+                    { path: 'scheduleSlots.publishedByUserId', select: 'fullName email roles status' },
+                    { path: 'scheduleSlots.publicationRevertedByUserId', select: 'fullName email roles status' },
                     { path: 'scheduleSlots.spaceId', select: 'name type capacity status' }
                 ]
             }
@@ -410,7 +412,11 @@ class TechnicalEnrollmentService {
                                 { path: 'defaultSpaceId', select: 'name type capacity status' }
                             ]
                         },
-                        { path: 'technicalProgramModuleId', select: 'technicalProgramId subjectId name moduleOrder workloadHours status', populate: { path: 'subjectId', select: 'name level' } }
+                        { path: 'technicalProgramModuleId', select: 'technicalProgramId subjectId name moduleOrder workloadHours status', populate: { path: 'subjectId', select: 'name level' } },
+                        { path: 'scheduleSlots.teacherIds', select: 'fullName email roles status' },
+                        { path: 'scheduleSlots.publishedByUserId', select: 'fullName email roles status' },
+                        { path: 'scheduleSlots.publicationRevertedByUserId', select: 'fullName email roles status' },
+                        { path: 'scheduleSlots.spaceId', select: 'name type capacity status' }
                     ]
                 }
             ])
@@ -445,6 +451,8 @@ class TechnicalEnrollmentService {
                         { path: 'technicalProgramModuleId', select: 'technicalProgramId subjectId name description moduleOrder workloadHours status', populate: [{ path: 'subjectId', select: 'name level' }] },
                         { path: 'prerequisiteModuleIds', select: 'name moduleOrder workloadHours status' },
                         { path: 'scheduleSlots.teacherIds', select: 'fullName email roles status' },
+                        { path: 'scheduleSlots.publishedByUserId', select: 'fullName email roles status' },
+                        { path: 'scheduleSlots.publicationRevertedByUserId', select: 'fullName email roles status' },
                         { path: 'scheduleSlots.spaceId', select: 'name type capacity status' }
                     ])
                     .sort({ executionOrder: 1, createdAt: 1 }))

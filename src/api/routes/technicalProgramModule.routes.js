@@ -5,6 +5,7 @@ const authMiddleware = require('../middlewares/auth.middleware');
 
 router.post('/', authMiddleware.verifyToken, technicalProgramModuleController.create);
 router.get('/', authMiddleware.verifyToken, technicalProgramModuleController.getAll);
+router.get('/:id/scheduling-context', authMiddleware.verifyToken, technicalProgramModuleController.getSchedulingContext);
 router.get('/:id', authMiddleware.verifyToken, technicalProgramModuleController.getById);
 router.patch('/:id', authMiddleware.verifyToken, technicalProgramModuleController.update);
 router.patch('/:id/inactivate', authMiddleware.verifyToken, technicalProgramModuleController.inactivate);

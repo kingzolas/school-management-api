@@ -7,6 +7,7 @@ router.post('/', authMiddleware.verifyToken, technicalProgramOfferingModuleContr
 router.get('/', authMiddleware.verifyToken, technicalProgramOfferingModuleController.getAll);
 router.get('/:id', authMiddleware.verifyToken, technicalProgramOfferingModuleController.getById);
 router.patch('/:id', authMiddleware.verifyToken, technicalProgramOfferingModuleController.update);
+router.post('/:id/schedule-slots/:slotId/publish', authMiddleware.verifyToken, technicalProgramOfferingModuleController.publishScheduleSlot);
 router.patch('/:id/inactivate', authMiddleware.verifyToken, technicalProgramOfferingModuleController.inactivate);
 
 module.exports = router;

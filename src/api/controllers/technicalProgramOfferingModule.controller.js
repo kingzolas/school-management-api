@@ -1,4 +1,6 @@
 const TechnicalProgramOfferingModuleService = require('../services/technicalProgramOfferingModule.service');
+const ResourceOccupancyService = require('../services/resourceOccupancy.service');
+const { formatApiError } = require('../utils/apiError');
 
 const getSchoolId = (req) => {
     if (!req.user || !req.user.school_id) {
@@ -6,6 +8,13 @@ const getSchoolId = (req) => {
     }
 
     return req.user.school_id;
+};
+
+const getPerformedByUserId = (req) => req.user?.id || req.user?._id || null;
+
+const sendFormattedError = (res, error) => {
+    const { status, body } = formatApiError(error);
+    return res.status(status).json(body);
 };
 
 class TechnicalProgramOfferingModuleController {
@@ -16,19 +25,7 @@ class TechnicalProgramOfferingModuleController {
 
             res.status(201).json(module);
         } catch (error) {
-            if (error.message.includes('nao autenticado')) {
-                return res.status(403).json({ message: error.message });
-            }
-            if (error.message.includes('ja existe')) {
-                return res.status(409).json({ message: error.message });
-            }
-            if (error.message.includes('nao encontrado')) {
-                return res.status(404).json({ message: error.message });
-            }
-            if (error.name === 'ValidationError') {
-                return res.status(400).json({ message: 'Erro de validacao.', error: error.message });
-            }
-            next(error);
+            sendFormattedError(res, error);
         }
     }
 
@@ -39,10 +36,7 @@ class TechnicalProgramOfferingModuleController {
 
             res.status(200).json(modules);
         } catch (error) {
-            if (error.message.includes('nao autenticado')) {
-                return res.status(403).json({ message: error.message });
-            }
-            next(error);
+            sendFormattedError(res, error);
         }
     }
 
@@ -53,13 +47,7 @@ class TechnicalProgramOfferingModuleController {
 
             res.status(200).json(module);
         } catch (error) {
-            if (error.message.includes('nao autenticado')) {
-                return res.status(403).json({ message: error.message });
-            }
-            if (error.message.includes('nao encontrado')) {
-                return res.status(404).json({ message: error.message });
-            }
-            next(error);
+            sendFormattedError(res, error);
         }
     }
 
@@ -69,24 +57,13 @@ class TechnicalProgramOfferingModuleController {
             const updatedModule = await TechnicalProgramOfferingModuleService.updateTechnicalProgramOfferingModule(
                 req.params.id,
                 req.body,
-                schoolId
+                schoolId,
+                getPerformedByUserId(req)
             );
 
             res.status(200).json(updatedModule);
         } catch (error) {
-            if (error.message.includes('nao autenticado')) {
-                return res.status(403).json({ message: error.message });
-            }
-            if (error.message.includes('nao encontrado')) {
-                return res.status(404).json({ message: error.message });
-            }
-            if (error.message.includes('ja existe')) {
-                return res.status(409).json({ message: error.message });
-            }
-            if (error.name === 'ValidationError') {
-                return res.status(400).json({ message: 'Erro de validacao.', error: error.message });
-            }
-            next(error);
+            sendFormattedError(res, error);
         }
     }
 
@@ -97,13 +74,24 @@ class TechnicalProgramOfferingModuleController {
 
             res.status(200).json({ message: 'Execucao do modulo da oferta cancelada com sucesso', module });
         } catch (error) {
-            if (error.message.includes('nao autenticado')) {
-                return res.status(403).json({ message: error.message });
-            }
-            if (error.message.includes('nao encontrado')) {
-                return res.status(404).json({ message: error.message });
-            }
-            next(error);
+            sendFormattedError(res, error);
+        }
+    }
+
+    async publishScheduleSlot(req, res, next) {
+        try {
+            const schoolId = getSchoolId(req);
+            const performedByUserId = getPerformedByUserId(req);
+            const updatedModule = await ResourceOccupancyService.publishScheduleSlot(
+                req.params.id,
+                req.params.slotId,
+                schoolId,
+                performedByUserId
+            );
+
+            res.status(200).json(updatedModule);
+        } catch (error) {
+            sendFormattedError(res, error);
         }
     }
 }

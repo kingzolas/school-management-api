@@ -4,6 +4,12 @@ const TechnicalProgramModule = require('../models/technicalProgramModule.model')
 const TechnicalSpace = require('../models/technicalSpace.model');
 const User = require('../models/user.model');
 const {
+    normalizeReferenceId,
+    normalizeTeacherIds,
+    stripPublicationState,
+    resolveSlotPublicationState
+} = require('../utils/technicalScheduleSlot');
+const {
     hasValue,
     parseDate,
     parseTimeToMinutes,
@@ -43,6 +49,38 @@ const sharesSpace = (slotA, slotB) => {
     return String(slotA.spaceId) === String(slotB.spaceId);
 };
 
+const getCurrentScheduleSlot = (currentSlots, nextSlot, index) => {
+    if (!Array.isArray(currentSlots) || currentSlots.length === 0) {
+        return null;
+    }
+
+    if (hasValue(nextSlot?._id)) {
+        const normalizedNextSlotId = normalizeReferenceId(nextSlot._id);
+        const byId = currentSlots.find((currentSlot) => normalizeReferenceId(currentSlot?._id) === normalizedNextSlotId);
+        if (byId) {
+            return byId;
+        }
+    }
+
+    const byIndex = currentSlots[index] || null;
+    if (!byIndex) {
+        return null;
+    }
+
+    const sameWeekday = Number(byIndex.weekday) === Number(nextSlot.weekday);
+    const sameStartTime = String(byIndex.startTime || '').trim() === String(nextSlot.startTime || '').trim();
+    const sameEndTime = String(byIndex.endTime || '').trim() === String(nextSlot.endTime || '').trim();
+    const sameSpace = normalizeReferenceId(byIndex.spaceId) === normalizeReferenceId(nextSlot.spaceId);
+    const sameTeachers = JSON.stringify([...normalizeTeacherIds(byIndex)].sort()) === JSON.stringify([...normalizeTeacherIds(nextSlot)].sort());
+    const sameStatus = String(byIndex.status || '') === String(nextSlot.status || '');
+
+    if (sameWeekday && sameStartTime && sameEndTime && sameSpace && sameTeachers && sameStatus) {
+        return byIndex;
+    }
+
+    return null;
+};
+
 const buildPopulation = () => ([
         {
         path: 'technicalProgramOfferingId',
@@ -69,6 +107,14 @@ const buildPopulation = () => ([
     },
     {
         path: 'scheduleSlots.teacherIds',
+        select: 'fullName email roles status'
+    },
+    {
+        path: 'scheduleSlots.publishedByUserId',
+        select: 'fullName email roles status'
+    },
+    {
+        path: 'scheduleSlots.publicationRevertedByUserId',
         select: 'fullName email roles status'
     },
     {
@@ -124,7 +170,7 @@ class TechnicalProgramOfferingModuleService {
         return teachers.map((teacher) => teacher._id);
     }
 
-    async _validateScheduleSlots(scheduleSlots, schoolId, defaultSpaceId) {
+    async _validateScheduleSlots(scheduleSlots, schoolId, defaultSpaceId, currentSlots = [], performedByUserId = null) {
         if (scheduleSlots !== undefined && !Array.isArray(scheduleSlots)) {
             throw new Error('scheduleSlots precisa ser um array quando informado.');
         }
@@ -135,11 +181,12 @@ class TechnicalProgramOfferingModuleService {
 
         const normalizedSlots = [];
         const slotChecks = [];
-        for (const slot of scheduleSlots) {
+        for (const [index, slot] of scheduleSlots.entries()) {
             if (slot.teacherIds !== undefined && !Array.isArray(slot.teacherIds)) {
                 throw new Error('teacherIds do slot precisa ser um array quando informado.');
             }
 
+            const normalizedSlotInput = stripPublicationState(slot);
             const weekday = Number(slot.weekday);
             const startTime = typeof slot.startTime === 'string' ? slot.startTime.trim() : '';
             const endTime = typeof slot.endTime === 'string' ? slot.endTime.trim() : '';
@@ -163,9 +210,25 @@ class TechnicalProgramOfferingModuleService {
                 spaceId = null;
             }
 
-            const teacherIds = await this._validateTeachers(slot.teacherIds || [], schoolId);
+            const teacherIds = await this._validateTeachers(normalizeTeacherIds(slot), schoolId);
+            const currentSlot = getCurrentScheduleSlot(currentSlots, slot, index);
+            const publicationState = resolveSlotPublicationState({
+                currentSlot,
+                nextSlot: {
+                    ...normalizedSlotInput,
+                    weekday,
+                    startTime,
+                    endTime,
+                    teacherIds,
+                    spaceId,
+                    durationMinutes,
+                    status: slot.status || 'Ativo'
+                },
+                performedByUserId
+            });
 
             normalizedSlots.push({
+                ...(slot?._id ? { _id: slot._id } : {}),
                 weekday,
                 startTime,
                 endTime,
@@ -173,7 +236,8 @@ class TechnicalProgramOfferingModuleService {
                 spaceId,
                 durationMinutes,
                 notes: slot.notes,
-                status: slot.status || 'Ativo'
+                status: slot.status || 'Ativo',
+                ...publicationState
             });
 
             slotChecks.push({
@@ -217,6 +281,7 @@ class TechnicalProgramOfferingModuleService {
             prerequisiteModuleIds,
             scheduleSlots,
             estimatedStartDate,
+            estimatedEndDate,
             status
         } = moduleData;
 
@@ -244,6 +309,13 @@ class TechnicalProgramOfferingModuleService {
         const normalizedEstimatedStartDate = hasEstimatedStartDate ? parseDate(estimatedStartDate) : null;
         if (hasEstimatedStartDate && estimatedStartDate !== null && !normalizedEstimatedStartDate) {
             throw new Error('estimatedStartDate precisa ser uma data valida quando informada.');
+        }
+        const hasEstimatedEndDate = Object.prototype.hasOwnProperty.call(moduleData, 'estimatedEndDate');
+        const normalizedEstimatedEndDate = hasEstimatedEndDate
+            ? (estimatedEndDate !== null ? parseDate(estimatedEndDate) : null)
+            : null;
+        if (hasEstimatedEndDate && estimatedEndDate !== null && !normalizedEstimatedEndDate) {
+            throw new Error('estimatedEndDate precisa ser uma data valida quando informada.');
         }
 
         const normalizedPrerequisites = [];
@@ -279,6 +351,13 @@ class TechnicalProgramOfferingModuleService {
             normalizedScheduleSlots,
             finalEstimatedStartDate
         );
+        const finalEstimatedEndDate = hasEstimatedEndDate
+            ? normalizedEstimatedEndDate
+            : derivedValues.estimatedEndDate;
+
+        if (finalEstimatedStartDate && finalEstimatedEndDate && finalEstimatedEndDate < finalEstimatedStartDate) {
+            throw new Error('estimatedEndDate nao pode ser anterior a estimatedStartDate.');
+        }
 
         const finalExecutionOrder = hasValue(executionOrder) ? Number(executionOrder) : Number(moduleOrderSnapshot || programModule.moduleOrder);
         const finalModuleOrderSnapshot = hasValue(moduleOrderSnapshot) ? Number(moduleOrderSnapshot) : Number(programModule.moduleOrder);
@@ -306,7 +385,7 @@ class TechnicalProgramOfferingModuleService {
                 estimatedWeeks: derivedValues.estimatedWeeks,
                 estimatedStartDate: derivedValues.estimatedStartDate,
                 estimatedStartDateSource,
-                estimatedEndDate: derivedValues.estimatedEndDate,
+                estimatedEndDate: finalEstimatedEndDate,
                 prerequisiteModuleIds: normalizedPrerequisites,
                 scheduleSlots: normalizedScheduleSlots,
                 status: status || 'Planejado',
@@ -350,7 +429,7 @@ class TechnicalProgramOfferingModuleService {
         return module;
     }
 
-    async updateTechnicalProgramOfferingModule(id, updateData, schoolId) {
+    async updateTechnicalProgramOfferingModule(id, updateData, schoolId, performedByUserId = null) {
         delete updateData.school_id;
         delete updateData.technicalProgramOfferingId;
         delete updateData.technicalProgramModuleId;
@@ -364,6 +443,14 @@ class TechnicalProgramOfferingModuleService {
 
         if (!currentModule) {
             throw new Error('Execucao do modulo da oferta nao encontrada para atualizar.');
+        }
+
+        const hasEstimatedEndDate = Object.prototype.hasOwnProperty.call(updateData, 'estimatedEndDate');
+        const normalizedEstimatedEndDate = hasEstimatedEndDate
+            ? (updateData.estimatedEndDate !== null ? parseDate(updateData.estimatedEndDate) : null)
+            : currentModule.estimatedEndDate;
+        if (hasEstimatedEndDate && updateData.estimatedEndDate !== null && !normalizedEstimatedEndDate) {
+            throw new Error('estimatedEndDate precisa ser uma data valida quando informada.');
         }
 
         let normalizedPlannedWorkloadHours = currentModule.plannedWorkloadHours;
@@ -402,7 +489,13 @@ class TechnicalProgramOfferingModuleService {
                 throw new Error('Oferta tecnica relacionada nao encontrada para recalcular a agenda.');
             }
 
-            const normalizedScheduleSlots = await this._validateScheduleSlots(updateData.scheduleSlots, schoolId, offering.defaultSpaceId);
+            const normalizedScheduleSlots = await this._validateScheduleSlots(
+                updateData.scheduleSlots,
+                schoolId,
+                offering.defaultSpaceId,
+                Array.isArray(currentModule.scheduleSlots) ? currentModule.scheduleSlots : [],
+                performedByUserId
+            );
             await this._validateOfferingScheduleConflicts(currentModule.technicalProgramOfferingId, schoolId, normalizedScheduleSlots, id);
             const hasEstimatedStartDate = Object.prototype.hasOwnProperty.call(updateData, 'estimatedStartDate');
             const normalizedEstimatedStartDate = hasEstimatedStartDate
@@ -426,12 +519,19 @@ class TechnicalProgramOfferingModuleService {
                 baseEstimatedStartDate
             );
 
+            const nextEstimatedEndDate = hasEstimatedEndDate
+                ? normalizedEstimatedEndDate
+                : derivedValues.estimatedEndDate;
+            if (derivedValues.estimatedStartDate && nextEstimatedEndDate && nextEstimatedEndDate < derivedValues.estimatedStartDate) {
+                throw new Error('estimatedEndDate nao pode ser anterior a estimatedStartDate.');
+            }
+
             updateData.scheduleSlots = normalizedScheduleSlots;
             updateData.plannedWeeklyMinutes = derivedValues.plannedWeeklyMinutes;
             updateData.estimatedWeeks = derivedValues.estimatedWeeks;
             updateData.estimatedStartDate = derivedValues.estimatedStartDate;
             updateData.estimatedStartDateSource = nextEstimatedStartDateSource;
-            updateData.estimatedEndDate = derivedValues.estimatedEndDate;
+            updateData.estimatedEndDate = nextEstimatedEndDate;
         } else if (Object.prototype.hasOwnProperty.call(updateData, 'estimatedStartDate')) {
             const offering = await TechnicalProgramOffering.findOne({
                 _id: currentModule.technicalProgramOfferingId,
@@ -463,11 +563,18 @@ class TechnicalProgramOfferingModuleService {
                 baseEstimatedStartDate
             );
 
+            const nextEstimatedEndDate = hasEstimatedEndDate
+                ? normalizedEstimatedEndDate
+                : derivedValues.estimatedEndDate;
+            if (derivedValues.estimatedStartDate && nextEstimatedEndDate && nextEstimatedEndDate < derivedValues.estimatedStartDate) {
+                throw new Error('estimatedEndDate nao pode ser anterior a estimatedStartDate.');
+            }
+
             updateData.estimatedStartDate = derivedValues.estimatedStartDate;
             updateData.estimatedStartDateSource = nextEstimatedStartDateSource;
             updateData.estimatedWeeks = derivedValues.estimatedWeeks;
             updateData.plannedWeeklyMinutes = derivedValues.plannedWeeklyMinutes;
-            updateData.estimatedEndDate = derivedValues.estimatedEndDate;
+            updateData.estimatedEndDate = nextEstimatedEndDate;
         } else if (updateData.plannedWorkloadHours !== undefined) {
             const offering = await TechnicalProgramOffering.findOne({
                 _id: currentModule.technicalProgramOfferingId,
@@ -488,11 +595,24 @@ class TechnicalProgramOfferingModuleService {
                 baseEstimatedStartDate
             );
 
+            const nextEstimatedEndDate = hasEstimatedEndDate
+                ? normalizedEstimatedEndDate
+                : derivedValues.estimatedEndDate;
+            if (derivedValues.estimatedStartDate && nextEstimatedEndDate && nextEstimatedEndDate < derivedValues.estimatedStartDate) {
+                throw new Error('estimatedEndDate nao pode ser anterior a estimatedStartDate.');
+            }
+
             updateData.plannedWeeklyMinutes = derivedValues.plannedWeeklyMinutes;
             updateData.estimatedWeeks = derivedValues.estimatedWeeks;
             updateData.estimatedStartDate = derivedValues.estimatedStartDate;
             updateData.estimatedStartDateSource = currentModule.estimatedStartDateSource;
-            updateData.estimatedEndDate = derivedValues.estimatedEndDate;
+            updateData.estimatedEndDate = nextEstimatedEndDate;
+        } else if (hasEstimatedEndDate) {
+            const baseEstimatedStartDate = currentModule.estimatedStartDate;
+            if (baseEstimatedStartDate && normalizedEstimatedEndDate && normalizedEstimatedEndDate < baseEstimatedStartDate) {
+                throw new Error('estimatedEndDate nao pode ser anterior a estimatedStartDate.');
+            }
+            updateData.estimatedEndDate = normalizedEstimatedEndDate;
         }
 
         if (updateData.prerequisiteModuleIds !== undefined) {

@@ -22,6 +22,8 @@ const getOfferingModulePopulation = () => ([
             { path: 'technicalProgramModuleId', select: 'name moduleOrder workloadHours subjectId status', populate: { path: 'subjectId', select: 'name level' } },
             { path: 'prerequisiteModuleIds', select: 'name moduleOrder workloadHours status' },
             { path: 'scheduleSlots.teacherIds', select: 'fullName email roles status' },
+            { path: 'scheduleSlots.publishedByUserId', select: 'fullName email roles status' },
+            { path: 'scheduleSlots.publicationRevertedByUserId', select: 'fullName email roles status' },
             { path: 'scheduleSlots.spaceId', select: 'name type capacity status' }
         ]
     }
@@ -189,6 +191,8 @@ class TechnicalProgramOfferingService {
                     { path: 'technicalProgramModuleId', select: 'name moduleOrder workloadHours subjectId status', populate: { path: 'subjectId', select: 'name level' } },
                     { path: 'prerequisiteModuleIds', select: 'name moduleOrder workloadHours status' },
                     { path: 'scheduleSlots.teacherIds', select: 'fullName email roles status' },
+                    { path: 'scheduleSlots.publishedByUserId', select: 'fullName email roles status' },
+                    { path: 'scheduleSlots.publicationRevertedByUserId', select: 'fullName email roles status' },
                     { path: 'scheduleSlots.spaceId', select: 'name type capacity status' }
                 ]
             }

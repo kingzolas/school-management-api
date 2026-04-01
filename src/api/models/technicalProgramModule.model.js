@@ -49,9 +49,21 @@ const technicalProgramModuleSchema = new Schema({
     timestamps: true
 });
 
+technicalProgramModuleSchema.virtual('canEnterGrade').get(function canEnterGradeGetter() {
+    return this.status === 'Ativo' && Boolean(this.subjectId);
+});
+
 technicalProgramModuleSchema.index(
     { technicalProgramId: 1, moduleOrder: 1, school_id: 1 },
     { unique: true }
 );
+
+technicalProgramModuleSchema.set('toJSON', {
+    virtuals: true
+});
+
+technicalProgramModuleSchema.set('toObject', {
+    virtuals: true
+});
 
 module.exports = mongoose.model('TechnicalProgramModule', technicalProgramModuleSchema);

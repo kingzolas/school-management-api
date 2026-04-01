@@ -1,4 +1,6 @@
 const TechnicalProgramModuleService = require('../services/technicalProgramModule.service');
+const TechnicalTeacherEligibilityService = require('../services/technicalTeacherEligibility.service');
+const { formatApiError } = require('../utils/apiError');
 
 const getSchoolId = (req) => {
     if (!req.user || !req.user.school_id) {
@@ -104,6 +106,18 @@ class TechnicalProgramModuleController {
                 return res.status(404).json({ message: error.message });
             }
             next(error);
+        }
+    }
+
+    async getSchedulingContext(req, res, next) {
+        try {
+            const schoolId = getSchoolId(req);
+            const context = await TechnicalTeacherEligibilityService.getTechnicalProgramModuleSchedulingContext(req.params.id, schoolId);
+
+            res.status(200).json(context);
+        } catch (error) {
+            const { status, body } = formatApiError(error);
+            res.status(status).json(body);
         }
     }
 }

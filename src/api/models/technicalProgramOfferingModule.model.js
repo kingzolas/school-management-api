@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
+const { getScheduleSlotReadState } = require('../utils/technicalScheduleSlot');
 
 const scheduleSlotSchema = new Schema({
     weekday: {
@@ -22,6 +23,35 @@ const scheduleSlotSchema = new Schema({
         type: Schema.Types.ObjectId,
         ref: 'User'
     }],
+    publicationStatus: {
+        type: String,
+        enum: ['draft', 'published'],
+        default: 'draft',
+        index: true
+    },
+    publishedAt: {
+        type: Date,
+        default: null
+    },
+    publishedByUserId: {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+    },
+    publicationRevertedAt: {
+        type: Date,
+        default: null
+    },
+    publicationRevertedByUserId: {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+    },
+    publicationRevertedReason: {
+        type: String,
+        trim: true,
+        default: null
+    },
     spaceId: {
         type: Schema.Types.ObjectId,
         ref: 'TechnicalSpace',
@@ -44,6 +74,78 @@ const scheduleSlotSchema = new Schema({
     }
 }, {
     timestamps: false
+});
+
+scheduleSlotSchema.virtual('teacherId').get(function teacherIdGetter() {
+    if (!Array.isArray(this.teacherIds) || this.teacherIds.length === 0) {
+        return null;
+    }
+
+    const primaryTeacher = this.teacherIds[0];
+    return primaryTeacher && primaryTeacher._id ? primaryTeacher._id : primaryTeacher;
+});
+
+scheduleSlotSchema.virtual('teacherId').set(function teacherIdSetter(value) {
+    if (value === undefined || value === null || value === '') {
+        this.teacherIds = [];
+        return;
+    }
+
+    this.teacherIds = [value];
+});
+
+scheduleSlotSchema.virtual('blockingReasons').get(function blockingReasonsGetter() {
+    const parentOfferingModule = typeof this.parent === 'function' ? this.parent() : null;
+    const parentOffering = parentOfferingModule ? parentOfferingModule.technicalProgramOfferingId : null;
+    return getScheduleSlotReadState(this, parentOffering).blockingReasons;
+});
+
+scheduleSlotSchema.virtual('isOperational').get(function isOperationalGetter() {
+    const parentOfferingModule = typeof this.parent === 'function' ? this.parent() : null;
+    const parentOffering = parentOfferingModule ? parentOfferingModule.technicalProgramOfferingId : null;
+    return getScheduleSlotReadState(this, parentOffering).isOperational;
+});
+
+const ensureScheduleSlotDefaults = (ret) => {
+    if (!ret.publicationStatus) {
+        ret.publicationStatus = 'draft';
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(ret, 'publishedAt')) {
+        ret.publishedAt = null;
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(ret, 'publishedByUserId')) {
+        ret.publishedByUserId = null;
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(ret, 'publicationRevertedAt')) {
+        ret.publicationRevertedAt = null;
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(ret, 'publicationRevertedByUserId')) {
+        ret.publicationRevertedByUserId = null;
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(ret, 'publicationRevertedReason')) {
+        ret.publicationRevertedReason = null;
+    }
+
+    if (!Array.isArray(ret.teacherIds)) {
+        ret.teacherIds = [];
+    }
+
+    return ret;
+};
+
+scheduleSlotSchema.set('toJSON', {
+    virtuals: true,
+    transform: (_, ret) => ensureScheduleSlotDefaults(ret)
+});
+
+scheduleSlotSchema.set('toObject', {
+    virtuals: true,
+    transform: (_, ret) => ensureScheduleSlotDefaults(ret)
 });
 
 const technicalProgramOfferingModuleSchema = new Schema({
@@ -135,5 +237,13 @@ technicalProgramOfferingModuleSchema.index(
     { technicalProgramOfferingId: 1, executionOrder: 1, school_id: 1 },
     { unique: true }
 );
+
+technicalProgramOfferingModuleSchema.set('toJSON', {
+    virtuals: true
+});
+
+technicalProgramOfferingModuleSchema.set('toObject', {
+    virtuals: true
+});
 
 module.exports = mongoose.model('TechnicalProgramOfferingModule', technicalProgramOfferingModuleSchema);
