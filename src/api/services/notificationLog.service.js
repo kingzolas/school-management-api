@@ -159,6 +159,10 @@ class NotificationLogService {
       .lean();
 
     const existing = logs.find((log) => {
+      if (String(log?.status || '').toLowerCase() === 'cancelled') {
+        return false;
+      }
+
       const resolved = this.resolveRecipient(log);
 
       if (channel && log?.delivery_channel && String(log.delivery_channel) !== String(channel)) {
@@ -468,6 +472,8 @@ class NotificationLogService {
 
   async markCancelled(logId, {
     cancelledAt = new Date(),
+    cancelledByAction = null,
+    cancelledReason = null,
     errorMessage = null,
     errorCode = null,
     errorHttpStatus = null,
@@ -483,6 +489,9 @@ class NotificationLogService {
     return this.updateLogById(logId, {
       status: 'cancelled',
       cancelled_at: cancelledAt,
+      cancelled_by_action: cancelledByAction,
+      cancelled_reason: cancelledReason,
+      processing_started_at: null,
       sent_at: null,
       error_message: errorMessage,
       error_code: errorCode,

@@ -235,6 +235,78 @@ class NotificationService {
     return payload;
   }
 
+  _isAcceptedGenericTransportStatus(status) {
+    return new Set(['accepted', 'sent', 'delivered', 'read']).has(String(status || '').toLowerCase());
+  }
+
+  _isAcceptedLegacyTransportStatus(status) {
+    return new Set(['accepted_by_evolution', 'server_ack', 'delivered', 'read']).has(String(status || '').toLowerCase());
+  }
+
+  async _getLatestTransportState(log = {}) {
+    const genericTransport = await NotificationTransportLog.findOne({
+      notification_log_id: log._id,
+    }).sort({ status_rank: -1, last_event_at: -1 }).lean();
+
+    const legacyTransport = !genericTransport
+      ? await WhatsappTransportLog.findOne({
+          school_id: log.school_id,
+          'metadata.notification_log_id': log._id,
+        }).sort({ status_rank: -1, last_event_at: -1 }).lean()
+      : null;
+
+    const hasAcceptedTransport =
+      this._isAcceptedGenericTransportStatus(genericTransport?.canonical_status) ||
+      this._isAcceptedLegacyTransportStatus(legacyTransport?.status);
+
+    const acceptedAt =
+      genericTransport?.accepted_at ||
+      genericTransport?.sent_at ||
+      genericTransport?.last_event_at ||
+      legacyTransport?.accepted_at ||
+      legacyTransport?.server_ack_at ||
+      legacyTransport?.last_event_at ||
+      null;
+
+    return {
+      genericTransport,
+      legacyTransport,
+      hasAcceptedTransport,
+      acceptedAt,
+    };
+  }
+
+  _buildQueueMaintenanceItem({
+    log = {},
+    code,
+    status,
+    userMessage = null,
+    technicalMessage = null,
+    retryable = false,
+  } = {}) {
+    const recipient = notificationLogService.resolveRecipient(log);
+    return this._buildActionOutcome({
+      invoice: {
+        _id: log.invoice_id,
+        student: { fullName: recipient.student_name || log.student_name || null },
+        tutor: { fullName: recipient.recipient_name || recipient.tutor_name || log.tutor_name || null },
+      },
+      recipient,
+      selection: {
+        channel: log.delivery_channel,
+        provider: log.provider,
+        target_phone: recipient.target_phone,
+        target_email: recipient.target_email,
+      },
+      log,
+      code,
+      status,
+      technicalMessage,
+      retryable,
+      extra: userMessage ? { user_message: userMessage } : {},
+    });
+  }
+
   async _auditSkippedOutcome({
     invoice = null,
     recipient = {},
@@ -940,6 +1012,135 @@ class NotificationService {
     }
 
     return buildBatchResponse(batch);
+  }
+
+  async clearPendingQueue(schoolId, options = {}) {
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - (this.processingStaleTimeoutMinutes * 60 * 1000));
+    const cancellationAction = normalizeString(options.cancelledByAction) || 'queue_clear';
+    const cancellationReason =
+      normalizeString(options.cancelledReason) || 'manual_queue_reset_before_email_rollout';
+
+    const pendingLogs = await NotificationLog.find({
+      school_id: schoolId,
+      status: { $in: ['queued', 'processing'] },
+    }).sort({ createdAt: 1 });
+
+    const response = {
+      success: true,
+      has_failures: false,
+      total_analisado: pendingLogs.length,
+      total_elegivel: 0,
+      total_queued: 0,
+      total_skipped: 0,
+      total_failed: 0,
+      total_cancelled: 0,
+      total_already_processed: 0,
+      total_untouched: 0,
+      breakdown: {},
+      items: [],
+    };
+
+    for (const logDoc of pendingLogs) {
+      const log = logDoc?.toObject ? logDoc.toObject() : logDoc;
+
+      if (log.status === 'queued') {
+        const cancelledLog = await notificationLogService.markCancelled(log._id, {
+          cancelledAt: now,
+          cancelledByAction: cancellationAction,
+          cancelledReason: cancellationReason,
+          errorMessage: 'Item removido manualmente da fila antes da virada operacional para e-mail.',
+          errorCode: 'QUEUE_CLEAR_CANCELLED',
+          errorHttpStatus: 200,
+        });
+
+        response.total_cancelled += 1;
+        response.breakdown.QUEUE_CLEAR_CANCELLED = (response.breakdown.QUEUE_CLEAR_CANCELLED || 0) + 1;
+        response.items.push(this._buildQueueMaintenanceItem({
+          log: cancelledLog,
+          code: 'QUEUE_CLEAR_CANCELLED',
+          status: 'cancelled',
+        }));
+        this._emitNotificationUpdated(cancelledLog);
+        continue;
+      }
+
+      const transportState = await this._getLatestTransportState(log);
+
+      if (transportState.hasAcceptedTransport) {
+        const sentLog = await notificationLogService.markSent(log._id, {
+          sentAt: transportState.acceptedAt || now,
+          transportLog: transportState.genericTransport || transportState.legacyTransport || null,
+        });
+
+        response.total_already_processed += 1;
+        response.breakdown.QUEUE_CLEAR_ALREADY_PROCESSED =
+          (response.breakdown.QUEUE_CLEAR_ALREADY_PROCESSED || 0) + 1;
+        response.items.push(this._buildQueueMaintenanceItem({
+          log: sentLog,
+          code: 'QUEUE_CLEAR_ALREADY_PROCESSED',
+          status: 'sent',
+        }));
+        this._emitNotificationUpdated(sentLog);
+        continue;
+      }
+
+      const referenceTimestamp =
+        normalizeDate(log.processing_started_at) ||
+        normalizeDate(log.updatedAt) ||
+        normalizeDate(log.createdAt) ||
+        now;
+
+      const isStale = referenceTimestamp <= cutoff;
+
+      if (isStale) {
+        const cancelledLog = await notificationLogService.markCancelled(log._id, {
+          cancelledAt: now,
+          cancelledByAction: cancellationAction,
+          cancelledReason: cancellationReason,
+          errorMessage: 'Processamento preso removido manualmente da fila antes da virada operacional para e-mail.',
+          errorCode: 'QUEUE_CLEAR_CANCELLED',
+          errorHttpStatus: 200,
+          transportLog: transportState.genericTransport || null,
+        });
+
+        response.total_cancelled += 1;
+        response.breakdown.QUEUE_CLEAR_CANCELLED = (response.breakdown.QUEUE_CLEAR_CANCELLED || 0) + 1;
+        response.items.push(this._buildQueueMaintenanceItem({
+          log: cancelledLog,
+          code: 'QUEUE_CLEAR_CANCELLED',
+          status: 'cancelled',
+        }));
+        this._emitNotificationUpdated(cancelledLog);
+        continue;
+      }
+
+      response.total_untouched += 1;
+      response.breakdown.QUEUE_CLEAR_ACTIVE_PROCESSING_UNTOUCHED =
+        (response.breakdown.QUEUE_CLEAR_ACTIVE_PROCESSING_UNTOUCHED || 0) + 1;
+      response.items.push(this._buildQueueMaintenanceItem({
+        log,
+        code: 'QUEUE_CLEAR_ACTIVE_PROCESSING_UNTOUCHED',
+        status: 'processing',
+      }));
+    }
+
+    if (response.total_cancelled > 0 && response.total_untouched > 0) {
+      response.user_message =
+        `${response.total_cancelled} itens pendentes foram removidos da fila. ` +
+        `${response.total_untouched} itens em processamento ativo foram preservados por segurança. ` +
+        'O histórico de envios foi preservado.';
+    } else if (response.total_cancelled > 0) {
+      response.user_message = `${response.total_cancelled} itens pendentes foram removidos da fila. O histórico de envios foi preservado.`;
+    } else if (response.total_untouched > 0) {
+      response.user_message =
+        'Nenhum item pendente foi cancelado automaticamente porque ainda existem registros em processamento ativo.';
+    } else {
+      response.user_message = 'Não há itens pendentes na fila para limpar.';
+    }
+
+    response.message = response.user_message;
+    return response;
   }
 
   async _recoverStaleProcessingLogs(options = {}) {

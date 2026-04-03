@@ -20,6 +20,7 @@ router.get('/logs', NotificationController.getLogs);
 
 // Rota de reenvio em massa
 router.post('/retry-all', NotificationController.retryAllFailed);
+router.post('/clear-queue', NotificationController.clearQueue);
 
 router.post('/trigger', NotificationController.triggerManualRun);
 

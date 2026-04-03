@@ -13,19 +13,31 @@ const CHANNEL_DEFAULTS = Object.freeze({
 });
 
 class NotificationChannelSelectorService {
+  _toPlainObject(value) {
+    if (!value || typeof value !== 'object') return {};
+    if (typeof value.toObject === 'function') return value.toObject();
+    if (value._doc && typeof value._doc === 'object') return { ...value._doc };
+    return { ...value };
+  }
+
   _normalizeConfig(config = {}) {
-    const primaryChannel = normalizeString(config.primaryChannel) || 'whatsapp';
-    const fallbackChannel = normalizeString(config.fallbackChannel) || null;
-    const allowFallback = config.allowFallback === true;
+    const plainConfig = this._toPlainObject(config);
+    const plainChannels = this._toPlainObject(plainConfig.channels);
+    const plainWhatsapp = this._toPlainObject(plainChannels.whatsapp);
+    const plainEmail = this._toPlainObject(plainChannels.email);
+
+    const primaryChannel = normalizeString(plainConfig.primaryChannel) || 'whatsapp';
+    const fallbackChannel = normalizeString(plainConfig.fallbackChannel) || null;
+    const allowFallback = plainConfig.allowFallback === true;
 
     const channels = {
       whatsapp: {
         ...CHANNEL_DEFAULTS.whatsapp,
-        ...(config.channels?.whatsapp || {}),
+        ...plainWhatsapp,
       },
       email: {
         ...CHANNEL_DEFAULTS.email,
-        ...(config.channels?.email || {}),
+        ...plainEmail,
       },
     };
 

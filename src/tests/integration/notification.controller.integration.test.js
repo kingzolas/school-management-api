@@ -127,3 +127,39 @@ test('NotificationController returns clear payload for manual enqueue result', a
     require('../../api/models/invoice.model').findOne = originalFindOne;
   }
 });
+
+test('NotificationController returns clear payload for queue clear action', async () => {
+  const originalClearQueue = NotificationService.clearPendingQueue;
+
+  NotificationService.clearPendingQueue = async () => ({
+    success: true,
+    total_analisado: 5,
+    total_cancelled: 3,
+    total_already_processed: 1,
+    total_untouched: 1,
+    total_queued: 0,
+    total_skipped: 0,
+    total_failed: 0,
+    breakdown: {
+      QUEUE_CLEAR_CANCELLED: 3,
+      QUEUE_CLEAR_ACTIVE_PROCESSING_UNTOUCHED: 1,
+    },
+    items: [],
+    user_message:
+      '3 itens pendentes foram removidos da fila. O histórico de envios foi preservado.',
+  });
+
+  const req = {
+    user: { schoolId: 'school_1' },
+  };
+  const res = createResponse();
+
+  try {
+    await controller.clearQueue(req, res, (error) => { throw error; });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.payload.total_cancelled, 3);
+    assert.equal(res.payload.total_untouched, 1);
+  } finally {
+    NotificationService.clearPendingQueue = originalClearQueue;
+  }
+});

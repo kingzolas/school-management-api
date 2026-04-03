@@ -415,6 +415,8 @@ const NotificationLogSchema = new mongoose.Schema(
     processing_started_at: { type: Date, default: null },
     sent_at: { type: Date, default: null },
     cancelled_at: { type: Date, default: null },
+    cancelled_by_action: { type: String, default: null, index: true },
+    cancelled_reason: { type: String, default: null },
     attempts: { type: Number, default: 0 },
 
     last_transport_log_id: {

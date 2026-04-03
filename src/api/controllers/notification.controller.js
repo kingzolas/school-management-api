@@ -59,6 +59,24 @@ class NotificationController {
   }
 
   /**
+   * POST /clear-queue
+   */
+  async clearQueue(req, res, next) {
+    try {
+      const schoolId = req.user.schoolId || req.user.school_id;
+      const result = await NotificationService.clearPendingQueue(schoolId, {
+        cancelledByAction: 'queue_clear',
+        cancelledReason: 'manual_queue_reset_before_email_rollout',
+      });
+
+      res.status(200).json(result);
+    } catch (error) {
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
+    }
+  }
+
+  /**
    * GET /stats
    */
   async getDashboardStats(req, res, next) {
