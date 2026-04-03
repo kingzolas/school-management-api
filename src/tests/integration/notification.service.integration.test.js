@@ -450,6 +450,11 @@ test('NotificationService enqueue/processQueue and compatibility methods work wi
       value: () => createQuery([h.invoice]),
     },
     {
+      target: Invoice,
+      key: 'findOne',
+      value: () => createQuery({ updatedAt: h.now }),
+    },
+    {
       target: School,
       key: 'findById',
       value: () => createQuery(h.school),

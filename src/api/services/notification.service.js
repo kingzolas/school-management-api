@@ -54,6 +54,8 @@ class NotificationService {
     this.processingStaleTimeoutMinutes = Number(process.env.NOTIFICATION_PROCESSING_STALE_MINUTES || 60);
     this.delayMinMs = Number(process.env.NOTIFICATION_PROCESS_DELAY_MIN_MS || (process.env.NODE_ENV === 'test' ? 0 : 15000));
     this.delayMaxMs = Number(process.env.NOTIFICATION_PROCESS_DELAY_MAX_MS || (process.env.NODE_ENV === 'test' ? 0 : 30000));
+    this.forecastCacheTtlMs = Number(process.env.NOTIFICATION_FORECAST_CACHE_TTL_MS || (process.env.NODE_ENV === 'test' ? 0 : 120000));
+    this.forecastCache = new Map();
 
     this.dispatchService = new NotificationDispatchService();
     this.dispatchService.registerTransport('whatsapp', new WhatsappTransport());
@@ -66,6 +68,94 @@ class NotificationService {
 
   _emitNotificationUpdated(log) {
     if (appEmitter?.emit) appEmitter.emit('notification:updated', log);
+  }
+
+  _clonePlain(value) {
+    if (value === null || value === undefined) return value;
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  _buildForecastConfigFingerprint(config = {}) {
+    const plain = config?.toObject ? config.toObject() : config;
+    return JSON.stringify({
+      updatedAt: plain?.updatedAt ? new Date(plain.updatedAt).toISOString() : null,
+      isActive: plain?.isActive === true,
+      primaryChannel: plain?.primaryChannel || null,
+      allowFallback: plain?.allowFallback === true,
+      fallbackChannel: plain?.fallbackChannel || null,
+      windowStart: plain?.windowStart || null,
+      windowEnd: plain?.windowEnd || null,
+      enableNewInvoice: plain?.enableNewInvoice !== false,
+      enableReminder: plain?.enableReminder !== false,
+      enableDueToday: plain?.enableDueToday !== false,
+      enableOverdue: plain?.enableOverdue !== false,
+      channels: {
+        whatsapp: {
+          enabled: plain?.channels?.whatsapp?.enabled === true,
+          provider: plain?.channels?.whatsapp?.provider || null,
+        },
+        email: {
+          enabled: plain?.channels?.email?.enabled === true,
+          provider: plain?.channels?.email?.provider || null,
+          attachBoletoPdf: plain?.channels?.email?.attachBoletoPdf === true,
+          includePaymentLink: plain?.channels?.email?.includePaymentLink !== false,
+          includePixCode: plain?.channels?.email?.includePixCode !== false,
+        },
+      },
+    });
+  }
+
+  _buildForecastCacheKey({
+    schoolId,
+    targetDateKey,
+    configFingerprint,
+    latestInvoiceUpdatedAt = null,
+  }) {
+    return [
+      String(schoolId || '').trim(),
+      String(targetDateKey || '').trim(),
+      configFingerprint,
+      latestInvoiceUpdatedAt ? new Date(latestInvoiceUpdatedAt).toISOString() : 'no-invoice-update',
+    ].join('|');
+  }
+
+  _getCachedForecast(cacheKey) {
+    if (!cacheKey || this.forecastCacheTtlMs <= 0) return null;
+
+    const entry = this.forecastCache.get(cacheKey);
+    if (!entry) return null;
+
+    if (Date.now() >= entry.expiresAt) {
+      this.forecastCache.delete(cacheKey);
+      return null;
+    }
+
+    return this._clonePlain(entry.payload);
+  }
+
+  _setCachedForecast(cacheKey, payload) {
+    if (!cacheKey || this.forecastCacheTtlMs <= 0) return payload;
+
+    this.forecastCache.set(cacheKey, {
+      payload: this._clonePlain(payload),
+      expiresAt: Date.now() + this.forecastCacheTtlMs,
+    });
+
+    return payload;
+  }
+
+  invalidateForecastCache({ schoolId = null } = {}) {
+    if (!schoolId) {
+      this.forecastCache.clear();
+      return;
+    }
+
+    const normalizedSchoolId = String(schoolId);
+    [...this.forecastCache.keys()].forEach((key) => {
+      if (key.startsWith(`${normalizedSchoolId}|`)) {
+        this.forecastCache.delete(key);
+      }
+    });
   }
 
   _parseLocalDateInput(dateValue) {
@@ -964,6 +1054,12 @@ class NotificationService {
       }
     }
 
+    if (options.schoolId) {
+      this.invalidateForecastCache({ schoolId: options.schoolId });
+    } else if (activeConfigs.length > 0) {
+      this.invalidateForecastCache();
+    }
+
     return batch ? buildBatchResponse(batch) : undefined;
   }
 
@@ -1011,6 +1107,7 @@ class NotificationService {
       });
     }
 
+    this.invalidateForecastCache({ schoolId });
     return buildBatchResponse(batch);
   }
 
@@ -1140,6 +1237,7 @@ class NotificationService {
     }
 
     response.message = response.user_message;
+    this.invalidateForecastCache({ schoolId });
     return response;
   }
 
@@ -1404,19 +1502,33 @@ class NotificationService {
     }
   }
 
-  async getLogs(schoolId, status, page = 1, limit = 20, dateStr) {
+  async getLogs(schoolId, status, page = 1, limit = 20, dateStr, options = {}) {
+    const normalizedStatus = normalizeString(status);
+    const normalizedScope = normalizeString(options.scope) ||
+      ((normalizedStatus === 'queued' || normalizedStatus === 'processing') ? 'operational' : 'selected_day');
+    const isOperationalScope =
+      normalizedScope === 'operational' &&
+      (normalizedStatus === 'queued' || normalizedStatus === 'processing');
     const { startOfDay, endOfDay } = this._getDayRange(dateStr);
-    const query = {
-      school_id: schoolId,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-    };
-    if (status && status !== 'Todos') query.status = status;
+    const query = { school_id: schoolId };
+
+    if (!isOperationalScope) {
+      query.createdAt = { $gte: startOfDay, $lte: endOfDay };
+    }
+
+    if (normalizedStatus && normalizedStatus !== 'Todos') query.status = normalizedStatus;
 
     const safePage = Math.max(parseInt(page, 10) || 1, 1);
     const shouldPaginate = limit && limit !== 'all' && Number(limit) > 0;
     const safeLimit = shouldPaginate ? Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100) : null;
 
-    let dbQuery = NotificationLog.find(query).sort({ createdAt: -1 });
+    const sort = isOperationalScope
+      ? (normalizedStatus === 'processing'
+          ? { processing_started_at: 1, createdAt: 1 }
+          : { scheduled_for: 1, createdAt: 1 })
+      : { createdAt: -1 };
+
+    let dbQuery = NotificationLog.find(query).sort(sort);
     if (shouldPaginate) dbQuery = dbQuery.skip((safePage - 1) * safeLimit).limit(safeLimit);
 
     const [logs, total] = await Promise.all([
@@ -1440,35 +1552,52 @@ class NotificationService {
           error_title: errorDescriptor?.title || null,
           error_user_message: errorDescriptor?.user_message || null,
           retryable: log.outcome_retryable ?? errorDescriptor?.retryable ?? null,
+          scope: isOperationalScope ? 'operational' : 'selected_day',
         };
       }),
       total,
       pages: shouldPaginate ? Math.max(Math.ceil(total / safeLimit), 1) : 1,
+      scope: isOperationalScope ? 'operational' : 'selected_day',
     };
   }
 
   async getDailyStats(schoolId, dateStr) {
     const { startOfDay, endOfDay } = this._getDayRange(dateStr);
-    const logs = await NotificationLog.find({
-      school_id: schoolId,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-    }).select('status delivery_channel provider').lean();
+    const [logs, operationalLogs] = await Promise.all([
+      NotificationLog.find({
+        school_id: schoolId,
+        createdAt: { $gte: startOfDay, $lte: endOfDay },
+      }).select('status delivery_channel provider').lean(),
+      NotificationLog.find({
+        school_id: schoolId,
+        status: { $in: ['queued', 'processing'] },
+      }).select('status delivery_channel provider').lean(),
+    ]);
 
     const result = {
       queued: 0,
       processing: 0,
+      queued_today: 0,
+      processing_today: 0,
       sent: 0,
       failed: 0,
       cancelled: 0,
       skipped: 0,
       total_today: 0,
+      queue_scope: 'current',
+      history_scope: 'selected_day',
       by_channel: {},
       by_provider: {},
       by_channel_status: {},
+      operational_by_channel_status: {},
     };
 
     logs.forEach((log) => {
-      if (result[log.status] !== undefined) result[log.status] += 1;
+      if (log.status === 'queued') result.queued_today += 1;
+      if (log.status === 'processing') result.processing_today += 1;
+      if (['sent', 'failed', 'cancelled', 'skipped'].includes(log.status)) {
+        result[log.status] += 1;
+      }
       result.total_today += 1;
 
       const channel = log.delivery_channel || 'whatsapp';
@@ -1492,6 +1621,25 @@ class NotificationService {
       result.by_channel_status[channel].total += 1;
     });
 
+    operationalLogs.forEach((log) => {
+      if (log.status === 'queued') result.queued += 1;
+      if (log.status === 'processing') result.processing += 1;
+
+      const channel = log.delivery_channel || 'whatsapp';
+      if (!result.operational_by_channel_status[channel]) {
+        result.operational_by_channel_status[channel] = {
+          queued: 0,
+          processing: 0,
+          total: 0,
+        };
+      }
+
+      if (log.status === 'queued' || log.status === 'processing') {
+        result.operational_by_channel_status[channel][log.status] += 1;
+        result.operational_by_channel_status[channel].total += 1;
+      }
+    });
+
     return result;
   }
 
@@ -1503,6 +1651,24 @@ class NotificationService {
     const limitPassado = new Date(simData); limitPassado.setDate(limitPassado.getDate() - 60); limitPassado.setHours(0, 0, 0, 0);
     const futuroLimit = new Date(simData); futuroLimit.setDate(futuroLimit.getDate() + 5); futuroLimit.setHours(23, 59, 59, 999);
     const config = await this.getConfig(schoolId);
+    const latestInvoice = await Invoice.findOne({ school_id: schoolId })
+      .sort({ updatedAt: -1 })
+      .select('updatedAt')
+      .lean();
+    const targetDateKey = this._getBusinessDayContext(simData).businessDayKey;
+    const cacheKey = this._buildForecastCacheKey({
+      schoolId,
+      targetDateKey,
+      configFingerprint: this._buildForecastConfigFingerprint(config),
+      latestInvoiceUpdatedAt: latestInvoice?.updatedAt || null,
+    });
+    const cachedForecast = this._getCachedForecast(cacheKey);
+    if (cachedForecast) {
+      return {
+        ...cachedForecast,
+        cache_hit: true,
+      };
+    }
 
     const invoices = await Invoice.find({
       school_id: schoolId,
@@ -1522,6 +1688,8 @@ class NotificationService {
       primary_channel_preview: config.primaryChannel || 'whatsapp',
       fallback_enabled: config.allowFallback === true,
       skipped_breakdown: {},
+      cache_hit: false,
+      generated_at: new Date(),
     };
 
     for (const invoice of invoices) {
@@ -1547,6 +1715,7 @@ class NotificationService {
         }
       }
 
+    this._setCachedForecast(cacheKey, forecast);
     return forecast;
   }
 
@@ -1686,11 +1855,13 @@ class NotificationService {
     delete payload.updatedAt;
     delete payload.__v;
 
-    return NotificationConfig.findOneAndUpdate(
+    const savedConfig = await NotificationConfig.findOneAndUpdate(
       { school_id: schoolId },
       payload,
       { new: true, upsert: true, runValidators: true }
     );
+    this.invalidateForecastCache({ schoolId });
+    return savedConfig;
   }
 }
 

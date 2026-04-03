@@ -24,14 +24,15 @@ class NotificationController {
   async getLogs(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
-      const { status, page, limit, date } = req.query;
+      const { status, page, limit, date, scope } = req.query;
 
       const result = await NotificationService.getLogs(
         schoolId,
         status,
         page,
         limit,
-        date
+        date,
+        { scope }
       );
 
       res.status(200).json(result);

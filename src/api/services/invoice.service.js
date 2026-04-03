@@ -155,6 +155,7 @@ class InvoiceService {
 
       await newInvoice.save();
       financeRuntime.invalidateSchool(schoolId);
+      NotificationService.invalidateForecastCache({ schoolId });
 
       try {
         const isAutoEligible = NotificationService.isEligibleForSending(newInvoice.dueDate);
@@ -482,6 +483,7 @@ class InvoiceService {
 
     invoice.status = 'canceled';
     await invoice.save();
+    NotificationService.invalidateForecastCache({ schoolId });
 
     if (invoice.tutor) {
       try {
@@ -573,6 +575,7 @@ class InvoiceService {
 
       await invoice.save();
       financeRuntime.invalidateSchool(invoice.school_id);
+      NotificationService.invalidateForecastCache({ schoolId: invoice.school_id });
 
       console.log(`✅ [DB UPDATE ${hookRunId}] Fatura ${invoice._id} atualizada`, {
         oldStatus,
@@ -980,6 +983,7 @@ class InvoiceService {
 
       if (stats.updatedCount > 0) {
         financeRuntime.invalidateSchool(schoolId);
+        NotificationService.invalidateForecastCache({ schoolId });
       }
 
       console.log(`✅ [${syncRunId}] Sync finalizado`, {

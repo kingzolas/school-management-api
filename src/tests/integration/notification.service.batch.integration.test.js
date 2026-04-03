@@ -181,6 +181,11 @@ test('queueMonthInvoicesManually returns queued/skipped breakdown for mixed invo
       key: 'find',
       value: () => createQuery(invoices),
     },
+    {
+      target: Invoice,
+      key: 'findOne',
+      value: () => createQuery({ updatedAt: new Date('2026-04-03T11:00:00.000Z') }),
+    },
   ]);
 
   const service = new NotificationService();
@@ -571,6 +576,11 @@ test('getForecast is channel-aware for email and excludes invoices without valid
       key: 'find',
       value: () => createQuery(invoices),
     },
+    {
+      target: Invoice,
+      key: 'findOne',
+      value: () => createQuery({ updatedAt: new Date('2026-04-03T11:00:00.000Z') }),
+    },
   ]);
 
   const service = new NotificationService();
@@ -653,6 +663,152 @@ test('getLogs and getDailyStats expose skipped records with operational visibili
     assert.equal(statsResult.skipped, 1);
     assert.equal(statsResult.by_channel.email, 1);
     assert.equal(statsResult.by_channel_status.email.skipped, 1);
+  } finally {
+    restore();
+  }
+});
+
+test('getLogs and getDailyStats separate current queue from selected-day history', async () => {
+  const queuedOldLog = {
+    _id: 'log_queue_old',
+    school_id: 'school_1',
+    invoice_id: 'inv_queue_old',
+    status: 'queued',
+    delivery_channel: 'email',
+    provider: 'gmail',
+    createdAt: new Date('2026-04-02T12:00:00.000Z'),
+    updatedAt: new Date('2026-04-03T13:00:00.000Z'),
+    scheduled_for: new Date('2026-04-03T13:00:00.000Z'),
+    recipient_role: 'tutor',
+    recipient_name: 'Responsavel Queue',
+    student_name: 'Aluno Queue',
+    tutor_name: 'Responsavel Queue',
+    target_email: 'queue@example.com',
+    target_email_normalized: 'queue@example.com',
+  };
+
+  const sentTodayLog = {
+    _id: 'log_sent_today',
+    school_id: 'school_1',
+    invoice_id: 'inv_sent_today',
+    status: 'sent',
+    delivery_channel: 'email',
+    provider: 'gmail',
+    createdAt: new Date('2026-04-03T12:00:00.000Z'),
+    updatedAt: new Date('2026-04-03T12:05:00.000Z'),
+    recipient_role: 'tutor',
+    recipient_name: 'Responsavel Sent',
+    student_name: 'Aluno Sent',
+    tutor_name: 'Responsavel Sent',
+    target_email: 'sent@example.com',
+    target_email_normalized: 'sent@example.com',
+  };
+
+  const restore = patchMethods([
+    {
+      target: NotificationLog,
+      key: 'find',
+      value: (filter = {}) => {
+        if (filter?.status?.$in) {
+          return createQuery([queuedOldLog]);
+        }
+
+        if (filter?.status === 'queued' && !filter?.createdAt) {
+          return createQuery([queuedOldLog]);
+        }
+
+        if (filter?.createdAt) {
+          return createQuery([sentTodayLog]);
+        }
+
+        return createQuery([]);
+      },
+    },
+    {
+      target: NotificationLog,
+      key: 'countDocuments',
+      value: async (filter = {}) => {
+        if (filter?.status === 'queued' && !filter?.createdAt) return 1;
+        if (filter?.createdAt) return 1;
+        return 0;
+      },
+    },
+  ]);
+
+  const service = new NotificationService();
+
+  try {
+    const queueLogs = await service.getLogs('school_1', 'queued', 1, 20, '2026-04-03');
+    const stats = await service.getDailyStats('school_1', '2026-04-03');
+
+    assert.equal(queueLogs.scope, 'operational');
+    assert.equal(queueLogs.total, 1);
+    assert.equal(queueLogs.logs[0].invoice_id, 'inv_queue_old');
+
+    assert.equal(stats.queued, 1);
+    assert.equal(stats.processing, 0);
+    assert.equal(stats.queued_today, 0);
+    assert.equal(stats.processing_today, 0);
+    assert.equal(stats.sent, 1);
+    assert.equal(stats.total_today, 1);
+    assert.equal(stats.queue_scope, 'current');
+    assert.equal(stats.history_scope, 'selected_day');
+  } finally {
+    restore();
+  }
+});
+
+test('getForecast caches the heavy simulation and invalidates explicitly', async () => {
+  const invoices = [createInvoice({ id: 'forecast_cache_valid' })];
+  const config = createConfig({
+    updatedAt: new Date('2026-04-03T10:00:00.000Z'),
+  });
+  let forecastQueryCount = 0;
+
+  const restore = patchMethods([
+    {
+      target: billingEligibilityService,
+      key: 'isInvoiceOnHold',
+      value: async () => ({ onHold: false, compensation: null }),
+    },
+    {
+      target: NotificationConfig,
+      key: 'findOne',
+      value: () => createQuery(config),
+    },
+    {
+      target: NotificationConfig,
+      key: 'create',
+      value: async () => config,
+    },
+    {
+      target: Invoice,
+      key: 'find',
+      value: () => {
+        forecastQueryCount += 1;
+        return createQuery(invoices);
+      },
+    },
+    {
+      target: Invoice,
+      key: 'findOne',
+      value: () => createQuery({ updatedAt: new Date('2026-04-03T11:00:00.000Z') }),
+    },
+  ]);
+
+  const service = new NotificationService();
+  service.forecastCacheTtlMs = 60000;
+
+  try {
+    const first = await service.getForecast('school_1', '2026-04-07');
+    const second = await service.getForecast('school_1', '2026-04-07');
+    service.invalidateForecastCache({ schoolId: 'school_1' });
+    const third = await service.getForecast('school_1', '2026-04-07');
+
+    assert.equal(first.cache_hit, false);
+    assert.equal(second.cache_hit, true);
+    assert.equal(third.cache_hit, false);
+    assert.equal(forecastQueryCount, 2);
   } finally {
     restore();
   }
