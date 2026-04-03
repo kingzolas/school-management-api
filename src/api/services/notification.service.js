@@ -1,71 +1,71 @@
 const NotificationLog = require('../models/notification-log.model');
+const NotificationTransportLog = require('../models/notification_transport_log.model');
 const Invoice = require('../models/invoice.model');
 const School = require('../models/school.model');
 const NotificationConfig = require('../models/notification-config.model');
 const WhatsappTransportLog = require('../models/whatsapp_transport_log.model');
-const whatsappService = require('./whatsapp.service');
-const cron = require('node-cron');
-const mongoose = require('mongoose');
-const { v4: uuidv4 } = require('uuid');
-
-// Serviço de compensação/HOLD
-const invoiceCompensationService = require('./invoiceCompensation.service');
+const billingEligibilityService = require('./billingEligibility.service');
+const billingMessageComposerService = require('./billingMessageComposer.service');
+const notificationRecipientResolverService = require('./notificationRecipientResolver.service');
+const notificationChannelSelectorService = require('./notificationChannelSelector.service');
+const notificationLogService = require('./notificationLog.service');
+const NotificationDispatchService = require('./notificationDispatch.service');
+const WhatsappTransport = require('./transports/whatsapp.transport');
+const EmailTransport = require('./transports/email.transport');
+const { DEFAULT_TIME_ZONE, getBusinessDayRange, getTimeZoneParts } = require('../utils/timeContext');
+const { getEmailIssueCode } = require('../utils/contact.util');
+const { extractDigitableLineFromInvoice } = require('../utils/boleto.util');
 const {
-  DEFAULT_TIME_ZONE,
-  getBusinessDayRange,
-  normalizeWhatsappPhone,
-  getTimeZoneParts,
-} = require('../utils/timeContext');
+  buildOutcomePayload,
+  getOutcomeDescriptor,
+  mapLegacyReasonCode,
+  mapDispatchErrorCode,
+  createBatchAccumulator,
+  pushBatchItem,
+  buildBatchResponse,
+} = require('../utils/notificationOutcome.util');
 
-// --- IMPORTAÇÃO SEGURA DO EVENT EMITTER ---
 let appEmitter;
 try {
   appEmitter = require('../../config/eventEmitter');
-} catch (e) {
+} catch (error) {
   try {
     appEmitter = require('../../loaders/eventEmitter');
-  } catch (e2) {
-    console.warn('⚠️ appEmitter não encontrado.');
+  } catch {
+    appEmitter = null;
   }
 }
 
-// Texto padrão para evitar cobranças indevidas por atraso de liquidação bancária
-const AVISO_LIQUIDACAO =
-  '\n\n_Obs: Se você já realizou o pagamento, por favor desconsidere esta mensagem. O banco pode levar até 3 dias úteis para processar a baixa em nosso sistema._';
+function normalizeString(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+}
 
-const TEMPLATES_FUTURO = [
-  `{saudacao} {nome}! Tudo bem? 😊\nPassando pra deixar o boleto da *{escola}* ({descricao}) já liberado pra você. Ele vence dia {vencimento}, mas sabemos que muita gente gosta de se organizar logo no início do mês!\nValor: R$ {valor}.${AVISO_LIQUIDACAO}`,
-  `{saudacao}, {nome}! A mensalidade de *{descricao}* já está disponível no nosso sistema. 📚 Pra facilitar sua rotina, segue abaixo o código para pagamento (vence dia {vencimento}).${AVISO_LIQUIDACAO}`,
-  `Oi {nome}, {saudacao}! A *{escola}* está enviando a fatura de *{descricao}*. Fique à vontade para pagar quando for melhor para você até o dia {vencimento}.${AVISO_LIQUIDACAO}`,
-  `{saudacao}! Como estão as coisas por aí, {nome}? Seu boleto da *{escola}* ({descricao}) já foi gerado. Seguem os dados abaixo para sua organização financeira. 🚀${AVISO_LIQUIDACAO}`
-];
-
-const TEMPLATES_HOJE = [
-  `{saudacao} {nome}! Um lembrete rápido da *{escola}*: a mensalidade de *{descricao}* vence *HOJE*! 🗓️ Deixei o link e o código aqui embaixo pra facilitar pra você.${AVISO_LIQUIDACAO}`,
-  `Oi {nome}! Hoje é o dia do vencimento da sua fatura da *{escola}* (R$ {valor}). 🏫 Qualquer dúvida, estamos à disposição por aqui mesmo!${AVISO_LIQUIDACAO}`,
-  `{saudacao}, {nome}! Passando pra lembrar que a fatura de *{descricao}* vence hoje. Para evitar juros amanhã, utilize os dados abaixo para pagamento rápido. ✨${AVISO_LIQUIDACAO}`
-];
-
-const TEMPLATES_ATRASO = [
-  `{saudacao} {nome}, tudo bem? Notamos que a fatura de *{descricao}* da *{escola}* consta em aberto há {dias_atraso} dia(s). Aconteceu algum imprevisto? Segue o link atualizado caso precise. 🙏${AVISO_LIQUIDACAO}`,
-  `Oi {nome}! A mensalidade da *{escola}* ({descricao}) acabou passando do vencimento no dia {vencimento} (estamos com {dias_atraso} dias de atraso). Para te ajudar a regularizar, geramos a linha digitável abaixo. Qualquer dificuldade, me chama!${AVISO_LIQUIDACAO}`,
-  `{saudacao}! A *{escola}* informa que não identificamos o pagamento referente a *{descricao}*. Para evitar mais acréscimos (atraso de {dias_atraso} dias), o link abaixo já está atualizado. 🤝${AVISO_LIQUIDACAO}`
-];
+function normalizeDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
 
 class NotificationService {
   constructor() {
     this.isProcessing = false;
     this.businessTimeZone = DEFAULT_TIME_ZONE;
-    this.processingStaleTimeoutMinutes = 60;
-    this.deliveryChannel = 'whatsapp';
+    this.processingStaleTimeoutMinutes = Number(process.env.NOTIFICATION_PROCESSING_STALE_MINUTES || 60);
+    this.delayMinMs = Number(process.env.NOTIFICATION_PROCESS_DELAY_MIN_MS || (process.env.NODE_ENV === 'test' ? 0 : 15000));
+    this.delayMaxMs = Number(process.env.NOTIFICATION_PROCESS_DELAY_MAX_MS || (process.env.NODE_ENV === 'test' ? 0 : 30000));
+
+    this.dispatchService = new NotificationDispatchService();
+    this.dispatchService.registerTransport('whatsapp', new WhatsappTransport());
+    this.dispatchService.registerTransport('email', new EmailTransport());
   }
 
-  // ✅ SAUDAÇÃO DINÂMICA
-  _getSaudacao() {
-    const h = new Date().getHours();
-    if (h >= 5 && h < 12) return 'Bom dia';
-    if (h >= 12 && h < 18) return 'Boa tarde';
-    return 'Boa noite';
+  _emitNotificationCreated(log) {
+    if (appEmitter?.emit) appEmitter.emit('notification:created', log);
+  }
+
+  _emitNotificationUpdated(log) {
+    if (appEmitter?.emit) appEmitter.emit('notification:updated', log);
   }
 
   _parseLocalDateInput(dateValue) {
@@ -73,34 +73,26 @@ class NotificationService {
 
     if (dateValue instanceof Date) {
       const clone = new Date(dateValue);
-      return isNaN(clone.getTime()) ? null : clone;
+      return Number.isNaN(clone.getTime()) ? null : clone;
     }
 
     const raw = String(dateValue).trim();
     if (!raw) return null;
 
-    // Flutter envia YYYY-MM-DD. Parsear assim evita o deslocamento UTC do
-    // new Date('YYYY-MM-DD'), que empurra o range para o dia anterior no BRT.
     const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (match) {
       const year = Number(match[1]);
       const month = Number(match[2]) - 1;
       const day = Number(match[3]);
       const localDate = new Date(year, month, day);
-      return isNaN(localDate.getTime()) ? null : localDate;
+      return Number.isNaN(localDate.getTime()) ? null : localDate;
     }
 
-    const parsed = new Date(raw);
-    return isNaN(parsed.getTime()) ? null : parsed;
+    return normalizeDate(raw);
   }
 
   _getDayRange(dateStr) {
-    let base = new Date();
-    if (dateStr) {
-      const parsed = this._parseLocalDateInput(dateStr);
-      if (parsed) base = parsed;
-    }
-
+    const base = this._parseLocalDateInput(dateStr) || new Date();
     return getBusinessDayRange(base, this.businessTimeZone);
   }
 
@@ -108,469 +100,452 @@ class NotificationService {
     return getBusinessDayRange(date, this.businessTimeZone);
   }
 
-  _normalizePhoneForDelivery(phone) {
-    return normalizeWhatsappPhone(phone);
+  _getRandomDelayMs() {
+    const min = Math.max(0, Number(this.delayMinMs) || 0);
+    const max = Math.max(min, Number(this.delayMaxMs) || min);
+    if (max === min) return min;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
-  _buildDeliveryKey({
-    schoolId,
-    invoiceId,
-    phone,
-    businessDay,
-    channel = this.deliveryChannel,
-  }) {
-    const normalizedPhone = this._normalizePhoneForDelivery(phone);
-
-    return [
-      String(schoolId || '').trim(),
-      String(invoiceId || '').trim(),
-      normalizedPhone || String(phone || '').replace(/\D/g, ''),
-      String(channel || this.deliveryChannel).trim(),
-      String(businessDay || '').trim(),
-    ].join(':');
-  }
-
-  async _findExistingDeliveryLog({
-    schoolId,
-    invoiceId,
-    phone,
-    referenceDate = new Date(),
-    channel = this.deliveryChannel,
-  }) {
-    const { startOfDay, endOfDay, businessDayKey, timeZone } =
-      this._getBusinessDayContext(referenceDate);
-    const normalizedPhone = this._normalizePhoneForDelivery(phone);
-    const deliveryKey = this._buildDeliveryKey({
-      schoolId,
-      invoiceId,
-      phone: normalizedPhone || phone,
-      businessDay: businessDayKey,
-      channel,
-    });
-
-    const logs = await NotificationLog.find({
-      school_id: schoolId,
-      invoice_id: invoiceId,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-    })
-      .select(
-        '_id school_id invoice_id student_name tutor_name target_phone target_phone_normalized delivery_channel business_day business_timezone delivery_key dispatch_origin dispatch_reference_key type status sent_at scheduled_for attempts error_message error_code error_http_status error_raw createdAt updatedAt'
-      )
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const existing = logs.find((log) => {
-      const logPhone = this._normalizePhoneForDelivery(
-        log?.target_phone_normalized || log?.target_phone
-      );
-
-      if (normalizedPhone && logPhone && logPhone !== normalizedPhone) {
-        return false;
-      }
-
-      if (!normalizedPhone && logPhone) {
-        return false;
-      }
-
-      if (channel && log?.delivery_channel && String(log.delivery_channel) !== String(channel)) {
-        return false;
-      }
-
-      return true;
-    });
-
+  _buildInvoiceSnapshot(invoice = {}) {
     return {
-      existing,
-      deliveryKey,
-      normalizedPhone,
-      businessDay: businessDayKey,
-      businessTimeZone: timeZone,
-      startOfDay,
-      endOfDay,
+      description: invoice.description || null,
+      value: typeof invoice.value === 'number' ? invoice.value : null,
+      dueDate: invoice.dueDate || null,
+      student: invoice.student?._id || invoice.student || null,
+      tutor: invoice.tutor?._id || invoice.tutor || null,
+      gateway: invoice.gateway || null,
+      paymentMethod: invoice.paymentMethod || null,
+      external_id: invoice.external_id ? String(invoice.external_id) : null,
+      boleto_url: invoice.boleto_url || null,
+      boleto_barcode: invoice.boleto_barcode || null,
+      boleto_digitable_line: invoice.boleto_digitable_line || null,
+      pix_code: invoice.pix_code || invoice.mp_pix_copia_e_cola || null,
     };
   }
 
-  _normalizeWhatsappError(error) {
-    const httpStatus = error?.response?.status;
-    const apiExistsFalse = error?.response?.data?.response?.message?.[0]?.exists === false;
+  _mergeRecipientAndSelection(recipient = {}, selection = {}) {
+    return {
+      recipient_role: recipient.recipient_role,
+      recipient_student_id: recipient.recipient_student_id,
+      recipient_tutor_id: recipient.recipient_tutor_id,
+      recipient_name: recipient.recipient_name,
+      target_phone: selection.target_phone || recipient.target_phone || null,
+      target_phone_normalized: selection.target_phone || recipient.target_phone_normalized || null,
+      target_email: selection.target_email || recipient.target_email || null,
+      target_email_normalized: selection.target_email || recipient.target_email_normalized || null,
+      recipient_snapshot: recipient.recipient_snapshot,
+      delivery_channel: selection.channel || null,
+      provider: selection.provider || null,
+      channel_resolution_reason: selection.resolution_reason || null,
+    };
+  }
 
-    const raw =
-      error?.response?.data
-        ? JSON.stringify(error.response.data).slice(0, 2000)
-        : (error?.message ? String(error.message).slice(0, 2000) : 'Erro desconhecido');
+  _normalizeDispatchError(error, channel = 'whatsapp') {
+    const rawPayload = error?.response?.data || error?.transportAttempt?.raw_last_error || {
+      message: error?.message || 'Erro desconhecido',
+    };
 
-    if (apiExistsFalse) {
-      return {
-        code: 'PHONE_NO_WHATSAPP',
-        message: 'Número inválido ou sem WhatsApp.',
-        httpStatus: httpStatus || 400,
-        raw,
-      };
-    }
-
-    const msg = (error?.message || '').toLowerCase();
-    if (msg.includes('whatsapp desconectado')) {
-      return {
-        code: 'WHATSAPP_DISCONNECTED',
-        message: 'WhatsApp desconectado. Conecte novamente em Configurações.',
-        httpStatus: httpStatus || 503,
-        raw,
-      };
-    }
-
-    if (msg.includes('timeout') || msg.includes('timed out') || msg.includes('network')) {
-      return {
-        code: 'NETWORK_TIMEOUT',
-        message: 'Falha de conexão/timeout ao enviar. Tente novamente mais tarde.',
-        httpStatus: httpStatus || 408,
-        raw,
-      };
-    }
-
-    if (httpStatus === 400) {
-      return {
-        code: 'BAD_REQUEST',
-        message: 'Não foi possível enviar. Verifique o número e tente novamente.',
-        httpStatus,
-        raw,
-      };
-    }
-
-    if (httpStatus === 404) {
-      return {
-        code: 'NOT_FOUND',
-        message: 'Não foi possível enviar. Contato/número não encontrado.',
-        httpStatus,
-        raw,
-      };
-    }
+    const raw = JSON.stringify(rawPayload).slice(0, 2000);
+    const httpStatus = error?.response?.status || null;
+    const mappedCode = mapDispatchErrorCode(error, channel);
+    const descriptor = getOutcomeDescriptor(mappedCode);
 
     return {
-      code: 'UNKNOWN',
-      message: error?.message || 'Falha ao enviar mensagem.',
-      httpStatus: httpStatus || null,
+      code: mappedCode,
+      message: error?.message || descriptor.user_message,
+      userMessage: descriptor.user_message,
+      title: descriptor.title,
+      category: descriptor.category,
+      retryable: descriptor.retryable,
+      httpStatus: httpStatus || descriptor.httpStatus || 500,
       raw,
     };
   }
 
-  _isLikelyValidBarcode(barcode) {
-    if (!barcode) return false;
-    const s = String(barcode).trim();
-    const digitsOnly = s.replace(/\D/g, '');
-    if (digitsOnly.length >= 44) return true;
-    if (digitsOnly.length >= 47) return true;
-    return false;
+  _hasPaymentArtifacts(invoice = {}) {
+    return Boolean(
+      normalizeString(invoice?.boleto_url) ||
+      extractDigitableLineFromInvoice(invoice) ||
+      normalizeString(invoice?.pix_code || invoice?.mp_pix_copia_e_cola)
+    );
   }
 
-  _buildSafeFileName(studentName, invoiceId, dueDate) {
-    const safeName = (studentName || 'Aluno')
-      .split(' ')[0]
-      .replace(/[^a-zA-Z0-9]/g, '_');
-
-    const venc = new Date(dueDate);
-    const dueKey = `${venc.getFullYear()}-${String(venc.getMonth() + 1).padStart(2, '0')}-${String(venc.getDate()).padStart(2, '0')}`;
-
-    return `Boleto_${safeName}_${String(invoiceId)}_${dueKey}.pdf`;
+  _buildItemContext(invoice = {}, recipient = {}, selection = {}, log = null) {
+    return {
+      invoice_id: invoice?._id ? String(invoice._id) : null,
+      student_name:
+        recipient?.student_name ||
+        invoice?.student?.fullName ||
+        invoice?.student_name ||
+        null,
+      recipient_name:
+        recipient?.recipient_name ||
+        recipient?.tutor_name ||
+        recipient?.student_name ||
+        invoice?.tutor?.fullName ||
+        invoice?.student?.fullName ||
+        null,
+      destination_email:
+        selection?.target_email ||
+        recipient?.target_email ||
+        null,
+      destination_phone:
+        selection?.target_phone ||
+        recipient?.target_phone ||
+        null,
+      delivery_channel: selection?.channel || null,
+      provider: selection?.provider || null,
+      log_id: log?._id ? String(log._id) : null,
+    };
   }
 
-  _isNotificationTypeEnabled(type, config) {
-    if (!config) return true;
+  _buildActionOutcome({
+    invoice = {},
+    recipient = {},
+    selection = {},
+    log = null,
+    code,
+    status = null,
+    technicalMessage = null,
+    retryable = null,
+    extra = {},
+  } = {}) {
+    const context = this._buildItemContext(invoice, recipient, selection, log);
+    const payload = buildOutcomePayload({
+      code,
+      status,
+      technicalMessage,
+      invoiceId: context.invoice_id,
+      itemId: context.invoice_id,
+      logId: context.log_id,
+      retryable,
+      extra: {
+        reason_code: code,
+        student_name: context.student_name,
+        recipient_name: context.recipient_name,
+        destination_email: context.destination_email,
+        destination_phone: context.destination_phone,
+        delivery_channel: context.delivery_channel,
+        provider: context.provider,
+        ...extra,
+      },
+    });
 
-    const normalizedType = String(type || '').toLowerCase();
-
-    if (normalizedType === 'due_today') {
-      return config.enableDueToday !== false;
-    }
-
-    if (normalizedType === 'overdue') {
-      return config.enableOverdue !== false;
-    }
-
-    if (normalizedType === 'reminder' || normalizedType === 'new_invoice') {
-      return config.enableReminder !== false;
-    }
-
-    return true;
+    return payload;
   }
 
-  async _hasNotificationLogForInvoice({ schoolId, invoiceId, phone = null, referenceDate = new Date() }) {
-    if (!schoolId || !invoiceId) return false;
+  async _auditSkippedOutcome({
+    invoice = null,
+    recipient = {},
+    selection = {},
+    config = null,
+    outcome = null,
+    type = 'manual',
+    dispatchOrigin = 'manual_queue',
+    preferredChannel = null,
+    referenceDate = new Date(),
+  } = {}) {
+    if (!invoice?._id || !invoice?.school_id || !outcome || outcome.status !== 'skipped') {
+      return null;
+    }
 
-    if (phone) {
-      const { existing } = await this._findExistingDeliveryLog({
-        schoolId,
-        invoiceId,
-        phone,
-        referenceDate,
-        channel: this.deliveryChannel,
+    const intendedChannel =
+      selection?.channel ||
+      preferredChannel ||
+      config?.primaryChannel ||
+      'whatsapp';
+
+    const intendedProvider =
+      selection?.provider ||
+      config?.channels?.[intendedChannel]?.provider ||
+      (intendedChannel === 'email' ? 'gmail' : 'evolution');
+
+    const existingInfo = await notificationLogService.findExistingOutcomeLogForDay({
+      schoolId: invoice?.school_id?._id || invoice?.school_id,
+      invoiceId: invoice._id,
+      channel: intendedChannel,
+      outcomeCode: outcome.code,
+      dispatchOrigin,
+      referenceDate,
+    });
+
+    if (existingInfo.existing) {
+      return existingInfo.existing;
+    }
+
+    const log = await notificationLogService.createOutcomeLog({
+      schoolId: invoice?.school_id?._id || invoice?.school_id,
+      invoiceId: invoice._id,
+      recipient,
+      type,
+      dispatchOrigin,
+      deliveryChannel: intendedChannel,
+      provider: intendedProvider,
+      channelResolutionReason: selection?.resolution_reason || selection?.reason_code || null,
+      invoiceSnapshot: this._buildInvoiceSnapshot(invoice),
+      outcome,
+      referenceDate,
+    });
+
+    this._emitNotificationCreated(log);
+    return log;
+  }
+
+  async _analyzeInvoiceForDispatch(invoiceInput, options = {}) {
+    const invoice = await this._loadInvoice(invoiceInput);
+    const resolvedSchoolId = invoice?.school_id?._id || invoice?.school_id || options.schoolId || null;
+    const config = options.config || (resolvedSchoolId ? await this.getConfig(resolvedSchoolId) : null);
+
+    if (!invoice) {
+      return {
+        ok: false,
+        invoice: null,
+        config,
+        outcome: this._buildActionOutcome({
+          code: 'INVOICE_NOT_FOUND',
+          status: 'failed',
+          technicalMessage: 'Invoice nao encontrada para analise.',
+        }),
+      };
+    }
+
+    let notificationType = options.type || 'manual';
+
+    if (options.skipWindow !== true) {
+      const evaluation = await billingEligibilityService.evaluateInvoice({
+        invoice,
+        config,
+        referenceDate: options.referenceDate || new Date(),
+        includeHold: options.includeHold !== false,
       });
 
-      return Boolean(existing);
+      if (!evaluation.isEligible) {
+        return {
+          ok: false,
+          invoice,
+          config,
+          evaluation,
+          outcome: this._buildActionOutcome({
+            invoice,
+            code: mapLegacyReasonCode(evaluation.reason),
+            status: 'skipped',
+            technicalMessage: evaluation.reason,
+          }),
+        };
+      }
+
+      notificationType = evaluation.type || notificationType;
+    } else {
+      if (invoice.status === 'paid') {
+        return {
+          ok: false,
+          invoice,
+          config,
+          outcome: this._buildActionOutcome({
+            invoice,
+            code: 'INVOICE_ALREADY_PAID',
+            status: 'skipped',
+            technicalMessage: 'Invoice paga na analise manual.',
+          }),
+        };
+      }
+
+      if (invoice.status === 'canceled') {
+        return {
+          ok: false,
+          invoice,
+          config,
+          outcome: this._buildActionOutcome({
+            invoice,
+            code: 'INVOICE_CANCELLED',
+            status: 'skipped',
+            technicalMessage: 'Invoice cancelada na analise manual.',
+          }),
+        };
+      }
+
+      if (options.includeHold !== false) {
+        const holdState = await billingEligibilityService.isInvoiceOnHold(invoice);
+        if (holdState.onHold) {
+          return {
+            ok: false,
+            invoice,
+            config,
+            evaluation: {
+              isEligible: false,
+              type: notificationType,
+              reason: 'HOLD_ACTIVE',
+              onHold: true,
+              compensation: holdState.compensation || null,
+            },
+            outcome: this._buildActionOutcome({
+              invoice,
+              code: 'HOLD_ACTIVE',
+              status: 'skipped',
+              technicalMessage: 'Invoice em HOLD/compensacao.',
+            }),
+          };
+        }
+      }
     }
 
-    const { startOfDay, endOfDay } = this._getBusinessDayContext(referenceDate);
-
-    return NotificationLog.exists({
-      school_id: schoolId,
-      invoice_id: invoiceId,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
+    const recipient = await notificationRecipientResolverService.resolveByInvoice(invoice);
+    const selection = notificationChannelSelectorService.selectChannel({
+      config,
+      recipient,
+      preferredChannel: options.preferredChannel || null,
     });
-  }
 
-  _composeSingleDeliveryMessage({ baseText, invoice }) {
-    const sections = [];
-    const addSection = (value) => {
-      const normalized = String(value || '').trim();
-      if (normalized) sections.push(normalized);
-    };
-
-    addSection(baseText);
-
-    const barcode = invoice?.boleto_barcode ? String(invoice.boleto_barcode).trim() : null;
-    const hasValidBarcode = this._isLikelyValidBarcode(barcode);
-    const gateway = String(invoice?.gateway || '').toLowerCase();
-
-    if (gateway === 'cora') {
-      if (invoice?.boleto_url) {
-        addSection(`📄 *Boleto em PDF / link para pagamento:*\n${invoice.boleto_url}`);
-      }
-
-      if (barcode) {
-        if (hasValidBarcode) {
-          addSection(`🔢 *Linha digitável:*\n${barcode}`);
-        } else {
-          addSection('⚠️ *Atenção:* por segurança, não enviamos a linha digitável. Utilize o PDF/link acima para concluir o pagamento.');
-        }
-      }
-
+    if (!selection.channel) {
       return {
-        text: sections.join('\n\n'),
-        shouldTryFile: Boolean(invoice?.boleto_url),
+        ok: false,
+        invoice,
+        config,
+        recipient,
+        selection,
+        outcome: this._buildActionOutcome({
+          invoice,
+          recipient,
+          selection,
+          code: selection.reason_code || 'NO_CHANNEL_AVAILABLE',
+          status: 'skipped',
+          technicalMessage: selection.resolution_reason || 'No channel selected.',
+        }),
       };
     }
 
-    if (gateway === 'mercadopago') {
-      const pix = invoice?.pix_code || invoice?.mp_pix_copia_e_cola;
-
-      if (pix) {
-        addSection(`💠 *Pix Copia e Cola:*\n${String(pix).trim()}`);
+    if (selection.channel === 'email') {
+      const emailIssueCode = normalizeString(recipient?.email_issue_code) || getEmailIssueCode(recipient?.target_email);
+      if (emailIssueCode) {
+        return {
+          ok: false,
+          invoice,
+          config,
+          recipient,
+          selection,
+          outcome: this._buildActionOutcome({
+            invoice,
+            recipient,
+            selection,
+            code: emailIssueCode,
+            status: 'skipped',
+            technicalMessage: emailIssueCode,
+          }),
+        };
       }
+    }
 
-      if (!pix && invoice?.boleto_url) {
-        addSection(`🔗 *Link para pagamento:*\n${invoice.boleto_url}`);
-      }
-
-      if (!pix && barcode) {
-        if (hasValidBarcode) {
-          addSection(`🔢 *Linha digitável:*\n${barcode}`);
-        } else {
-          addSection('⚠️ *Atenção:* por segurança, não enviamos a linha digitável. Utilize o link de pagamento desta cobrança.');
-        }
-      }
-
+    if (options.requirePaymentData !== false && !this._hasPaymentArtifacts(invoice)) {
       return {
-        text: sections.join('\n\n'),
-        shouldTryFile: false,
+        ok: false,
+        invoice,
+        config,
+        recipient,
+        selection,
+        outcome: this._buildActionOutcome({
+          invoice,
+          recipient,
+          selection,
+          code: 'BOLETO_UNAVAILABLE',
+          status: 'skipped',
+          technicalMessage: 'Invoice sem boleto, link ou PIX disponivel.',
+        }),
       };
     }
 
-    if (invoice?.boleto_url) {
-      addSection(`🔗 *Link para pagamento:*\n${invoice.boleto_url}`);
+    let existingInfo = null;
+    if (options.checkDuplicates === true && options.force !== true) {
+      existingInfo = await notificationLogService.findExistingLogForDay({
+        schoolId: invoice?.school_id?._id || invoice?.school_id,
+        invoiceId: invoice._id,
+        channel: selection.channel,
+        phone: selection.target_phone || recipient.target_phone,
+        email: selection.target_email || recipient.target_email,
+        referenceDate: options.referenceDate || new Date(),
+      });
+
+      if (existingInfo.existing) {
+        return {
+          ok: false,
+          invoice,
+          config,
+          recipient,
+          selection,
+          existingInfo,
+          outcome: this._buildActionOutcome({
+            invoice,
+            recipient,
+            selection,
+            log: existingInfo.existing,
+            code: 'ALREADY_QUEUED_OR_SENT_TODAY',
+            status: 'skipped',
+            technicalMessage: 'Ja existe log para o dia/canal/destino.',
+          }),
+        };
+      }
     }
 
-    if (barcode) {
-      if (hasValidBarcode) {
-        addSection(`🔢 *Linha digitável:*\n${barcode}`);
-      } else {
-        addSection('⚠️ *Atenção:* por segurança, não enviamos a linha digitável. Utilize o link/PDF desta cobrança para concluir o pagamento.');
+    if (options.validateTransportReady === true) {
+      try {
+        await this.dispatchService.assertReady(selection.channel, {
+          config,
+          invoice,
+          recipient,
+          selection,
+        });
+      } catch (error) {
+        const mappedCode = mapDispatchErrorCode(error, selection.channel);
+        const descriptor = getOutcomeDescriptor(mappedCode);
+
+        return {
+          ok: false,
+          invoice,
+          config,
+          recipient,
+          selection,
+          outcome: this._buildActionOutcome({
+            invoice,
+            recipient,
+            selection,
+            code: mappedCode,
+            status: 'failed',
+            technicalMessage: error.message || descriptor.user_message,
+            retryable: descriptor.retryable,
+          }),
+        };
       }
     }
 
     return {
-      text: sections.join('\n\n'),
-      shouldTryFile: false,
+      ok: true,
+      invoice,
+      config,
+      recipient,
+      selection,
+      type: notificationType,
+      existingInfo,
     };
   }
 
-  async _dispatchSingleMessage({ log, invoice, deliveryMessage }) {
-    if (deliveryMessage.shouldTryFile && invoice?.boleto_url) {
-      const fileName = this._buildSafeFileName(log.student_name, invoice._id, invoice.dueDate);
+  async _loadInvoice(invoiceOrId) {
+    const invoiceId = invoiceOrId?._id || invoiceOrId;
+    if (!invoiceId) return null;
 
-      try {
-        console.log(`📎 [Zap] Enviando cobrança consolidada em documento: ${fileName}`);
-        await whatsappService.sendFile(
-          log.school_id,
-          log.target_phone,
-          invoice.boleto_url,
-          fileName,
-          deliveryMessage.text,
-          {
-            source: 'notification.service',
-            notification_log_id: log._id,
-            invoice_id: invoice?._id || null,
-            school_id: log.school_id,
-            notification_type: log.type,
-            request_kind: 'document',
-            fallback_from: null,
-            template_group: log.template_group || null,
-            template_index: log.template_index ?? null,
-          }
-        );
-        return;
-      } catch (e) {
-        console.error('⚠️ Falha ao enviar documento consolidado. Fazendo fallback para texto único:', e?.message || e);
-      }
+    if (invoiceOrId?.student?.fullName || invoiceOrId?.tutor?.fullName) {
+      return invoiceOrId;
     }
 
-    await whatsappService.sendText(log.school_id, log.target_phone, deliveryMessage.text, {
-      source: 'notification.service',
-      notification_log_id: log._id,
-      invoice_id: invoice?._id || null,
-      school_id: log.school_id,
-      notification_type: log.type,
-      delivery_key: log.delivery_key || null,
-      business_day: log.business_day || null,
-      business_timezone: log.business_timezone || null,
-      dispatch_origin: log.dispatch_origin || null,
-      request_kind: 'text',
-      fallback_from: deliveryMessage.shouldTryFile && invoice?.boleto_url ? 'document' : null,
-      template_group: log.template_group || null,
-      template_index: log.template_index ?? null,
-    });
+    return Invoice.findById(invoiceId).populate('student').populate('tutor');
   }
 
-  async _isInvoiceOnHold(invoice) {
-    try {
-      if (!invoice?._id || !invoice?.school_id) return false;
-
-      const comp = await invoiceCompensationService.getCompensationByInvoice({
-        school_id: invoice.school_id,
-        invoice_id: invoice._id
-      });
-
-      return !!comp;
-    } catch (e) {
-      console.error('⚠️ Erro ao checar HOLD de compensação:', e?.message || e);
-      return false;
-    }
+  async _getSchoolConfigMap(filter = {}) {
+    const configs = await NotificationConfig.find(filter).lean();
+    return new Map(configs.map((config) => [String(config.school_id), config]));
   }
 
-  async getDailyStats(schoolId, dateStr) {
-    const { startOfDay, endOfDay } = this._getDayRange(dateStr);
-
-    let objectIdSchool;
-    try {
-      objectIdSchool = new mongoose.Types.ObjectId(schoolId);
-    } catch (e) {
-      console.error('ID da escola inválido para stats:', schoolId);
-      return { queued: 0, processing: 0, sent: 0, failed: 0, cancelled: 0, total_today: 0 };
-    }
-
-    const stats = await NotificationLog.aggregate([
-      {
-        $match: {
-          school_id: objectIdSchool,
-          createdAt: { $gte: startOfDay, $lte: endOfDay }
-        }
-      },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    const result = {
-      queued: 0,
-      processing: 0,
-      sent: 0,
-      failed: 0,
-      cancelled: 0,
-      total_today: 0
-    };
-
-    stats.forEach(s => {
-      if (result[s._id] !== undefined) result[s._id] = s.count;
-    });
-
-    result.total_today =
-      result.queued + result.processing + result.sent + result.failed + result.cancelled;
-    return result;
-  }
-
-  async getForecast(schoolId, targetDate) {
-    const parsedDate = this._parseLocalDateInput(targetDate);
-    const simData = parsedDate || new Date();
-    if (!parsedDate) {
-      simData.setDate(simData.getDate() + 1);
-    }
-    simData.setHours(12, 0, 0, 0);
-
-    const limitPassado = new Date(simData);
-    limitPassado.setDate(limitPassado.getDate() - 60);
-    limitPassado.setHours(0, 0, 0, 0);
-
-    const futuroLimit = new Date(simData);
-    futuroLimit.setDate(futuroLimit.getDate() + 5);
-    futuroLimit.setHours(23, 59, 59, 999);
-
-    // Forecast here is an operational preview of open debts eligible for the
-    // next run, not a deduplicated send queue. The actual queue still prevents
-    // duplicate notification logs elsewhere.
-    const invoices = await Invoice.find({
-      school_id: schoolId,
-      status: { $in: ['pending', 'overdue'] },
-      dueDate: { $gte: limitPassado, $lte: futuroLimit }
-    }).select('dueDate value description student tutor status gateway external_id boleto_url boleto_barcode');
-
-    const forecast = {
-      date: simData,
-      total_expected: 0,
-      breakdown: {
-        due_today: 0,
-        overdue: 0,
-        reminder: 0,
-        new_invoice: 0
-      }
-    };
-
-    for (const inv of invoices) {
-      const check = this._checkEligibilityForDate(inv.dueDate, simData);
-      if (check.shouldSend) {
-        const onHold = await this._isInvoiceOnHold(inv);
-        if (onHold) continue;
-
-        forecast.total_expected++;
-        if (forecast.breakdown[check.type] !== undefined) forecast.breakdown[check.type]++;
-      }
-    }
-
-    return forecast;
-  }
-
-  _checkEligibilityForDate(dueDate, referenceDate) {
-    const ref = new Date(referenceDate); ref.setHours(0, 0, 0, 0);
-    const venc = new Date(dueDate); venc.setHours(0, 0, 0, 0);
-
-    const diffTime = venc - ref;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-    // ✅ REGRA DO DIA 1º: Se hoje for dia 1 e a fatura vence no mesmo mês
-    if (ref.getDate() === 1 && diffDays > 0 && diffDays <= 31 && venc.getMonth() === ref.getMonth()) {
-      return { shouldSend: true, type: 'new_invoice' };
-    }
-
-    if (diffDays === 3) return { shouldSend: true, type: 'reminder' };
-    if (diffDays === 0) return { shouldSend: true, type: 'due_today' };
-    if (diffDays < 0 && diffDays >= -60) return { shouldSend: true, type: 'overdue' };
-
-    return { shouldSend: false, type: null };
-  }
-
-  isEligibleForSending(dueDate) {
-    const check = this._checkEligibilityForDate(dueDate, new Date());
-    return check.shouldSend;
+  isEligibleForSending(dueDate, referenceDate = new Date()) {
+    return billingEligibilityService.isEligibleForSending(dueDate, referenceDate);
   }
 
   async queueNotification({
@@ -578,142 +553,86 @@ class NotificationService {
     invoiceId,
     studentName,
     tutorName,
-    phone,
+    phone = null,
+    targetEmail = null,
     type = 'new_invoice',
     force = false,
     dispatchOrigin = 'cron_scan',
+    deliveryChannel = 'whatsapp',
+    provider = null,
+    recipientSnapshot = null,
+    recipientRole = null,
+    recipientStudentId = null,
+    recipientTutorId = null,
+    recipientName = null,
+    channelResolutionReason = null,
+    invoiceSnapshot = null,
   }) {
     try {
       const now = new Date();
-      const {
-        existing,
-        deliveryKey,
-        normalizedPhone,
-        businessDay,
-        businessTimeZone,
-      } = await this._findExistingDeliveryLog({
+      const existingInfo = await notificationLogService.findExistingLogForDay({
         schoolId,
         invoiceId,
+        channel: deliveryChannel,
         phone,
+        email: targetEmail,
         referenceDate: now,
-        channel: this.deliveryChannel,
       });
 
-      if (!force && existing) {
-        if (existing.status === 'cancelled' && existing.error_code === 'SKIPPED_HOLD') {
-          const revived = await NotificationLog.findOneAndUpdate(
-            {
-              _id: existing._id,
-              status: 'cancelled',
-              error_code: 'SKIPPED_HOLD',
-            },
-            {
-              $set: {
-                status: 'queued',
-                scheduled_for: now,
-                error_message: null,
-                error_code: null,
-                error_http_status: null,
-                error_raw: null,
-                business_day: businessDay,
-                business_timezone: businessTimeZone,
-                delivery_channel: this.deliveryChannel,
-                delivery_key: existing.delivery_key || deliveryKey,
-                dispatch_origin: dispatchOrigin || existing.dispatch_origin || 'cron_scan',
-                dispatch_reference_key: existing.dispatch_reference_key || null,
-                target_phone_normalized: normalizedPhone || null,
-              },
-            },
-            { new: true }
-          );
-
-          if (revived) {
-            console.log(`♻️ [Fila] HOLD liberado, reativando invoice ${String(invoiceId)} (${type}).`);
-
-            if (appEmitter && typeof appEmitter.emit === 'function') {
-              appEmitter.emit('notification:updated', revived);
-            }
-
-            return {
-              ok: true,
-              log: revived,
-              revived: true,
-            };
-          }
-        }
-
-        if (existing.status === 'failed') {
-          console.log(
-            `⏭️ [Fila] Invoice ${String(invoiceId)} já possui tentativa falha neste dia. Use retry manual para reenfileirar.`
-          );
-          return {
-            ok: false,
-            skipped: true,
-            reason: 'FAILED_NEEDS_MANUAL_RETRY',
-            log: existing,
-          };
-        }
-
-        console.log(`↩️ [Fila] Ignorando duplicidade da invoice ${String(invoiceId)} (${type}).`);
+      if (!force && existingInfo.existing) {
         return {
           ok: false,
           skipped: true,
           reason: 'ALREADY_QUEUED_OR_SENT_TODAY',
-          log: existing,
+          log: existingInfo.existing,
         };
       }
 
-      const deliveryKeyToUse = force
-        ? `${deliveryKey}:force:${uuidv4()}`
-        : deliveryKey;
-
-      const newLog = await NotificationLog.create({
-        school_id: schoolId,
-        invoice_id: invoiceId,
-        student_name: studentName,
-        tutor_name: tutorName,
-        target_phone: phone,
-        target_phone_normalized: normalizedPhone || null,
-        delivery_channel: this.deliveryChannel,
-        business_day: businessDay,
-        business_timezone: businessTimeZone,
-        delivery_key: deliveryKeyToUse,
-        dispatch_origin: force ? (dispatchOrigin || 'manual_force') : (dispatchOrigin || 'cron_scan'),
-        dispatch_reference_key: force ? deliveryKey : null,
-        type: type,
+      const log = await notificationLogService.createLog({
+        schoolId,
+        invoiceId,
+        recipient: {
+          student_name: studentName,
+          tutor_name: tutorName,
+          recipient_role: recipientRole,
+          recipient_student_id: recipientStudentId,
+          recipient_tutor_id: recipientTutorId,
+          recipient_name: recipientName || tutorName || studentName,
+          target_phone: phone,
+          target_email: targetEmail,
+          recipient_snapshot: recipientSnapshot,
+        },
+        type,
         status: 'queued',
-        scheduled_for: now
+        scheduledFor: now,
+        deliveryChannel,
+        provider,
+        dispatchOrigin,
+        channelResolutionReason,
+        businessDay: existingInfo.businessDay,
+        businessTimeZone: existingInfo.businessTimeZone,
+        deliveryKey: existingInfo.deliveryKey,
+        force,
+        invoiceSnapshot,
       });
 
-      console.log(`📥 [Fila] + ADICIONADO: ${studentName} (${type})`);
-
-      if (appEmitter && typeof appEmitter.emit === 'function') {
-        appEmitter.emit('notification:created', newLog);
-      }
-
-      return {
-        ok: true,
-        log: newLog,
-      };
-
+      this._emitNotificationCreated(log);
+      return { ok: true, log };
     } catch (error) {
       if (error?.code === 11000) {
-        const duplicateLog = await NotificationLog.findOne({
+        const duplicate = await NotificationLog.findOne({
           school_id: schoolId,
           invoice_id: invoiceId,
-        })
-          .sort({ createdAt: -1 })
-          .lean();
+        }).sort({ createdAt: -1 }).lean();
 
         return {
           ok: false,
           skipped: true,
           reason: 'ALREADY_QUEUED_OR_SENT_TODAY',
-          log: duplicateLog || null,
+          log: duplicate || null,
         };
       }
 
-      console.error('❌ Erro ao enfileirar:', error);
       return {
         ok: false,
         skipped: false,
@@ -722,577 +641,815 @@ class NotificationService {
     }
   }
 
-  async scanAndQueueInvoices(options = {}) {
-    console.log('🔎 [Cron] INICIANDO VARREDURA INTELIGENTE');
-    try {
-      const activeConfigs = await NotificationConfig.find({ isActive: true });
-      if (!activeConfigs.length) return;
-
-      const now = new Date();
-      const currentTimeParts = getTimeZoneParts(now, this.businessTimeZone);
-      const currentMinutes = currentTimeParts.hour * 60 + currentTimeParts.minute;
-      const dispatchOrigin = options.dispatchOrigin || 'cron_scan';
-
-      for (const config of activeConfigs) {
-        const [startH, startM] = config.windowStart.split(':').map(Number);
-        const [endH, endM] = config.windowEnd.split(':').map(Number);
-        if (currentMinutes < (startH * 60 + startM) || currentMinutes >= (endH * 60 + endM)) continue;
-
-        const schoolId = config.school_id;
-
-        const hojeStart = new Date(); hojeStart.setHours(0, 0, 0, 0);
-        const hojeEnd = new Date(); hojeEnd.setHours(23, 59, 59, 999);
-
-        const limitPassado = new Date(); limitPassado.setDate(limitPassado.getDate() - 60); limitPassado.setHours(0, 0, 0, 0);
-
-        const futuroStart = new Date(); futuroStart.setDate(futuroStart.getDate() + 3); futuroStart.setHours(0, 0, 0, 0);
-        const futuroEnd = new Date(); futuroEnd.setDate(futuroEnd.getDate() + 3); futuroEnd.setHours(23, 59, 59, 999);
-
-        // ✅ Adiciona limite até fim do mês se for dia 1º
-        const orConditions = [
-          { dueDate: { $gte: limitPassado, $lte: hojeEnd } },
-          { dueDate: { $gte: futuroStart, $lte: futuroEnd } }
-        ];
-
-        if (now.getDate() === 1) {
-          const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-          orConditions.push({ dueDate: { $gte: hojeStart, $lte: monthEnd } });
-        }
-
-        const invoices = await Invoice.find({
-          school_id: schoolId,
-          status: 'pending',
-          $or: orConditions
-        }).populate('student').populate('tutor');
-
-        console.log(`📊 Escola ${schoolId}: ${invoices.length} faturas potenciais.`);
-
-        for (const inv of invoices) {
-          const check = this._checkEligibilityForDate(inv.dueDate, new Date());
-          if (!check.shouldSend) continue;
-
-          if (!this._isNotificationTypeEnabled(check.type, config)) {
-            console.log(`⏭️ [Config] Tipo ${check.type} desabilitado para a escola ${String(schoolId)}.`);
-            continue;
-          }
-
-          const onHold = await this._isInvoiceOnHold(inv);
-          if (onHold) {
-            console.log(`⛔ [HOLD] Ignorando invoice ${String(inv._id)} (em compensação/hold).`);
-            continue;
-          }
-
-          await this._prepareAndQueue(inv, check.type, {
-            dispatchOrigin,
-          });
-        }
-      }
-    } catch (e) {
-      console.error('❌ Erro varredura:', e);
-    }
-  }
-
-  // ✅ NOVO: GATILHO MANUAL DO MÊS (Para resolver o dia 2, 3, etc)
-  async queueMonthInvoicesManually(schoolId) {
-    const hojeStart = new Date(); hojeStart.setHours(0, 0, 0, 0);
-    const monthEnd = new Date(hojeStart.getFullYear(), hojeStart.getMonth() + 1, 0, 23, 59, 59, 999);
-
-    const invoices = await Invoice.find({
-      school_id: schoolId,
-      status: 'pending',
-      dueDate: { $gte: hojeStart, $lte: monthEnd }
-    }).populate('student').populate('tutor');
-
-    let count = 0;
-    for (const inv of invoices) {
-      const onHold = await this._isInvoiceOnHold(inv);
-      if (onHold) continue;
-
-      const result = await this._prepareAndQueue(inv, 'new_invoice', {
-        dispatchOrigin: 'manual_month',
-      });
-
-      if (result?.ok) {
-        count++;
-      }
-    }
-    return count;
-  }
-
   async _prepareAndQueue(invoice, type, options = {}) {
-    let name, phone;
-    if (invoice.tutor) {
-      name = invoice.tutor.fullName;
-      phone = invoice.tutor.phoneNumber || invoice.tutor.telefone;
-    } else if (invoice.student) {
-      name = invoice.student.fullName;
-      phone = invoice.student.phoneNumber;
-    }
+    const analysis = await this._analyzeInvoiceForDispatch(invoice, {
+      config: options.config,
+      type,
+      preferredChannel: options.preferredChannel || null,
+      force: options.force === true,
+      dispatchOrigin: options.dispatchOrigin || 'cron_scan',
+      skipWindow: options.skipWindow === true,
+      referenceDate: options.referenceDate || new Date(),
+      includeHold: options.includeHold !== false,
+      requirePaymentData: options.requirePaymentData !== false,
+      checkDuplicates: options.checkDuplicates === true,
+      validateTransportReady: options.validateTransportReady === true,
+    });
 
-    if (name && phone) {
-      return this.queueNotification({
-        schoolId: invoice.school_id,
-        invoiceId: invoice._id,
-        studentName: invoice.student?.fullName || 'Aluno',
-        tutorName: name,
-        phone: phone,
-        type: type,
-        dispatchOrigin: options.dispatchOrigin || 'cron_scan',
-      });
-    }
+    if (!analysis.ok) {
+      let auditLog = null;
+      if (analysis.outcome?.status === 'skipped') {
+        auditLog = await this._auditSkippedOutcome({
+          invoice: analysis.invoice,
+          recipient: analysis.recipient || {},
+          selection: analysis.selection || {},
+          config: analysis.config || options.config || null,
+          outcome: analysis.outcome,
+          type: analysis.type || type,
+          dispatchOrigin: options.dispatchOrigin || 'cron_scan',
+          preferredChannel: options.preferredChannel || null,
+          referenceDate: options.referenceDate || new Date(),
+        });
 
-    return {
-      ok: false,
-      skipped: true,
-      reason: 'MISSING_CONTACT',
-    };
-  }
+        if (auditLog?._id) {
+          analysis.outcome.log_id = String(auditLog._id);
+        }
+      }
 
-  async enqueueInvoiceManually({ schoolId, invoice, type = 'manual', force = false, dispatchOrigin = 'manual_queue' }) {
-    const onHold = await this._isInvoiceOnHold(invoice);
-    if (onHold) {
       return {
         ok: false,
-        reason: 'HOLD_ACTIVE',
-        message: 'Cobrança bloqueada: invoice está em compensação/HOLD ativo.'
+        skipped: analysis.outcome?.status === 'skipped',
+        failed: analysis.outcome?.status === 'failed',
+        reason: analysis.outcome?.code || 'QUEUE_FAILED',
+        outcome: analysis.outcome,
+        log: auditLog,
+        invoice: analysis.invoice,
+        recipient: analysis.recipient,
+        selection: analysis.selection,
+        existingInfo: analysis.existingInfo || null,
       };
     }
 
-    let name, phone;
-    if (invoice.tutor) {
-      name = invoice.tutor.fullName;
-      phone = invoice.tutor.phoneNumber || invoice.tutor.telefone;
-    } else if (invoice.student) {
-      name = invoice.student.fullName;
-      phone = invoice.student.phoneNumber;
-    }
-
-    if (!name || !phone) {
-      return { ok: false, reason: 'MISSING_CONTACT', message: 'Tutor/aluno sem telefone válido.' };
-    }
+    const { invoice: preparedInvoice, recipient, selection } = analysis;
+    const schoolId = preparedInvoice?.school_id?._id || preparedInvoice?.school_id;
 
     const result = await this.queueNotification({
       schoolId,
-      invoiceId: invoice._id,
-      studentName: invoice.student?.fullName || 'Aluno',
-      tutorName: name,
-      phone,
-      type,
-      force,
-      dispatchOrigin: force ? 'manual_force' : dispatchOrigin,
+      invoiceId: preparedInvoice._id,
+      studentName: recipient.student_name || preparedInvoice?.student?.fullName || 'Aluno',
+      tutorName: recipient.tutor_name || recipient.recipient_name || null,
+      phone: selection.target_phone || recipient.target_phone,
+      targetEmail: selection.target_email || recipient.target_email,
+      type: analysis.type || type,
+      force: options.force === true,
+      dispatchOrigin: options.dispatchOrigin || 'cron_scan',
+      deliveryChannel: selection.channel,
+      provider: selection.provider,
+      recipientSnapshot: recipient.recipient_snapshot,
+      recipientRole: recipient.recipient_role,
+      recipientStudentId: recipient.recipient_student_id,
+      recipientTutorId: recipient.recipient_tutor_id,
+      recipientName: recipient.recipient_name,
+      channelResolutionReason: selection.resolution_reason,
+      invoiceSnapshot: this._buildInvoiceSnapshot(preparedInvoice),
     });
 
-    if (!result?.ok) {
-      return result;
+    if (!result.ok) {
+      return {
+        ...result,
+        outcome: this._buildActionOutcome({
+          invoice: preparedInvoice,
+          recipient,
+          selection,
+          log: result.log,
+          code: result.reason || 'INTERNAL_ERROR',
+          status: result.skipped ? 'skipped' : 'failed',
+          technicalMessage: result.error?.message || result.reason || 'Falha ao criar NotificationLog.',
+        }),
+        recipient,
+        selection,
+      };
     }
 
     return {
-      ok: true,
-      message: 'Invoice reenfileirada com sucesso.',
-      log: result.log,
-      revived: result.revived || false,
+      ...result,
+      invoice: preparedInvoice,
+      recipient,
+      selection,
+      outcome: this._buildActionOutcome({
+        invoice: preparedInvoice,
+        recipient,
+        selection,
+        log: result.log,
+        code: 'NOTIFICATION_QUEUED',
+        status: 'queued',
+      }),
     };
   }
 
-  async _recoverStaleProcessingLogs() {
-    const cutoff = new Date(Date.now() - (this.processingStaleTimeoutMinutes * 60 * 1000));
-    const stuckLogs = await NotificationLog.find({
-      status: 'processing',
-      updatedAt: { $lte: cutoff },
-    })
-      .select('_id school_id invoice_id target_phone target_phone_normalized delivery_key dispatch_origin createdAt updatedAt attempts')
-      .lean();
+  async enqueueInvoiceManually({
+    schoolId,
+    invoice,
+    type = 'manual',
+    force = false,
+    dispatchOrigin = 'manual_queue',
+    processNow = false,
+  }) {
+    const result = await this._prepareAndQueue(invoice, type, {
+      force,
+      dispatchOrigin: force ? 'manual_force' : dispatchOrigin,
+      config: await this.getConfig(schoolId),
+      skipWindow: true,
+      checkDuplicates: true,
+      validateTransportReady: true,
+    });
 
-    if (!stuckLogs.length) {
-      return { recovered: 0 };
+    if (!result.ok) {
+      return result.outcome;
     }
 
+    if (processNow) {
+      const processedLog = await this.processNotificationLogNow(result.log._id);
+
+      if (processedLog?.status === 'failed') {
+        return this._buildActionOutcome({
+          invoice: result.invoice,
+          recipient: result.recipient,
+          selection: result.selection,
+          log: processedLog,
+          code: processedLog.error_code || 'INTERNAL_ERROR',
+          status: 'failed',
+          technicalMessage: processedLog.error_message || 'Falha ao enviar cobranca.',
+          retryable: getOutcomeDescriptor(processedLog.error_code || 'INTERNAL_ERROR').retryable,
+        });
+      }
+
+      if (processedLog?.status === 'cancelled') {
+        return this._buildActionOutcome({
+          invoice: result.invoice,
+          recipient: result.recipient,
+          selection: result.selection,
+          log: processedLog,
+          code: processedLog.error_code || 'NO_CHANNEL_AVAILABLE',
+          status: 'skipped',
+          technicalMessage: processedLog.error_message || 'Cobranca cancelada antes do envio.',
+        });
+      }
+
+      if (processedLog?.status === 'sent') {
+        return this._buildActionOutcome({
+          invoice: result.invoice,
+          recipient: result.recipient,
+          selection: result.selection,
+          log: processedLog,
+          code: 'NOTIFICATION_SENT',
+          status: 'sent',
+          extra: {
+            sent_at: processedLog.sent_at || null,
+          },
+        });
+      }
+    }
+
+    return result.outcome;
+  }
+
+  async scanAndQueueInvoices(options = {}) {
+    const configFilter = { isActive: true };
+    if (options.schoolId) configFilter.school_id = options.schoolId;
+
+    const activeConfigs = await NotificationConfig.find(configFilter).lean();
+    if (!activeConfigs.length) {
+      return options.collectResults ? buildBatchResponse(createBatchAccumulator()) : undefined;
+    }
+
+    const now = new Date();
+    const currentTimeParts = getTimeZoneParts(now, this.businessTimeZone);
+    const currentMinutes = currentTimeParts.hour * 60 + currentTimeParts.minute;
+    const batch = options.collectResults ? createBatchAccumulator() : null;
+
+    for (const config of activeConfigs) {
+      const [startH, startM] = String(config.windowStart || '08:00').split(':').map(Number);
+      const [endH, endM] = String(config.windowEnd || '18:00').split(':').map(Number);
+
+      if (currentMinutes < (startH * 60 + startM) || currentMinutes >= (endH * 60 + endM)) {
+        continue;
+      }
+
+      const hojeStart = new Date(now); hojeStart.setHours(0, 0, 0, 0);
+      const hojeEnd = new Date(now); hojeEnd.setHours(23, 59, 59, 999);
+      const limitPassado = new Date(now); limitPassado.setDate(limitPassado.getDate() - 60); limitPassado.setHours(0, 0, 0, 0);
+      const futuroStart = new Date(now); futuroStart.setDate(futuroStart.getDate() + 3); futuroStart.setHours(0, 0, 0, 0);
+      const futuroEnd = new Date(now); futuroEnd.setDate(futuroEnd.getDate() + 3); futuroEnd.setHours(23, 59, 59, 999);
+
+      const orConditions = [
+        { dueDate: { $gte: limitPassado, $lte: hojeEnd } },
+        { dueDate: { $gte: futuroStart, $lte: futuroEnd } },
+      ];
+
+      if (now.getDate() === 1) {
+        const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+        orConditions.push({ dueDate: { $gte: hojeStart, $lte: monthEnd } });
+      }
+
+      const invoices = await Invoice.find({
+        school_id: config.school_id,
+        status: 'pending',
+        $or: orConditions,
+      }).populate('student').populate('tutor');
+
+      for (const invoice of invoices) {
+        const prepared = await this._prepareAndQueue(invoice, null, {
+          config,
+          dispatchOrigin: options.dispatchOrigin || 'cron_scan',
+          referenceDate: now,
+          checkDuplicates: true,
+        });
+
+        if (!batch) continue;
+
+        const outcome = prepared.outcome || this._buildActionOutcome({
+          invoice,
+          recipient: prepared.recipient,
+          selection: prepared.selection,
+          log: prepared.log,
+          code: prepared.ok ? 'NOTIFICATION_QUEUED' : (prepared.reason || 'INTERNAL_ERROR'),
+          status: prepared.ok ? 'queued' : (prepared.skipped ? 'skipped' : 'failed'),
+        });
+
+        pushBatchItem(batch, {
+          invoice_id: outcome.invoice_id,
+          student_name: outcome.student_name,
+          recipient_name: outcome.recipient_name,
+          destination_email: outcome.destination_email,
+          destination_phone: outcome.destination_phone,
+          status: outcome.status,
+          reason_code: outcome.code,
+          user_message: outcome.user_message,
+          retryable: outcome.retryable,
+          is_eligible: prepared.ok,
+        });
+      }
+    }
+
+    return batch ? buildBatchResponse(batch) : undefined;
+  }
+
+  async queueMonthInvoicesManually(schoolId) {
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const monthEnd = new Date(start.getFullYear(), start.getMonth() + 1, 0, 23, 59, 59, 999);
+    const config = await this.getConfig(schoolId);
+
+    const invoices = await Invoice.find({
+      school_id: schoolId,
+      status: { $in: ['pending', 'overdue', 'paid', 'canceled'] },
+      dueDate: { $gte: start, $lte: monthEnd },
+    }).populate('student').populate('tutor');
+
+    const batch = createBatchAccumulator();
+    for (const invoice of invoices) {
+      const result = await this._prepareAndQueue(invoice, 'new_invoice', {
+        config,
+        dispatchOrigin: 'manual_month',
+        skipWindow: true,
+        checkDuplicates: true,
+        validateTransportReady: true,
+      });
+
+      const outcome = result.outcome || this._buildActionOutcome({
+        invoice,
+        recipient: result.recipient,
+        selection: result.selection,
+        log: result.log,
+        code: result.ok ? 'NOTIFICATION_QUEUED' : (result.reason || 'INTERNAL_ERROR'),
+        status: result.ok ? 'queued' : (result.skipped ? 'skipped' : 'failed'),
+      });
+
+      pushBatchItem(batch, {
+        invoice_id: outcome.invoice_id,
+        student_name: outcome.student_name,
+        recipient_name: outcome.recipient_name,
+        destination_email: outcome.destination_email,
+        destination_phone: outcome.destination_phone,
+        status: outcome.status,
+        reason_code: outcome.code,
+        user_message: outcome.user_message,
+        retryable: outcome.retryable,
+        is_eligible: result.ok,
+      });
+    }
+
+    return buildBatchResponse(batch);
+  }
+
+  async _recoverStaleProcessingLogs(options = {}) {
+    const cutoff = new Date(Date.now() - (this.processingStaleTimeoutMinutes * 60 * 1000));
+    const filter = {
+      status: 'processing',
+      updatedAt: { $lte: cutoff },
+    };
+    if (options.schoolId) filter.school_id = options.schoolId;
+
+    const stuckLogs = await NotificationLog.find(filter).lean();
     let recovered = 0;
 
     for (const log of stuckLogs) {
-      const transport = await WhatsappTransportLog.findOne({
-        school_id: log.school_id,
-        'metadata.notification_log_id': log._id,
-      })
-        .sort({ last_event_at: -1, createdAt: -1 })
-        .select('status accepted_at last_event_at')
-        .lean();
+      const genericTransport = await NotificationTransportLog.findOne({
+        notification_log_id: log._id,
+      }).sort({ status_rank: -1, last_event_at: -1 }).lean();
 
-      const acceptedStatuses = new Set([
-        'accepted_by_evolution',
-        'server_ack',
-        'delivered',
-        'read',
-      ]);
+      const legacyTransport = !genericTransport
+        ? await WhatsappTransportLog.findOne({
+            school_id: log.school_id,
+            'metadata.notification_log_id': log._id,
+          }).sort({ status_rank: -1, last_event_at: -1 }).lean()
+        : null;
 
-      if (log.sent_at) {
-        await NotificationLog.updateOne(
-          { _id: log._id, status: 'processing' },
-          {
-            $set: {
-              status: 'sent',
-              error_message: null,
-              error_code: null,
-              error_http_status: null,
-              error_raw: null,
-            },
-          }
-        );
+      const genericAccepted = new Set(['accepted', 'sent', 'delivered', 'read']);
+      const legacyAccepted = new Set(['accepted_by_evolution', 'server_ack', 'delivered', 'read']);
 
+      if (log.sent_at || genericAccepted.has(genericTransport?.canonical_status) || legacyAccepted.has(legacyTransport?.status)) {
+        const sentAt =
+          genericTransport?.accepted_at ||
+          genericTransport?.sent_at ||
+          genericTransport?.last_event_at ||
+          legacyTransport?.accepted_at ||
+          legacyTransport?.server_ack_at ||
+          legacyTransport?.last_event_at ||
+          new Date();
+
+        await notificationLogService.markSent(log._id, {
+          sentAt,
+          transportLog: genericTransport,
+        });
         recovered += 1;
         continue;
       }
 
-      if (transport && acceptedStatuses.has(transport.status)) {
-        const sentAt = transport.accepted_at || transport.last_event_at || new Date();
-        await NotificationLog.updateOne(
-          { _id: log._id, status: 'processing' },
-          {
-            $set: {
-              status: 'sent',
-              sent_at: sentAt,
-              error_message: null,
-              error_code: null,
-              error_http_status: null,
-              error_raw: null,
-            },
-          }
-        );
-
-        recovered += 1;
-        continue;
-      }
-
-      await NotificationLog.updateOne(
-        { _id: log._id, status: 'processing' },
-        {
-          $set: {
-            status: 'queued',
-            scheduled_for: new Date(),
-            error_message: 'Recuperado de processing preso.',
-            error_code: 'PROCESSING_TIMEOUT_RECOVERED',
-            error_http_status: null,
-            error_raw: JSON.stringify({
-              cutoff: cutoff.toISOString(),
-              recovered_at: new Date().toISOString(),
-            }).slice(0, 2000),
-          },
-        }
-      );
-
+      await notificationLogService.updateLogById(log._id, {
+        status: 'queued',
+        scheduled_for: new Date(),
+        processing_started_at: null,
+        error_message: 'Recuperado de processing preso.',
+        error_code: 'PROCESSING_TIMEOUT_RECOVERED',
+        error_http_status: null,
+        error_raw: JSON.stringify({
+          cutoff: cutoff.toISOString(),
+          recovered_at: new Date().toISOString(),
+        }).slice(0, 2000),
+      });
       recovered += 1;
     }
 
     return { recovered };
   }
 
-  async processQueue() {
+  async _executeNotificationLog(log) {
+    const invoice = await this._loadInvoice(log.invoice_id);
+    if (!invoice) {
+      await notificationLogService.markCancelled(log._id, {
+        errorMessage: 'Fatura nao encontrada.',
+        errorCode: 'INVOICE_NOT_FOUND',
+        errorHttpStatus: 404,
+      });
+      return NotificationLog.findById(log._id);
+    }
+
+    if (invoice.status === 'paid' || invoice.status === 'canceled') {
+      const errorCode = invoice.status === 'paid' ? 'INVOICE_ALREADY_PAID' : 'INVOICE_CANCELLED';
+      await notificationLogService.markCancelled(log._id, {
+        errorMessage: 'Fatura ja paga/cancelada.',
+        errorCode,
+        errorHttpStatus: 200,
+      });
+      return NotificationLog.findById(log._id);
+    }
+
+    const holdState = await billingEligibilityService.isInvoiceOnHold(invoice);
+    if (holdState.onHold) {
+      await notificationLogService.markCancelled(log._id, {
+        errorMessage: 'Invoice esta com compensacao/HOLD ativo.',
+        errorCode: 'HOLD_ACTIVE',
+        errorHttpStatus: 200,
+      });
+      return NotificationLog.findById(log._id);
+    }
+
+    if (!this._hasPaymentArtifacts(invoice)) {
+      await notificationLogService.markCancelled(log._id, {
+        errorMessage: 'Invoice sem boleto, link ou PIX disponivel.',
+        errorCode: 'BOLETO_UNAVAILABLE',
+        errorHttpStatus: 200,
+      });
+      return NotificationLog.findById(log._id);
+    }
+
+    const school = await School.findById(log.school_id).select('name whatsapp').lean();
+    const config = await this.getConfig(log.school_id);
+    const recipient = notificationLogService.resolveRecipient(log);
+    const selection = notificationChannelSelectorService.selectChannel({
+      config,
+      recipient,
+      preferredChannel: log.delivery_channel,
+    });
+
+    if (!selection.channel) {
+      const noChannelError = new Error('Nao ha canal disponivel para este destinatario.');
+      noChannelError.code = selection.reason_code || 'NO_CHANNEL_AVAILABLE';
+      throw noChannelError;
+    }
+
+    const message = billingMessageComposerService.compose({
+      notificationLog: log,
+      invoice,
+      school,
+      config,
+      referenceDate: new Date(),
+    });
+
+    const updatedLog = await notificationLogService.updateLogById(log._id, {
+      ...this._mergeRecipientAndSelection(recipient, selection),
+      template_group: message.template_group,
+      template_index: message.template_index,
+      message_subject: message.subject || null,
+      message_text: message.text || null,
+      message_html_preview: (message.html || '').slice(0, 4000) || null,
+      message_preview: message.message_preview || null,
+      sent_gateway: invoice.gateway || null,
+      sent_gateway_charge_id: invoice.external_id ? String(invoice.external_id) : null,
+      sent_boleto_url: message.payment_link || invoice.boleto_url || null,
+      sent_barcode: message.barcode || invoice.boleto_barcode || null,
+      sent_digitable_line: message.digitable_line || invoice.boleto_digitable_line || null,
+      invoice_snapshot: this._buildInvoiceSnapshot(invoice),
+    });
+
+    const dispatchResult = await this.dispatchService.dispatch({
+      notificationLog: updatedLog,
+      invoice,
+      school,
+      config,
+      message,
+    });
+
+    return notificationLogService.markSent(updatedLog._id, {
+      sentAt:
+        dispatchResult?.attempt?.sent_at ||
+        dispatchResult?.attempt?.accepted_at ||
+        new Date(),
+      transportLog: dispatchResult?.attempt || null,
+    });
+  }
+
+  async processNotificationLogNow(logId) {
+    const queuedLog = await NotificationLog.findOneAndUpdate(
+      { _id: logId, status: 'queued' },
+      { $set: { status: 'processing', processing_started_at: new Date() } },
+      { new: true }
+    );
+
+    const currentLog = queuedLog || await NotificationLog.findById(logId);
+    if (!currentLog) return null;
+    if (currentLog.status !== 'processing') return currentLog;
+    this._emitNotificationUpdated(currentLog);
+
+    try {
+      const finalLog = await this._executeNotificationLog(currentLog);
+      this._emitNotificationUpdated(finalLog);
+      return finalLog;
+    } catch (error) {
+      const normalized = this._normalizeDispatchError(error, currentLog.delivery_channel);
+      const failedLog = await notificationLogService.markFailed(currentLog._id, {
+        errorMessage: normalized.message,
+        errorCode: normalized.code,
+        errorHttpStatus: normalized.httpStatus,
+        errorRaw: normalized.raw,
+        transportLog: error.transportAttempt || null,
+      });
+      this._emitNotificationUpdated(failedLog);
+      return failedLog;
+    }
+  }
+
+  async processQueue(options = {}) {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
     try {
-      await this._recoverStaleProcessingLogs();
+      await this._recoverStaleProcessingLogs(options);
 
-      const now = new Date();
-
-      const queuedCandidates = await NotificationLog.find({
+      const queuedFilter = {
         status: 'queued',
-        scheduled_for: { $lte: now }
-      })
+        scheduled_for: { $lte: new Date() },
+      };
+      if (options.schoolId) queuedFilter.school_id = options.schoolId;
+
+      const queuedCandidates = await NotificationLog.find(queuedFilter)
         .sort({ createdAt: 1 })
-        .select('_id school_id createdAt scheduled_for')
+        .select('_id school_id scheduled_for')
         .lean();
 
-      if (queuedCandidates.length === 0) {
-        return;
-      }
+      if (!queuedCandidates.length) return;
 
-      const schoolIds = [...new Set(
-        queuedCandidates
-          .map((item) => String(item.school_id || '').trim())
-          .filter(Boolean)
-      )];
+      const schoolIds = [...new Set(queuedCandidates.map((item) => String(item.school_id)))];
+      const configMap = await this._getSchoolConfigMap({
+        school_id: { $in: schoolIds },
+        isActive: true,
+      });
 
-      const activeConfigs = schoolIds.length > 0
-        ? await NotificationConfig.find({
-            school_id: { $in: schoolIds },
-            isActive: true,
-          })
-            .select('school_id')
-            .lean()
-        : [];
+      const nextCandidate = queuedCandidates.find((item) => configMap.has(String(item.school_id)));
+      if (!nextCandidate) return;
 
-      const activeSchoolIds = new Set(
-        activeConfigs.map((config) => String(config.school_id))
+      const processingLog = await NotificationLog.findOneAndUpdate(
+        { _id: nextCandidate._id, status: 'queued' },
+        { $set: { status: 'processing', processing_started_at: new Date() } },
+        { new: true }
       );
 
-      const nextCandidate = queuedCandidates.find((item) =>
-        activeSchoolIds.has(String(item.school_id))
-      );
+      if (!processingLog) return;
+      this._emitNotificationUpdated(processingLog);
 
-      if (!nextCandidate) {
-        console.log('⏸️ [Fila] Nenhuma mensagem elegível para envio. Todas as escolas pendentes estão pausadas.');
+      const delay = this._getRandomDelayMs();
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+
+      const schoolStillActive = await NotificationConfig.findOne({
+        school_id: processingLog.school_id,
+        isActive: true,
+      }).select('_id').lean();
+
+      if (!schoolStillActive) {
+        const pausedLog = await notificationLogService.markQueued(processingLog._id, {
+          scheduledFor: new Date(),
+        });
+        this._emitNotificationUpdated(pausedLog);
         return;
       }
-
-      const log = await NotificationLog.findOneAndUpdate(
-        {
-          _id: nextCandidate._id,
-          status: 'queued',
-        },
-        {
-          $set: {
-            status: 'processing',
-          },
-        },
-        {
-          new: true,
-        }
-      ).populate('invoice_id');
-
-      if (!log) {
-        return;
-      }
-
-      console.log(`🔄 Processando lote de 1...`);
-      if (appEmitter) appEmitter.emit('notification:updated', log);
 
       try {
-        const delay = Math.floor(Math.random() * 15000) + 15000;
-        console.log(`⏳ Aguardando ${Math.floor(delay / 1000)}s...`);
-        await new Promise(r => setTimeout(r, delay));
-
-        // Revalida a pausa aqui porque a fila pode ter sido suspensa enquanto o worker aguardava.
-        const schoolStillActive = await NotificationConfig.findOne({
-          school_id: log.school_id,
-          isActive: true,
-        })
-          .select('_id')
-          .lean();
-
-        if (!schoolStillActive) {
-          log.status = 'queued';
-          log.sent_at = null;
-          log.error_message = null;
-          log.error_code = null;
-          log.error_http_status = null;
-          log.error_raw = null;
-
-          const pausedLog = await log.save();
-          if (appEmitter) appEmitter.emit('notification:updated', pausedLog);
-
-          console.log(`⏸️ [Fila] Envio suspenso antes do disparo (${log.tutor_name}) porque a escola foi pausada.`);
-          return;
-        }
-
-        const result = await this._sendSingleNotification(log);
-
-        if (result?.skipped) {
-          log.status = result.status || 'cancelled';
-          log.sent_at = null;
-          log.error_message = null;
-
-          log.error_code = result.error_code || 'SKIPPED_HOLD';
-          log.error_http_status = 200;
-          log.error_raw = JSON.stringify({
-            skipped: true,
-            reason: result.reason,
-            skip_status: result.status || 'cancelled',
-            hold_until: result.hold_until || null
-          }).slice(0, 2000);
-
-          console.log(`⏭️ [Fila] SKIP envio (${log.tutor_name}) -> ${result.reason || 'Cobrança bloqueada'}`);
-        } else {
-          log.status = 'sent';
-          log.sent_at = new Date();
-          log.error_message = null;
-
-          log.error_code = null;
-          log.error_http_status = null;
-          log.error_raw = null;
-
-          console.log(`✅ [Zap] Enviado: ${log.tutor_name}`);
-        }
+        const finalLog = await this._executeNotificationLog(processingLog);
+        this._emitNotificationUpdated(finalLog);
       } catch (error) {
-        const normalized = this._normalizeWhatsappError(error);
-
-        console.error(`❌ [Zap] Falha: ${log.tutor_name}`, normalized.message);
-
-        log.status = 'failed';
-        log.error_message = normalized.message;
-        log.error_code = normalized.code;
-        log.error_http_status = normalized.httpStatus;
-        log.error_raw = normalized.raw;
-        log.attempts += 1;
+        const normalized = this._normalizeDispatchError(error, processingLog.delivery_channel);
+        const failedLog = await notificationLogService.markFailed(processingLog._id, {
+          errorMessage: normalized.message,
+          errorCode: normalized.code,
+          errorHttpStatus: normalized.httpStatus,
+          errorRaw: normalized.raw,
+          transportLog: error.transportAttempt || null,
+        });
+        this._emitNotificationUpdated(failedLog);
       }
-
-      const finalLog = await log.save();
-      if (appEmitter) appEmitter.emit('notification:updated', finalLog);
-    } catch (err) {
-      console.error('Erro fila:', err);
     } finally {
       this.isProcessing = false;
     }
   }
 
-  async _sendSingleNotification(log) {
-    const invoice = log.invoice_id;
-    if (!invoice) throw new Error('Fatura não encontrada.');
-    if (invoice.status === 'paid' || invoice.status === 'canceled') {
-      return {
-        skipped: true,
-        status: 'cancelled',
-        error_code: 'INVOICE_NO_LONGER_ELIGIBLE',
-        reason: 'Fatura já paga/cancelada.',
-      };
-    }
-
-    const onHold = await this._isInvoiceOnHold(invoice);
-    if (onHold) {
-      return {
-        skipped: true,
-        status: 'cancelled',
-        error_code: 'SKIPPED_HOLD',
-        reason: 'Invoice está com compensação/HOLD ativo. Cobrança bloqueada até o fim do hold.',
-      };
-    }
-
-    const school = await School.findById(log.school_id).select('name whatsapp').lean();
-    const nomeEscola = school?.name || 'Escola';
-
-    if (!school?.whatsapp || school.whatsapp.status !== 'connected') {
-      console.log('⚠️ [Zap] Banco desconectado. Verificando API...');
-      const isReallyConnected = await whatsappService.ensureConnection(log.school_id);
-      if (!isReallyConnected) {
-        throw new Error('WhatsApp desconectado (Confirmado pela API).');
-      }
-      console.log('✅ [Zap] Conexão ativa na API. Prosseguindo...');
-    }
-
-    const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
-    const venc = new Date(invoice.dueDate); venc.setHours(0, 0, 0, 0);
-    const diffDays = Math.ceil((venc - hoje) / (1000 * 60 * 60 * 24));
-
-    // DADOS DINÂMICOS
-    const diasAtraso = diffDays < 0 ? Math.abs(diffDays) : 0;
-    const saudacao = this._getSaudacao();
-
-    let list = TEMPLATES_HOJE;
-    let templateGroup = 'HOJE';
-
-    if (diffDays > 0) {
-      list = TEMPLATES_FUTURO;
-      templateGroup = 'FUTURO';
-    } else if (diffDays < 0) {
-      list = TEMPLATES_ATRASO;
-      templateGroup = 'ATRASO';
-    }
-
-    const templateIndex = Math.floor(Math.random() * list.length);
-
-    const baseText = list[templateIndex]
-      .replace(/{escola}/g, nomeEscola)
-      .replace(/{nome}/g, (log.tutor_name || '').split(' ')[0] || 'Olá')
-      .replace(/{descricao}/g, invoice.description)
-      .replace(/{valor}/g, (invoice.value / 100).toFixed(2).replace('.', ','))
-      .replace(/{vencimento}/g, venc.toLocaleDateString('pt-BR', { timeZone: 'UTC' }))
-      .replace(/{saudacao}/g, saudacao)
-      .replace(/{dias_atraso}/g, diasAtraso);
-
-    const deliveryMessage = this._composeSingleDeliveryMessage({
-      baseText,
-      invoice,
-    });
-
-    log.template_group = templateGroup;
-    log.template_index = templateIndex;
-    log.message_text = deliveryMessage.text;
-    log.message_preview = deliveryMessage.text.length > 140
-      ? `${deliveryMessage.text.slice(0, 140)}...`
-      : deliveryMessage.text;
-
-    // Snapshot
-    log.sent_gateway = invoice.gateway || null;
-    log.sent_gateway_charge_id = invoice.external_id ? String(invoice.external_id) : null;
-    log.sent_boleto_url = invoice.boleto_url || null;
-    log.sent_barcode = invoice.boleto_barcode || null;
-
-    log.invoice_snapshot = {
-      description: invoice.description || null,
-      value: typeof invoice.value === 'number' ? invoice.value : null,
-      dueDate: invoice.dueDate || null,
-      student: invoice.student || null,
-      tutor: invoice.tutor || null,
-      gateway: invoice.gateway || null,
-      external_id: invoice.external_id ? String(invoice.external_id) : null,
-    };
-
-    await log.save();
-    if (appEmitter) appEmitter.emit('notification:updated', log);
-
-    await this._dispatchSingleMessage({
-      log,
-      invoice,
-      deliveryMessage,
-    });
-  }
-
   async getLogs(schoolId, status, page = 1, limit = 20, dateStr) {
-    const query = { school_id: schoolId };
+    const { startOfDay, endOfDay } = this._getDayRange(dateStr);
+    const query = {
+      school_id: schoolId,
+      createdAt: { $gte: startOfDay, $lte: endOfDay },
+    };
     if (status && status !== 'Todos') query.status = status;
 
-    const { startOfDay, endOfDay } = this._getDayRange(dateStr);
-    query.createdAt = { $gte: startOfDay, $lte: endOfDay };
+    const safePage = Math.max(parseInt(page, 10) || 1, 1);
+    const shouldPaginate = limit && limit !== 'all' && Number(limit) > 0;
+    const safeLimit = shouldPaginate ? Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100) : null;
 
     let dbQuery = NotificationLog.find(query).sort({ createdAt: -1 });
+    if (shouldPaginate) dbQuery = dbQuery.skip((safePage - 1) * safeLimit).limit(safeLimit);
 
-    const shouldPaginate = limit && limit !== 'all' && Number(limit) > 0;
+    const [logs, total] = await Promise.all([
+      dbQuery.lean(),
+      NotificationLog.countDocuments(query),
+    ]);
 
-    if (shouldPaginate) {
-      const skip = (page - 1) * limit;
-      dbQuery = dbQuery.skip(skip).limit(parseInt(limit));
+    return {
+      logs: logs.map((log) => {
+        const recipient = notificationLogService.resolveRecipient(log);
+        const errorDescriptor = log.error_code ? getOutcomeDescriptor(log.error_code) : null;
+        return {
+          ...log,
+          ...recipient,
+          delivery_channel: log.delivery_channel || 'whatsapp',
+          provider: log.provider || (log.delivery_channel === 'email' ? 'gmail' : 'evolution'),
+          reason_code: log.outcome_code || log.error_code || null,
+          reason_category: log.outcome_category || errorDescriptor?.category || null,
+          reason_title: log.outcome_title || errorDescriptor?.title || null,
+          user_message: log.outcome_user_message || errorDescriptor?.user_message || null,
+          error_title: errorDescriptor?.title || null,
+          error_user_message: errorDescriptor?.user_message || null,
+          retryable: log.outcome_retryable ?? errorDescriptor?.retryable ?? null,
+        };
+      }),
+      total,
+      pages: shouldPaginate ? Math.max(Math.ceil(total / safeLimit), 1) : 1,
+    };
+  }
+
+  async getDailyStats(schoolId, dateStr) {
+    const { startOfDay, endOfDay } = this._getDayRange(dateStr);
+    const logs = await NotificationLog.find({
+      school_id: schoolId,
+      createdAt: { $gte: startOfDay, $lte: endOfDay },
+    }).select('status delivery_channel provider').lean();
+
+    const result = {
+      queued: 0,
+      processing: 0,
+      sent: 0,
+      failed: 0,
+      cancelled: 0,
+      skipped: 0,
+      total_today: 0,
+      by_channel: {},
+      by_provider: {},
+      by_channel_status: {},
+    };
+
+    logs.forEach((log) => {
+      if (result[log.status] !== undefined) result[log.status] += 1;
+      result.total_today += 1;
+
+      const channel = log.delivery_channel || 'whatsapp';
+      const provider = log.provider || (channel === 'email' ? 'gmail' : 'evolution');
+      result.by_channel[channel] = (result.by_channel[channel] || 0) + 1;
+      result.by_provider[provider] = (result.by_provider[provider] || 0) + 1;
+      if (!result.by_channel_status[channel]) {
+        result.by_channel_status[channel] = {
+          queued: 0,
+          processing: 0,
+          sent: 0,
+          failed: 0,
+          cancelled: 0,
+          skipped: 0,
+          total: 0,
+        };
+      }
+      if (result.by_channel_status[channel][log.status] !== undefined) {
+        result.by_channel_status[channel][log.status] += 1;
+      }
+      result.by_channel_status[channel].total += 1;
+    });
+
+    return result;
+  }
+
+  async getForecast(schoolId, targetDate) {
+    const simData = this._parseLocalDateInput(targetDate) || new Date();
+    if (!targetDate) simData.setDate(simData.getDate() + 1);
+    simData.setHours(12, 0, 0, 0);
+
+    const limitPassado = new Date(simData); limitPassado.setDate(limitPassado.getDate() - 60); limitPassado.setHours(0, 0, 0, 0);
+    const futuroLimit = new Date(simData); futuroLimit.setDate(futuroLimit.getDate() + 5); futuroLimit.setHours(23, 59, 59, 999);
+    const config = await this.getConfig(schoolId);
+
+    const invoices = await Invoice.find({
+      school_id: schoolId,
+      status: { $in: ['pending', 'overdue'] },
+      dueDate: { $gte: limitPassado, $lte: futuroLimit },
+    }).populate('student').populate('tutor');
+
+    const forecast = {
+      date: simData,
+      total_expected: 0,
+      breakdown: {
+        due_today: 0,
+        overdue: 0,
+        reminder: 0,
+        new_invoice: 0,
+      },
+      primary_channel_preview: config.primaryChannel || 'whatsapp',
+      fallback_enabled: config.allowFallback === true,
+      skipped_breakdown: {},
+    };
+
+    for (const invoice of invoices) {
+      const analysis = await this._analyzeInvoiceForDispatch(invoice, {
+        config,
+        referenceDate: simData,
+        checkDuplicates: false,
+        validateTransportReady: false,
+        requirePaymentData: true,
+        includeHold: true,
+        skipWindow: false,
+      });
+
+      if (!analysis.ok) {
+        const reasonCode = analysis.outcome?.code || 'INTERNAL_ERROR';
+        forecast.skipped_breakdown[reasonCode] = (forecast.skipped_breakdown[reasonCode] || 0) + 1;
+        continue;
+      }
+
+        forecast.total_expected += 1;
+        if (forecast.breakdown[analysis.type] !== undefined) {
+          forecast.breakdown[analysis.type] += 1;
+        }
+      }
+
+    return forecast;
+  }
+
+  async getTransportLogs(schoolId, filters = {}) {
+    const safePage = Math.max(parseInt(filters.page, 10) || 1, 1);
+    const safeLimit = Math.min(Math.max(parseInt(filters.limit, 10) || 20, 1), 100);
+    const normalizedStatus = normalizeString(filters.status);
+    const normalizedProviderStatus = normalizeString(filters.providerStatus);
+    const normalizedProviderMessageId = normalizeString(filters.providerMessageId);
+    const normalizedNotificationLogId = normalizeString(filters.notificationLogId);
+    const normalizedInvoiceId = normalizeString(filters.invoiceId);
+    const normalizedDestination = normalizeString(filters.destination);
+    const normalizedInstanceName = normalizeString(filters.instanceName);
+    const normalizedSource = normalizeString(filters.source);
+    const normalizedChannel = normalizeString(filters.channel);
+
+    const genericFilter = { school_id: schoolId };
+    if (normalizedStatus) genericFilter.status = normalizedStatus;
+    if (normalizedProviderStatus) genericFilter.provider_status = normalizedProviderStatus;
+    if (normalizedProviderMessageId) genericFilter.provider_message_id = normalizedProviderMessageId;
+    if (normalizedNotificationLogId) genericFilter.notification_log_id = normalizedNotificationLogId;
+    if (normalizedInvoiceId) genericFilter.invoice_id = normalizedInvoiceId;
+    if (normalizedChannel) genericFilter.channel = normalizedChannel;
+    if (normalizedDestination) {
+      genericFilter.$or = [
+        { destination: normalizedDestination },
+        { destination_phone_normalized: normalizedDestination.replace(/\D/g, '') },
+        { destination_email_normalized: normalizedDestination.toLowerCase() },
+      ];
     }
+    if (normalizedInstanceName) genericFilter.instance_name = normalizedInstanceName;
+    if (normalizedSource) genericFilter.source = normalizedSource;
 
-    const logs = await dbQuery.lean();
-    const total = await NotificationLog.countDocuments(query);
+    const legacyFilter = { school_id: schoolId };
+    if (normalizedStatus) legacyFilter.status = normalizedStatus;
+    if (normalizedProviderStatus) legacyFilter.provider_status = normalizedProviderStatus.toUpperCase();
+    if (normalizedProviderMessageId) legacyFilter.provider_message_id = normalizedProviderMessageId;
+    if (normalizedDestination) legacyFilter.destination = normalizedDestination;
+    if (normalizedInstanceName) legacyFilter.instance_name = normalizedInstanceName;
+    if (normalizedSource) legacyFilter.source = normalizedSource;
+    if (normalizedNotificationLogId) legacyFilter['metadata.notification_log_id'] = normalizedNotificationLogId;
+    if (normalizedInvoiceId) legacyFilter['metadata.invoice_id'] = normalizedInvoiceId;
 
-    const pages = shouldPaginate ? Math.ceil(total / limit) : 1;
+    const [genericLogs, legacyLogs] = await Promise.all([
+      NotificationTransportLog.find(genericFilter).sort({ last_event_at: -1, createdAt: -1 }).lean(),
+      normalizedChannel && normalizedChannel !== 'whatsapp'
+        ? Promise.resolve([])
+        : WhatsappTransportLog.find(legacyFilter).sort({ last_event_at: -1, createdAt: -1 }).lean(),
+    ]);
 
-    return { logs, total, pages };
+    const mappedLegacyLogs = legacyLogs.map((log) => ({
+      ...log,
+      channel: 'whatsapp',
+      provider: 'evolution',
+      canonical_status:
+        log.status === 'accepted_by_evolution' ? 'accepted' :
+        log.status === 'server_ack' ? 'sent' :
+        log.status === 'deleted' ? 'cancelled' :
+        log.status,
+      notification_log_id: log.metadata?.notification_log_id || null,
+      invoice_id: log.metadata?.invoice_id || null,
+      attempt_number: Number(log.attempts || 1),
+      destination_phone: log.destination || null,
+      destination_email: null,
+      provider_thread_id: null,
+    }));
+
+    const merged = [...genericLogs, ...mappedLegacyLogs].sort((left, right) => {
+      const leftTs = normalizeDate(left.last_event_at || left.createdAt)?.getTime() || 0;
+      const rightTs = normalizeDate(right.last_event_at || right.createdAt)?.getTime() || 0;
+      return rightTs - leftTs;
+    });
+
+    return {
+      logs: merged.slice((safePage - 1) * safeLimit, safePage * safeLimit),
+      total: merged.length,
+      page: safePage,
+      pages: Math.max(Math.ceil(merged.length / safeLimit), 1),
+    };
   }
 
   async retryAllFailed(schoolId, dateStr) {
     const { startOfDay, endOfDay } = this._getDayRange(dateStr);
-
     const failedLogs = await NotificationLog.find({
       school_id: schoolId,
       status: 'failed',
-      createdAt: { $gte: startOfDay, $lte: endOfDay }
+      createdAt: { $gte: startOfDay, $lte: endOfDay },
     });
-
-    if (failedLogs.length === 0) {
-      return { count: 0, message: 'Nenhuma falha encontrada no dia selecionado.' };
-    }
 
     let count = 0;
     for (const log of failedLogs) {
-      log.status = 'queued';
-      log.error_message = null;
-      log.error_code = null;
-      log.error_http_status = null;
-      log.error_raw = null;
-
-      log.scheduled_for = new Date();
-      log.dispatch_origin = 'manual_retry';
-
-      await log.save();
-      if (appEmitter) appEmitter.emit('notification:updated', log);
-
-      count++;
+      await notificationLogService.markQueued(log._id, {
+        scheduledFor: new Date(),
+        dispatchOrigin: 'manual_retry',
+      });
+      count += 1;
     }
 
-    console.log(`🔄 [Bulk Retry] ${count} mensagens re-enfileiradas.`);
-    return { count, message: `${count} mensagens enviadas para a fila novamente.` };
+    return {
+      count,
+      message: count === 0
+        ? 'Nenhuma falha encontrada no dia selecionado.'
+        : `${count} mensagens enviadas para a fila novamente.`,
+    };
   }
 
   async getConfig(schoolId) {
@@ -1301,16 +1458,42 @@ class NotificationService {
     return config;
   }
 
-  async saveConfig(schoolId, data) {
-    return await NotificationConfig.findOneAndUpdate(
+  async saveConfig(schoolId, data = {}) {
+    const current = await this.getConfig(schoolId);
+    const currentObject = current.toObject ? current.toObject() : current;
+
+    const payload = {
+      ...currentObject,
+      ...data,
+      school_id: schoolId,
+      channels: {
+        ...(currentObject.channels || {}),
+        ...(data.channels || {}),
+        whatsapp: {
+          ...((currentObject.channels || {}).whatsapp || {}),
+          ...((data.channels || {}).whatsapp || {}),
+        },
+        email: {
+          ...((currentObject.channels || {}).email || {}),
+          ...((data.channels || {}).email || {}),
+        },
+      },
+    };
+
+    delete payload._id;
+    delete payload.createdAt;
+    delete payload.updatedAt;
+    delete payload.__v;
+
+    return NotificationConfig.findOneAndUpdate(
       { school_id: schoolId },
-      data,
-      { new: true, upsert: true }
+      payload,
+      { new: true, upsert: true, runValidators: true }
     );
   }
 }
 
 const service = new NotificationService();
-cron.schedule('* * * * *', () => { service.processQueue(); });
-cron.schedule('0 * * * *', () => { service.scanAndQueueInvoices(); });
+
 module.exports = service;
+module.exports.NotificationService = NotificationService;

@@ -12,6 +12,10 @@ const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
 const https = require('https');
 const { PDFDocument } = require('pdf-lib');
+const {
+  normalizeBarcode,
+  normalizeDigitableLine,
+} = require('../utils/boleto.util');
 
 class InvoiceService {
 
@@ -120,7 +124,13 @@ class InvoiceService {
         boleto_url: !!result?.boleto_url
       });
 
-      const bestBarcode = result.boleto_digitable || result.digitable_line || result.digitable || result.boleto_barcode;
+      const bestBarcode = normalizeBarcode(result.boleto_barcode || result.barcode);
+      const bestDigitableLine = normalizeDigitableLine(
+        result.boleto_digitable_line ||
+        result.boleto_digitable ||
+        result.digitable_line ||
+        result.digitable
+      );
 
       const newInvoice = new Invoice({
         _id: tempId,
@@ -135,6 +145,7 @@ class InvoiceService {
         external_id: result.external_id,
         boleto_url: result.boleto_url,
         boleto_barcode: bestBarcode,
+        boleto_digitable_line: bestDigitableLine,
         pix_code: result.pix_code,
         pix_qr_base64: result.pix_qr_base64,
         mp_payment_id: result.gateway === 'mercadopago' ? result.external_id : undefined,
@@ -145,26 +156,25 @@ class InvoiceService {
       await newInvoice.save();
       financeRuntime.invalidateSchool(schoolId);
 
-      if (payerPhone) {
-        try {
-          const isAutoEligible = NotificationService.isEligibleForSending(newInvoice.dueDate);
-          const shouldSendNow = isAutoEligible || (sendNow === true);
+      try {
+        const isAutoEligible = NotificationService.isEligibleForSending(newInvoice.dueDate);
+        const shouldSendNow = isAutoEligible || (sendNow === true);
 
-          if (shouldSendNow) {
-            await NotificationService.queueNotification({
-              schoolId: schoolId,
-              invoiceId: newInvoice._id,
-              studentName: student.fullName,
-              tutorName: payerName,
-              phone: payerPhone,
-              type: 'new_invoice',
-              dispatchOrigin: 'invoice_create'
-            });
-          }
-        } catch (queueError) {
+        if (shouldSendNow) {
+          const invoiceForDispatch = await Invoice.findById(newInvoice._id)
+            .populate('student')
+            .populate('tutor');
+
+          await NotificationService.enqueueInvoiceManually({
+            schoolId,
+            invoice: invoiceForDispatch,
+            type: 'new_invoice',
+            dispatchOrigin: 'invoice_create',
+          });
+        }
+      } catch (queueError) {
           console.error('⚠️ [InvoiceService] Erro ao tentar enfileirar (não bloqueante):', queueError.message);
         }
-      }
 
       // Recalcula score apenas se essa cobrança já nasceu vencida ou vencendo hoje.
       if (linkedTutorId) {
@@ -213,12 +223,46 @@ class InvoiceService {
       throw new Error(result?.message || 'Não foi possível reenfileirar a mensagem.');
     }
 
-    NotificationService.processQueue();
+    NotificationService.processQueue({ schoolId });
 
     return {
       ok: true,
-      message: 'Mensagem reenfileirada com sucesso.',
+      message: 'Notificacao reenfileirada com sucesso.',
     };
+  }
+
+  async resendNotificationWithOutcome(invoiceId, schoolId) {
+    const invoice = await Invoice.findOne({
+      _id: invoiceId,
+      school_id: schoolId,
+    })
+      .populate('student')
+      .populate('tutor');
+
+    if (!invoice) {
+      return {
+        success: true,
+        status: 'failed',
+        code: 'INVOICE_NOT_FOUND',
+        category: 'business_rule',
+        title: 'Fatura nÃ£o encontrada',
+        user_message: 'NÃ£o foi possÃ­vel localizar a cobranÃ§a solicitada.',
+        technical_message: 'Invoice nÃ£o encontrada para reenvio manual.',
+        retryable: false,
+        field: null,
+        item_id: invoiceId,
+        invoice_id: invoiceId,
+      };
+    }
+
+    return NotificationService.enqueueInvoiceManually({
+      schoolId,
+      invoice,
+      type: 'manual',
+      force: true,
+      dispatchOrigin: 'manual_force',
+      processNow: true,
+    });
   }
 
   async processDailyReminders() {
@@ -342,6 +386,38 @@ class InvoiceService {
     }
 
     return normalized;
+  }
+
+  _normalizeOptionalString(value) {
+    const normalized = String(value || '').trim();
+    return normalized || null;
+  }
+
+  _buildGatewayBankSlipPatch(currentInvoice = {}, providerInfo = {}) {
+    const patch = {};
+
+    const nextBoletoUrl = this._normalizeOptionalString(providerInfo?.boleto_url);
+    const nextBarcode = normalizeBarcode(providerInfo?.boleto_barcode);
+    const nextDigitableLine = normalizeDigitableLine(
+      providerInfo?.boleto_digitable_line ||
+      providerInfo?.boleto_digitable ||
+      providerInfo?.digitable_line ||
+      providerInfo?.digitable
+    );
+
+    if (nextBoletoUrl && nextBoletoUrl !== this._normalizeOptionalString(currentInvoice?.boleto_url)) {
+      patch.boleto_url = nextBoletoUrl;
+    }
+
+    if (nextBarcode && nextBarcode !== this._normalizeOptionalString(currentInvoice?.boleto_barcode)) {
+      patch.boleto_barcode = nextBarcode;
+    }
+
+    if (nextDigitableLine && nextDigitableLine !== this._normalizeOptionalString(currentInvoice?.boleto_digitable_line)) {
+      patch.boleto_digitable_line = nextDigitableLine;
+    }
+
+    return patch;
   }
 
   _translateGatewayError(error, payerName = 'o responsável') {
@@ -761,13 +837,26 @@ class InvoiceService {
 
         if (inv.gateway === 'cora' && coraGateway) {
           const info = await coraGateway.getInvoicePaymentInfo(inv.external_id);
+          const boletoPatch = this._buildGatewayBankSlipPatch(inv, info);
 
           console.log(`🔎 [${syncRunId}] CORA status check`, {
             invoiceId: String(inv._id),
             external_id: String(inv.external_id),
             statusFromCora: info?.status,
-            paidAtFromCora: info?.paidAt || null
+            paidAtFromCora: info?.paidAt || null,
+            boletoPatch
           });
+
+          if (Object.keys(boletoPatch).length > 0) {
+            const patchResult = await Invoice.updateOne(
+              { _id: inv._id, school_id: schoolId, gateway: 'cora' },
+              { $set: boletoPatch }
+            );
+
+            if (patchResult.modifiedCount > 0) {
+              stats.updatedCount += 1;
+            }
+          }
 
           if (info?.status) {
             const result = await this.handlePaymentWebhook(inv.external_id, 'CORA-SYNC', info.status, info.paidAt);

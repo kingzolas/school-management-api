@@ -2,7 +2,9 @@ const InvoiceService = require('../services/invoice.service');
 const NegotiationService = require('../services/negotiation.service');
 const WhatsappBotService = require('../services/whatsappBot.service');
 const WhatsappTransportLog = require('../models/whatsapp_transport_log.model');
+const NotificationTransportLog = require('../models/notification_transport_log.model');
 const School = require('../models/school.model');
+const notificationTransportLogService = require('../services/notificationTransportLog.service');
 const appEmitter = require('../../loaders/eventEmitter');
 
 class WebhookController {
@@ -167,6 +169,88 @@ class WebhookController {
     return cleanJid.replace(/\D/g, '');
   }
 
+  _normalizeProviderStatus(value = '') {
+    return String(value || '').trim().toUpperCase();
+  }
+
+  async _findGenericTransportAttempt({ schoolId, legacyTransportLog, providerMessageId }) {
+    const legacyAttemptId = legacyTransportLog?.metadata?.transport_attempt_id || null;
+
+    if (legacyAttemptId) {
+      const byId = await NotificationTransportLog.findById(legacyAttemptId);
+      if (byId) return byId;
+    }
+
+    if (!providerMessageId) return null;
+
+    return NotificationTransportLog.findOne({
+      school_id: schoolId,
+      provider: 'evolution',
+      provider_message_id: providerMessageId,
+    }).sort({ attempt_number: -1, last_event_at: -1 });
+  }
+
+  async _syncGenericTransportAttempt({
+    schoolId,
+    transportInfo,
+    legacyTransportLog,
+    rawWebhookPayload,
+    eventSlug,
+  }) {
+    const attempt = await this._findGenericTransportAttempt({
+      schoolId,
+      legacyTransportLog,
+      providerMessageId: transportInfo.providerMessageId,
+    });
+
+    if (!attempt) return null;
+
+    const providerStatus = this._normalizeProviderStatus(transportInfo.providerStatus);
+    const transitionPayload = {
+      providerMessageId: transportInfo.providerMessageId,
+      providerStatus: providerStatus || null,
+      destination: transportInfo.destination || null,
+      destinationPhone: transportInfo.destination || null,
+      instanceName: transportInfo.instanceName || null,
+      instanceId: transportInfo.instanceId || null,
+      remoteJid: transportInfo.remoteJid || null,
+      eventAt: transportInfo.eventAt || new Date(),
+      eventType: (eventSlug || 'webhook_event').toUpperCase(),
+      rawLastWebhookPayload: rawWebhookPayload || null,
+      source: 'evolution.webhook',
+      metadata: {
+        hook_event_slug: eventSlug || null,
+        hook_provider_status: providerStatus || null,
+      },
+    };
+
+    if (providerStatus === 'READ') {
+      return notificationTransportLogService.markRead(attempt._id, transitionPayload);
+    }
+
+    if (providerStatus === 'DELIVERY_ACK') {
+      return notificationTransportLogService.markDelivered(attempt._id, transitionPayload);
+    }
+
+    if (providerStatus === 'SERVER_ACK') {
+      return notificationTransportLogService.markSent(attempt._id, transitionPayload);
+    }
+
+    if (providerStatus === 'ERROR') {
+      return notificationTransportLogService.markFailed(attempt._id, {
+        ...transitionPayload,
+        errorMessage: 'Falha reportada pelo provider WhatsApp.',
+        errorCode: 'WHATSAPP_PROVIDER_ERROR',
+      });
+    }
+
+    if (providerStatus === 'DELETED' || eventSlug === 'messages_delete') {
+      return notificationTransportLogService.markCancelled(attempt._id, transitionPayload);
+    }
+
+    return notificationTransportLogService.markAccepted(attempt._id, transitionPayload);
+  }
+
   async _resolveSchoolByInstance(resolvedInstanceName, hookRunId) {
     console.log(
       `[${hookRunId}] Trying to resolve school by whatsapp.instanceName=${resolvedInstanceName}`
@@ -253,7 +337,7 @@ class WebhookController {
             sender,
           });
 
-          await WhatsappTransportLog.recordWebhookEvent({
+          const legacyTransportLog = await WhatsappTransportLog.recordWebhookEvent({
             schoolId: school._id,
             instanceName: resolvedInstanceName,
             instanceId: transportInfo.instanceId,
@@ -271,6 +355,14 @@ class WebhookController {
               sender: sender || null,
               event_slug: evtSlug,
             },
+          });
+
+          await this._syncGenericTransportAttempt({
+            schoolId: school._id,
+            transportInfo,
+            legacyTransportLog,
+            rawWebhookPayload: req.body || {},
+            eventSlug: evtSlug,
           });
 
           await School.findByIdAndUpdate(school._id, {

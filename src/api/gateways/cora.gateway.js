@@ -2,6 +2,7 @@
 const axios = require('axios');
 const https = require('https');
 const { v4: uuidv4 } = require('uuid');
+const { extractCoraBankSlipFields } = require('../utils/boleto.util');
 
 class CoraGateway {
   constructor(config) {
@@ -423,6 +424,7 @@ class CoraGateway {
 
   async getInvoicePaymentInfo(externalId) {
     const data = await this.getInvoice(externalId);
+    const bankSlip = extractCoraBankSlipFields(data);
 
     const status =
       data?.status ||
@@ -436,10 +438,19 @@ class CoraGateway {
     console.log('🔎 [CoraGateway] getInvoicePaymentInfo', {
       externalId: String(externalId),
       status,
-      paidAt
+      paidAt,
+      boletoBarcode: bankSlip.barcode,
+      boletoDigitableLine: bankSlip.digitableLine
     });
 
-    return { status, paidAt, raw: data };
+    return {
+      status,
+      paidAt,
+      boleto_url: bankSlip.url,
+      boleto_barcode: bankSlip.barcode,
+      boleto_digitable_line: bankSlip.digitableLine,
+      raw: data,
+    };
   }
 
   async getInvoiceStatus(externalId) {
@@ -485,7 +496,7 @@ class CoraGateway {
 
     try {
       const invoiceData = await this._post('/v2/invoices', token, body);
-      const boleto = invoiceData?.payment_options?.bank_slip || {};
+      const boleto = extractCoraBankSlipFields(invoiceData);
 
       return {
         gateway: 'cora',
@@ -493,9 +504,9 @@ class CoraGateway {
         status: 'pending',
         pix_code: null,
         pix_qr_base64: null,
-        boleto_url: boleto?.url,
-        boleto_barcode: boleto?.barcode,
-        boleto_digitable: boleto?.digitable_line,
+        boleto_url: boleto.url,
+        boleto_barcode: boleto.barcode,
+        boleto_digitable_line: boleto.digitableLine,
         raw: invoiceData
       };
     } catch (error) {

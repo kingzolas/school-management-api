@@ -1,39 +1,58 @@
 const cron = require('node-cron');
 
 const InvoiceService = require('../api/services/invoice.service');
+const NotificationService = require('../api/services/notification.service');
 const WhatsappBotService = require('../api/services/whatsappBot.service');
 const tempAccessTokenService = require('../api/services/tempAccessToken.service');
 
 let financeSyncSweepRunning = false;
 
 const initCronJobs = () => {
-    console.log('🕰️ Inicializando Cron Jobs...');
+    console.log('Inicializando Cron Jobs...');
 
     // ------------------------------------------------------------------
-    // 🔔 JOB 1 - Lembretes de vencimento (já existente)
-    // Roda todos os dias às 08:00
+    // JOB 1 - Scan inteligente da fila de cobranca
+    // roda a cada hora e respeita a janela configurada por escola
     // ------------------------------------------------------------------
-    cron.schedule('0 8 * * *', async () => {
-        console.log('🔔 Executando Job: Lembrete de Vencimento');
+    cron.schedule('0 * * * *', async () => {
+        console.log('[Cron] Executando scan inteligente de cobranca');
 
         try {
-            await InvoiceService.processDailyReminders();
+            await NotificationService.scanAndQueueInvoices({
+                dispatchOrigin: 'cron_scan',
+            });
         } catch (error) {
-            console.error('❌ Erro no Cron Job de Vencimento:', error);
+            console.error('Erro no Cron Job de scan de cobranca:', error);
         }
 
     }, {
         scheduled: true,
-        timezone: "America/Sao_Paulo"
+        timezone: 'America/Sao_Paulo',
     });
 
     // ------------------------------------------------------------------
-    // 💰 JOB 1B - Sincronização financeira em background
-    // roda a cada 15 minutos, sem depender da navegação na tela
+    // JOB 1A - Processamento da fila de notificacoes
+    // roda a cada minuto para drenar a fila com previsibilidade
+    // ------------------------------------------------------------------
+    cron.schedule('* * * * *', async () => {
+        try {
+            await NotificationService.processQueue();
+        } catch (error) {
+            console.error('Erro no Cron Job de processamento da fila:', error);
+        }
+
+    }, {
+        scheduled: true,
+        timezone: 'America/Sao_Paulo',
+    });
+
+    // ------------------------------------------------------------------
+    // JOB 1B - Sincronizacao financeira em background
+    // roda a cada 15 minutos, sem depender da navegacao na tela
     // ------------------------------------------------------------------
     cron.schedule('*/15 * * * *', async () => {
         if (financeSyncSweepRunning) {
-            console.log('🟡 [Cron] Finance sync sweep já está em execução. Pulando ciclo.');
+            console.log('[Cron] Finance sync sweep ja esta em execucao. Pulando ciclo.');
             return;
         }
 
@@ -42,7 +61,7 @@ const initCronJobs = () => {
         try {
             const result = await InvoiceService.processFinanceSyncSweep();
 
-            console.log('💰 [Cron] Finance sync sweep concluído', {
+            console.log('[Cron] Finance sync sweep concluido', {
                 totalSchools: result?.totalSchools || 0,
                 startedSchools: result?.startedSchools || 0,
                 skippedSchools: result?.skippedSchools || 0,
@@ -50,62 +69,57 @@ const initCronJobs = () => {
                 updatedCount: result?.updatedCount || 0,
             });
         } catch (error) {
-            console.error('❌ Erro no Cron Job de Sync Financeira:', error);
+            console.error('Erro no Cron Job de Sync Financeira:', error);
         } finally {
             financeSyncSweepRunning = false;
         }
 
     }, {
         scheduled: true,
-        timezone: "America/Sao_Paulo"
+        timezone: 'America/Sao_Paulo',
     });
 
-
     // ------------------------------------------------------------------
-    // 🤖 JOB 2 - Expirar sessões antigas do WhatsApp Bot
+    // JOB 2 - Expirar sessoes antigas do WhatsApp Bot
     // roda a cada 10 minutos
     // ------------------------------------------------------------------
     cron.schedule('*/10 * * * *', async () => {
         try {
-
             const result = await WhatsappBotService.expireOldSessions();
 
             if (result?.modifiedCount > 0) {
-                console.log(`🧹 Sessões WhatsApp expiradas: ${result.modifiedCount}`);
+                console.log(`Sessoes WhatsApp expiradas: ${result.modifiedCount}`);
             }
 
         } catch (error) {
-            console.error('❌ Erro limpando sessões do WhatsApp Bot:', error);
+            console.error('Erro limpando sessoes do WhatsApp Bot:', error);
         }
 
     }, {
         scheduled: true,
-        timezone: "America/Sao_Paulo"
+        timezone: 'America/Sao_Paulo',
     });
 
-
     // ------------------------------------------------------------------
-    // 🔐 JOB 3 - Expirar tokens temporários do portal
+    // JOB 3 - Expirar tokens temporarios do portal
     // roda a cada 10 minutos
     // ------------------------------------------------------------------
     cron.schedule('*/10 * * * *', async () => {
         try {
-
             const result = await tempAccessTokenService.revokeExpiredTokens();
 
             if (result?.modifiedCount > 0) {
-                console.log(`🧹 Tokens temporários expirados: ${result.modifiedCount}`);
+                console.log(`Tokens temporarios expirados: ${result.modifiedCount}`);
             }
 
         } catch (error) {
-            console.error('❌ Erro limpando tokens temporários:', error);
+            console.error('Erro limpando tokens temporarios:', error);
         }
 
     }, {
         scheduled: true,
-        timezone: "America/Sao_Paulo"
+        timezone: 'America/Sao_Paulo',
     });
-
 };
 
 module.exports = { initCronJobs };

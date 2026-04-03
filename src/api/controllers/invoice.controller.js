@@ -1,11 +1,26 @@
 // src/api/controllers/invoice.controller.js
 const InvoiceService = require('../services/invoice.service');
 const appEmitter = require('../../loaders/eventEmitter');
+const { buildOutcomePayload, getOutcomeDescriptor, mapDispatchErrorCode } = require('../utils/notificationOutcome.util');
 
 // ================================
 // [NOVO] Model de compensação
 // ================================
 const InvoiceCompensation = require('../models/invoice_compensation.model');
+
+function resolveOutcomeHttpStatus(payload) {
+  if (!payload || payload.status !== 'failed') return 200;
+  return getOutcomeDescriptor(payload.code || 'INTERNAL_ERROR').httpStatus || 500;
+}
+
+function buildControllerErrorPayload(error) {
+  const code = mapDispatchErrorCode(error, null) || error?.code || 'INTERNAL_ERROR';
+  return buildOutcomePayload({
+    code,
+    status: 'failed',
+    technicalMessage: error?.message || null,
+  });
+}
 
 // ================================
 // [NOVO] Helper: Enriquecer invoices com campos de compensação
@@ -83,20 +98,15 @@ class InvoiceController {
       const { id } = req.params;
 
       // Chama o serviço. Se der erro lá, cai no catch abaixo.
-      await InvoiceService.resendNotification(id, schoolId);
+      const result = await InvoiceService.resendNotificationWithOutcome(id, schoolId);
 
       // Se chegou aqui, é sucesso. O Flutter exibe o Toast positivo.
-      return res.status(200).json({
-        success: true,
-        message: 'Mensagem enviada com sucesso!',
-      });
+      return res.status(resolveOutcomeHttpStatus(result)).json(result);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.resendWhatsapp:', error.message);
       // Retorna erro para o Flutter exibir o Pop-up de Falha
-      return res.status(400).json({
-        success: false,
-        message: error.message || 'Falha ao enviar mensagem.',
-      });
+      const payload = buildControllerErrorPayload(error);
+      return res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 

@@ -8,7 +8,11 @@
     "academy:local": "node scripts/run-academy-hub.js local",
     "academy:render": "node scripts/run-academy-hub.js render",
     "seed": "node src/seed.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test src/tests",
+    "gmail:bootstrap": "node src/scripts/bootstrapGmailOAuth.js",
+    "gmail:validate": "node src/scripts/validateGmailProvider.js",
+    "gmail:test-send": "node src/scripts/sendControlledGmailTest.js",
+    "gmail:test-real-invoice": "node src/scripts/sendRealInvoiceEmailHomologation.js"
   },
   "keywords": [],
   "author": "",
@@ -24,6 +28,7 @@
     "express": "^5.1.0",
     "firebase-admin": "^13.6.0",
     "geoip-lite": "^1.4.10",
+    "googleapis": "^144.0.0",
     "jsonwebtoken": "^9.0.2",
     "mercadopago": "^2.10.0",
     "mongoose": "^8.19.1",

@@ -1,7 +1,20 @@
 const NotificationService = require('../services/notification.service');
 const Invoice = require('../models/invoice.model');
-const WhatsappTransportLog = require('../models/whatsapp_transport_log.model');
-const mongoose = require('mongoose');
+const { buildOutcomePayload, getOutcomeDescriptor, mapDispatchErrorCode } = require('../utils/notificationOutcome.util');
+
+function buildControllerErrorPayload(error, fallbackCode = 'INTERNAL_ERROR') {
+  const code = mapDispatchErrorCode(error, null) || error?.code || fallbackCode;
+  return buildOutcomePayload({
+    code,
+    status: 'failed',
+    technicalMessage: error?.message || null,
+  });
+}
+
+function resolveOutcomeHttpStatus(payload) {
+  if (!payload || payload.status !== 'failed') return 200;
+  return getOutcomeDescriptor(payload.code || 'INTERNAL_ERROR').httpStatus || 500;
+}
 
 class NotificationController {
 
@@ -23,7 +36,8 @@ class NotificationController {
 
       res.status(200).json(result);
     } catch (error) {
-      next(error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
@@ -39,7 +53,8 @@ class NotificationController {
 
       res.status(200).json({ success: true, ...result });
     } catch (error) {
-      next(error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
@@ -54,7 +69,8 @@ class NotificationController {
       const stats = await NotificationService.getDailyStats(schoolId, date);
       res.status(200).json(stats);
     } catch (error) {
-      next(error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
@@ -65,79 +81,11 @@ class NotificationController {
   async getTransportLogs(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
-      const {
-        status,
-        providerStatus,
-        providerMessageId,
-        notificationLogId,
-        invoiceId,
-        destination,
-        instanceName,
-        source,
-        page = 1,
-        limit = 20,
-      } = req.query;
-
-      const filter = {
-        school_id: schoolId,
-      };
-
-      if (status) filter.status = String(status).trim();
-      if (providerStatus) filter.provider_status = String(providerStatus).trim().toUpperCase();
-      if (providerMessageId) filter.provider_message_id = String(providerMessageId).trim();
-      if (destination) filter.destination = String(destination).trim();
-      if (instanceName) filter.instance_name = String(instanceName).trim();
-      if (source) filter.source = String(source).trim();
-
-      const metadataOr = [];
-
-      if (notificationLogId) {
-        const normalized = String(notificationLogId).trim();
-        metadataOr.push({ 'metadata.notification_log_id': normalized });
-
-        if (/^[a-f\d]{24}$/i.test(normalized)) {
-          metadataOr.push({
-            'metadata.notification_log_id': new mongoose.Types.ObjectId(normalized),
-          });
-        }
-      }
-
-      if (invoiceId) {
-        const normalized = String(invoiceId).trim();
-        metadataOr.push({ 'metadata.invoice_id': normalized });
-
-        if (/^[a-f\d]{24}$/i.test(normalized)) {
-          metadataOr.push({
-            'metadata.invoice_id': new mongoose.Types.ObjectId(normalized),
-          });
-        }
-      }
-
-      if (metadataOr.length > 0) {
-        filter.$or = metadataOr;
-      }
-
-      const safePage = Math.max(parseInt(page, 10) || 1, 1);
-      const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
-      const skip = (safePage - 1) * safeLimit;
-
-      const [logs, total] = await Promise.all([
-        WhatsappTransportLog.find(filter)
-          .sort({ last_event_at: -1, createdAt: -1 })
-          .skip(skip)
-          .limit(safeLimit)
-          .lean(),
-        WhatsappTransportLog.countDocuments(filter),
-      ]);
-
-      return res.status(200).json({
-        logs,
-        total,
-        page: safePage,
-        pages: Math.max(Math.ceil(total / safeLimit), 1),
-      });
+      const result = await NotificationService.getTransportLogs(schoolId, req.query);
+      return res.status(200).json(result);
     } catch (error) {
-      next(error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
@@ -151,7 +99,8 @@ class NotificationController {
       const forecast = await NotificationService.getForecast(schoolId, req.query.date);
       res.status(200).json(forecast);
     } catch (error) {
-      next(error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
@@ -161,52 +110,67 @@ class NotificationController {
    */
   async triggerManualRun(req, res, next) {
     try {
-      console.log('⚡ [API] Trigger Manual acionado pelo painel...');
-      await NotificationService.scanAndQueueInvoices({
+      const schoolId = req.user.schoolId || req.user.school_id;
+
+      console.log('[API] Trigger Manual acionado pelo painel...');
+
+      const result = await NotificationService.scanAndQueueInvoices({
+        schoolId,
         dispatchOrigin: 'manual_trigger',
+        collectResults: true,
       });
-      NotificationService.processQueue();
+
+      if (result.total_queued > 0) {
+        NotificationService.processQueue({ schoolId });
+      }
 
       res.status(200).json({
-        success: true,
-        message: 'Varredura e processamento iniciados manualmente.'
+        ...result,
+        message: result.total_queued > 0
+          ? 'Varredura concluÃ­da e itens elegÃ­veis adicionados Ã  fila.'
+          : 'Varredura concluÃ­da sem novos itens elegÃ­veis para envio.',
       });
     } catch (error) {
-      console.error("Erro no trigger:", error);
-      next(error);
+      console.error('Erro no trigger:', error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
   /**
-   * ✅ NOVO: POST /trigger-month
-   * Aciona o envio de todos os boletos pendentes do MÊS atual
+   * POST /trigger-month
+   * Aciona o envio de todos os boletos pendentes do mes atual
    */
   async triggerMonthInvoices(req, res, next) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
-      const count = await NotificationService.queueMonthInvoicesManually(schoolId);
-      
-      // Inicia a fila logo em seguida
-      NotificationService.processQueue();
+      const result = await NotificationService.queueMonthInvoicesManually(schoolId);
+
+      if (result.total_queued > 0) {
+        NotificationService.processQueue({ schoolId });
+      }
 
       res.status(200).json({
-        success: true,
-        message: `${count} faturas do mês foram adicionadas à fila e começarão a ser enviadas.`
+        ...result,
+        message: result.total_queued > 0
+          ? `${result.total_queued} cobranÃ§a(s) do mÃªs foram adicionadas Ã  fila.`
+          : 'Nenhuma cobranÃ§a elegÃ­vel foi adicionada Ã  fila neste mÃªs.',
       });
     } catch (error) {
-      next(error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
   /**
    * POST /enqueue
-   * Reenfileirar manualmente UMA fatura (botão "Reenviar WhatsApp" no app)
+   * Reenfileirar manualmente UMA fatura (botao "Reenviar WhatsApp" no app)
    * Body: { invoiceId, type? }
    *
    * Regras:
    * - invoice deve existir, ser da escola
-   * - invoice não pode estar paga/cancelada
-   * - se estiver em HOLD (compensação ativa), NÃO enfileira
+   * - invoice nao pode estar paga/cancelada
+   * - se estiver em HOLD (compensacao ativa), NAO enfileira
    */
   async enqueueInvoice(req, res, next) {
     try {
@@ -214,37 +178,41 @@ class NotificationController {
       const { invoiceId, type } = req.body;
 
       if (!invoiceId) {
-        return res.status(400).json({ success: false, error: 'INVOICE_ID_REQUIRED' });
+        const payload = buildOutcomePayload({
+          code: 'INVOICE_ID_REQUIRED',
+          status: 'failed',
+          technicalMessage: 'invoiceId nao informado no body.',
+        });
+        return res.status(400).json(payload);
       }
 
       const inv = await Invoice.findOne({
         _id: invoiceId,
-        school_id: schoolId
+        school_id: schoolId,
       }).populate('student').populate('tutor');
 
       if (!inv) {
-        return res.status(404).json({ success: false, error: 'INVOICE_NOT_FOUND' });
+        const payload = buildOutcomePayload({
+          code: 'INVOICE_NOT_FOUND',
+          status: 'failed',
+          technicalMessage: 'Invoice nao encontrada para reenfileiramento manual.',
+          invoiceId,
+          itemId: invoiceId,
+        });
+        return res.status(404).json(payload);
       }
 
-      if (inv.status === 'paid' || inv.status === 'canceled') {
-        return res.status(400).json({ success: false, error: 'INVOICE_NOT_ELIGIBLE' });
-      }
-
-      // Bloqueio centralizado no service (HOLD)
       const result = await NotificationService.enqueueInvoiceManually({
         schoolId,
         invoice: inv,
-        type: type || 'manual'
+        type: type || 'manual',
+        processNow: true,
       });
 
-      // result: { ok: true } ou { ok:false, reason:'HOLD_ACTIVE' ... }
-      if (!result.ok) {
-        return res.status(200).json({ success: false, ...result });
-      }
-
-      return res.status(200).json({ success: true, ...result });
+      return res.status(resolveOutcomeHttpStatus(result)).json(result);
     } catch (error) {
-      next(error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
@@ -257,7 +225,8 @@ class NotificationController {
       const config = await NotificationService.getConfig(schoolId);
       res.status(200).json(config || {});
     } catch (error) {
-      next(error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
@@ -270,7 +239,8 @@ class NotificationController {
       const config = await NotificationService.saveConfig(schoolId, req.body);
       res.status(200).json(config);
     } catch (error) {
-      next(error);
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 }
