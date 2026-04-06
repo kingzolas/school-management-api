@@ -186,7 +186,17 @@ const NotificationTransportLogSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    internet_message_id: {
+      type: String,
+      default: null,
+      index: true,
+    },
     provider_thread_id: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    provider_mailbox_event_id: {
       type: String,
       default: null,
       index: true,

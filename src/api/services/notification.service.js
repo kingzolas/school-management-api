@@ -12,7 +12,12 @@ const notificationLogService = require('./notificationLog.service');
 const NotificationDispatchService = require('./notificationDispatch.service');
 const WhatsappTransport = require('./transports/whatsapp.transport');
 const EmailTransport = require('./transports/email.transport');
-const { DEFAULT_TIME_ZONE, getBusinessDayRange, getTimeZoneParts } = require('../utils/timeContext');
+const {
+  DEFAULT_TIME_ZONE,
+  getBusinessDayRange,
+  getTimeZoneParts,
+  zonedTimeToUtc,
+} = require('../utils/timeContext');
 const { getEmailIssueCode } = require('../utils/contact.util');
 const { extractDigitableLineFromInvoice } = require('../utils/boleto.util');
 const {
@@ -100,6 +105,13 @@ class NotificationService {
           attachBoletoPdf: plain?.channels?.email?.attachBoletoPdf === true,
           includePaymentLink: plain?.channels?.email?.includePaymentLink !== false,
           includePixCode: plain?.channels?.email?.includePixCode !== false,
+          stopOnDailyLimit: plain?.channels?.email?.stopOnDailyLimit !== false,
+          paused: plain?.channels?.email?.paused === true,
+          pausedUntil: plain?.channels?.email?.pausedUntil
+            ? new Date(plain.channels.email.pausedUntil).toISOString()
+            : null,
+          pauseReasonCode: plain?.channels?.email?.pauseReasonCode || null,
+          mailboxReadEnabled: plain?.channels?.email?.mailboxReadEnabled !== false,
         },
       },
     });
@@ -156,6 +168,160 @@ class NotificationService {
         this.forecastCache.delete(key);
       }
     });
+  }
+
+  _getHistoricalTimestampField(status) {
+    const normalizedStatus = String(status || '').trim().toLowerCase();
+    const map = {
+      sent: 'sent_at',
+      failed: 'failed_at',
+      skipped: 'skipped_at',
+      cancelled: 'cancelled_at',
+      paused: 'paused_at',
+    };
+
+    return map[normalizedStatus] || 'createdAt';
+  }
+
+  _buildHistoricalQuery({ schoolId, status = null, startOfDay, endOfDay }) {
+    const normalizedStatus = normalizeString(status);
+    const range = { $gte: startOfDay, $lte: endOfDay };
+    const query = { school_id: schoolId };
+
+    if (normalizedStatus && normalizedStatus !== 'Todos') {
+      query.status = normalizedStatus;
+      query[this._getHistoricalTimestampField(normalizedStatus)] = range;
+      return query;
+    }
+
+    query.$or = [
+      { status: 'queued', createdAt: range },
+      { status: 'processing', createdAt: range },
+      { status: 'sent', sent_at: range },
+      { status: 'failed', failed_at: range },
+      { status: 'skipped', skipped_at: range },
+      { status: 'cancelled', cancelled_at: range },
+      { status: 'paused', paused_at: range },
+    ];
+
+    return query;
+  }
+
+  _getChannelConfig(config = {}, channel = 'email') {
+    const plainConfig = config?.toObject ? config.toObject() : config;
+    return plainConfig?.channels?.[channel] || {};
+  }
+
+  _isChannelPaused(config = {}, channel = 'email', now = new Date()) {
+    const channelConfig = this._getChannelConfig(config, channel);
+    if (channelConfig?.paused !== true) return false;
+
+    const pausedUntil = normalizeDate(channelConfig?.pausedUntil);
+    if (!pausedUntil) return true;
+    return pausedUntil > now;
+  }
+
+  _buildNextEmailResumeDate(referenceDate = new Date()) {
+    const parts = getTimeZoneParts(referenceDate, this.businessTimeZone);
+    return zonedTimeToUtc(
+      {
+        year: parts.year,
+        month: parts.month,
+        day: parts.day + 1,
+        hour: 9,
+        minute: 0,
+        second: 0,
+        millisecond: 0,
+      },
+      this.businessTimeZone
+    );
+  }
+
+  async _clearExpiredEmailPauseIfNeeded(config) {
+    if (!config?._id) return config;
+
+    const emailConfig = this._getChannelConfig(config, 'email');
+    if (emailConfig?.paused !== true) return config;
+
+    const pausedUntil = normalizeDate(emailConfig?.pausedUntil);
+    if (!pausedUntil || pausedUntil > new Date()) {
+      return config;
+    }
+
+    await NotificationConfig.updateOne(
+      { _id: config._id },
+      {
+        $set: {
+          'channels.email.paused': false,
+          'channels.email.pausedAt': null,
+          'channels.email.pausedUntil': null,
+          'channels.email.pauseReasonCode': null,
+          'channels.email.pauseReasonMessage': null,
+        },
+      }
+    );
+
+    return NotificationConfig.findById(config._id);
+  }
+
+  async _pauseEmailChannelForSchool(
+    schoolId,
+    {
+      reasonCode = 'EMAIL_PROVIDER_DAILY_LIMIT_REACHED',
+      reasonMessage = null,
+      triggeredAt = new Date(),
+    } = {}
+  ) {
+    if (!schoolId) return { pausedCount: 0, config: null };
+
+    const pauseUntil = this._buildNextEmailResumeDate(triggeredAt);
+    const descriptor = getOutcomeDescriptor(reasonCode);
+    const pauseMessage = reasonMessage || descriptor.user_message;
+
+    await NotificationConfig.updateOne(
+      { school_id: schoolId },
+      {
+        $set: {
+          'channels.email.paused': true,
+          'channels.email.pausedAt': triggeredAt,
+          'channels.email.pausedUntil': pauseUntil,
+          'channels.email.pauseReasonCode': reasonCode,
+          'channels.email.pauseReasonMessage': pauseMessage,
+          'channels.email.lastProviderErrorAt': triggeredAt,
+          'channels.email.lastProviderErrorCode': reasonCode,
+        },
+      }
+    );
+
+    const queuedEmailLogs = await NotificationLog.find({
+      school_id: schoolId,
+      status: 'queued',
+      delivery_channel: 'email',
+    }).select('_id').lean();
+
+    let pausedCount = 0;
+    for (const queuedLog of queuedEmailLogs) {
+      const pausedLog = await notificationLogService.markPaused(queuedLog._id, {
+        pausedAt: triggeredAt,
+        outcome: {
+          code: 'EMAIL_CHANNEL_PAUSED',
+          status: 'paused',
+        },
+        errorMessage: pauseMessage,
+        errorCode: 'EMAIL_CHANNEL_PAUSED',
+        errorHttpStatus: 200,
+      });
+      pausedCount += 1;
+      this._emitNotificationUpdated(pausedLog);
+    }
+
+    this.invalidateForecastCache({ schoolId });
+
+    return {
+      pausedCount,
+      pauseUntil,
+      config: await NotificationConfig.findOne({ school_id: schoolId }),
+    };
   }
 
   _parseLocalDateInput(dateValue) {
@@ -408,7 +574,12 @@ class NotificationService {
     preferredChannel = null,
     referenceDate = new Date(),
   } = {}) {
-    if (!invoice?._id || !invoice?.school_id || !outcome || outcome.status !== 'skipped') {
+    if (
+      !invoice?._id ||
+      !invoice?.school_id ||
+      !outcome ||
+      !['skipped', 'paused'].includes(String(outcome.status || '').toLowerCase())
+    ) {
       return null;
     }
 
@@ -428,6 +599,7 @@ class NotificationService {
       invoiceId: invoice._id,
       channel: intendedChannel,
       outcomeCode: outcome.code,
+      status: outcome.status,
       dispatchOrigin,
       referenceDate,
     });
@@ -560,6 +732,7 @@ class NotificationService {
     });
 
     if (!selection.channel) {
+      const blockedByPause = selection.reason_code === 'EMAIL_CHANNEL_PAUSED';
       return {
         ok: false,
         invoice,
@@ -571,7 +744,7 @@ class NotificationService {
           recipient,
           selection,
           code: selection.reason_code || 'NO_CHANNEL_AVAILABLE',
-          status: 'skipped',
+          status: blockedByPause ? 'paused' : 'skipped',
           technicalMessage: selection.resolution_reason || 'No channel selected.',
         }),
       };
@@ -648,6 +821,34 @@ class NotificationService {
       }
     }
 
+    if (options.preventSuccessDuplication === true && options.force !== true) {
+      const latestSuccessfulLog = await notificationLogService.findLatestSuccessfulLogForInvoice({
+        schoolId: invoice?.school_id?._id || invoice?.school_id,
+        invoiceId: invoice._id,
+        channel: selection.channel,
+      });
+
+      if (latestSuccessfulLog) {
+        return {
+          ok: false,
+          invoice,
+          config,
+          recipient,
+          selection,
+          latestSuccessfulLog,
+          outcome: this._buildActionOutcome({
+            invoice,
+            recipient,
+            selection,
+            log: latestSuccessfulLog,
+            code: 'NOTIFICATION_ALREADY_SENT_SUCCESSFULLY',
+            status: 'skipped',
+            technicalMessage: 'Ja existe um envio bem-sucedido anterior para esta fatura e canal.',
+          }),
+        };
+      }
+    }
+
     if (options.validateTransportReady === true) {
       try {
         await this.dispatchService.assertReady(selection.channel, {
@@ -702,8 +903,18 @@ class NotificationService {
   }
 
   async _getSchoolConfigMap(filter = {}) {
-    const configs = await NotificationConfig.find(filter).lean();
-    return new Map(configs.map((config) => [String(config.school_id), config]));
+    const configs = await NotificationConfig.find(filter);
+    const entries = [];
+
+    for (const config of configs) {
+      const normalizedConfig = await this._clearExpiredEmailPauseIfNeeded(config);
+      entries.push([
+        String(normalizedConfig.school_id),
+        normalizedConfig?.toObject ? normalizedConfig.toObject() : normalizedConfig,
+      ]);
+    }
+
+    return new Map(entries);
   }
 
   isEligibleForSending(dueDate, referenceDate = new Date()) {
@@ -815,12 +1026,13 @@ class NotificationService {
       includeHold: options.includeHold !== false,
       requirePaymentData: options.requirePaymentData !== false,
       checkDuplicates: options.checkDuplicates === true,
+      preventSuccessDuplication: options.preventSuccessDuplication === true,
       validateTransportReady: options.validateTransportReady === true,
     });
 
     if (!analysis.ok) {
       let auditLog = null;
-      if (analysis.outcome?.status === 'skipped') {
+      if (analysis.outcome?.status === 'skipped' || analysis.outcome?.status === 'paused') {
         auditLog = await this._auditSkippedOutcome({
           invoice: analysis.invoice,
           recipient: analysis.recipient || {},
@@ -841,6 +1053,7 @@ class NotificationService {
       return {
         ok: false,
         skipped: analysis.outcome?.status === 'skipped',
+        paused: analysis.outcome?.status === 'paused',
         failed: analysis.outcome?.status === 'failed',
         reason: analysis.outcome?.code || 'QUEUE_FAILED',
         outcome: analysis.outcome,
@@ -923,6 +1136,7 @@ class NotificationService {
       config: await this.getConfig(schoolId),
       skipWindow: true,
       checkDuplicates: true,
+      preventSuccessDuplication: force !== true,
       validateTransportReady: true,
     });
 
@@ -980,7 +1194,7 @@ class NotificationService {
     const configFilter = { isActive: true };
     if (options.schoolId) configFilter.school_id = options.schoolId;
 
-    const activeConfigs = await NotificationConfig.find(configFilter).lean();
+    const activeConfigs = await NotificationConfig.find(configFilter);
     if (!activeConfigs.length) {
       return options.collectResults ? buildBatchResponse(createBatchAccumulator()) : undefined;
     }
@@ -990,7 +1204,8 @@ class NotificationService {
     const currentMinutes = currentTimeParts.hour * 60 + currentTimeParts.minute;
     const batch = options.collectResults ? createBatchAccumulator() : null;
 
-    for (const config of activeConfigs) {
+    for (const rawConfig of activeConfigs) {
+      const config = await this._clearExpiredEmailPauseIfNeeded(rawConfig);
       const [startH, startM] = String(config.windowStart || '08:00').split(':').map(Number);
       const [endH, endM] = String(config.windowEnd || '18:00').split(':').map(Number);
 
@@ -1026,6 +1241,7 @@ class NotificationService {
           dispatchOrigin: options.dispatchOrigin || 'cron_scan',
           referenceDate: now,
           checkDuplicates: true,
+          preventSuccessDuplication: true,
         });
 
         if (!batch) continue;
@@ -1081,6 +1297,7 @@ class NotificationService {
         dispatchOrigin: 'manual_month',
         skipWindow: true,
         checkDuplicates: true,
+        preventSuccessDuplication: true,
         validateTransportReady: true,
       });
 
@@ -1353,6 +1570,19 @@ class NotificationService {
     });
 
     if (!selection.channel) {
+      if (selection.reason_code === 'EMAIL_CHANNEL_PAUSED') {
+        return notificationLogService.markPaused(log._id, {
+          pausedAt: new Date(),
+          outcome: {
+            code: 'EMAIL_CHANNEL_PAUSED',
+            status: 'paused',
+          },
+          errorMessage: getOutcomeDescriptor('EMAIL_CHANNEL_PAUSED').user_message,
+          errorCode: 'EMAIL_CHANNEL_PAUSED',
+          errorHttpStatus: 200,
+        });
+      }
+
       const noChannelError = new Error('Nao ha canal disponivel para este destinatario.');
       noChannelError.code = selection.reason_code || 'NO_CHANNEL_AVAILABLE';
       throw noChannelError;
@@ -1399,6 +1629,33 @@ class NotificationService {
     });
   }
 
+  async _handleDispatchFailure(log, error) {
+    const normalized = this._normalizeDispatchError(error, log.delivery_channel);
+    const failedLog = await notificationLogService.markFailed(log._id, {
+      errorMessage: normalized.message,
+      errorCode: normalized.code,
+      errorHttpStatus: normalized.httpStatus,
+      errorRaw: normalized.raw,
+      transportLog: error.transportAttempt || null,
+      failedAt: new Date(),
+    });
+    this._emitNotificationUpdated(failedLog);
+
+    let pauseResult = null;
+    if (
+      log.delivery_channel === 'email' &&
+      normalized.code === 'EMAIL_PROVIDER_DAILY_LIMIT_REACHED'
+    ) {
+      pauseResult = await this._pauseEmailChannelForSchool(log.school_id, {
+        reasonCode: normalized.code,
+        reasonMessage: normalized.userMessage || normalized.message,
+        triggeredAt: new Date(),
+      });
+    }
+
+    return { failedLog, pauseResult, normalized };
+  }
+
   async processNotificationLogNow(logId) {
     const queuedLog = await NotificationLog.findOneAndUpdate(
       { _id: logId, status: 'queued' },
@@ -1416,15 +1673,7 @@ class NotificationService {
       this._emitNotificationUpdated(finalLog);
       return finalLog;
     } catch (error) {
-      const normalized = this._normalizeDispatchError(error, currentLog.delivery_channel);
-      const failedLog = await notificationLogService.markFailed(currentLog._id, {
-        errorMessage: normalized.message,
-        errorCode: normalized.code,
-        errorHttpStatus: normalized.httpStatus,
-        errorRaw: normalized.raw,
-        transportLog: error.transportAttempt || null,
-      });
-      this._emitNotificationUpdated(failedLog);
+      const { failedLog } = await this._handleDispatchFailure(currentLog, error);
       return failedLog;
     }
   }
@@ -1436,66 +1685,91 @@ class NotificationService {
     try {
       await this._recoverStaleProcessingLogs(options);
 
-      const queuedFilter = {
-        status: 'queued',
-        scheduled_for: { $lte: new Date() },
-      };
-      if (options.schoolId) queuedFilter.school_id = options.schoolId;
+      while (true) {
+        const queuedFilter = {
+          status: 'queued',
+          scheduled_for: { $lte: new Date() },
+        };
+        if (options.schoolId) queuedFilter.school_id = options.schoolId;
 
-      const queuedCandidates = await NotificationLog.find(queuedFilter)
-        .sort({ createdAt: 1 })
-        .select('_id school_id scheduled_for')
-        .lean();
+        const queuedCandidates = await NotificationLog.find(queuedFilter)
+          .sort({ createdAt: 1 })
+          .select('_id school_id scheduled_for delivery_channel createdAt')
+          .lean();
 
-      if (!queuedCandidates.length) return;
+        if (!queuedCandidates.length) return;
 
-      const schoolIds = [...new Set(queuedCandidates.map((item) => String(item.school_id)))];
-      const configMap = await this._getSchoolConfigMap({
-        school_id: { $in: schoolIds },
-        isActive: true,
-      });
-
-      const nextCandidate = queuedCandidates.find((item) => configMap.has(String(item.school_id)));
-      if (!nextCandidate) return;
-
-      const processingLog = await NotificationLog.findOneAndUpdate(
-        { _id: nextCandidate._id, status: 'queued' },
-        { $set: { status: 'processing', processing_started_at: new Date() } },
-        { new: true }
-      );
-
-      if (!processingLog) return;
-      this._emitNotificationUpdated(processingLog);
-
-      const delay = this._getRandomDelayMs();
-      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-
-      const schoolStillActive = await NotificationConfig.findOne({
-        school_id: processingLog.school_id,
-        isActive: true,
-      }).select('_id').lean();
-
-      if (!schoolStillActive) {
-        const pausedLog = await notificationLogService.markQueued(processingLog._id, {
-          scheduledFor: new Date(),
+        const schoolIds = [...new Set(queuedCandidates.map((item) => String(item.school_id)))];
+        const configMap = await this._getSchoolConfigMap({
+          school_id: { $in: schoolIds },
+          isActive: true,
         });
-        this._emitNotificationUpdated(pausedLog);
-        return;
-      }
 
-      try {
-        const finalLog = await this._executeNotificationLog(processingLog);
-        this._emitNotificationUpdated(finalLog);
-      } catch (error) {
-        const normalized = this._normalizeDispatchError(error, processingLog.delivery_channel);
-        const failedLog = await notificationLogService.markFailed(processingLog._id, {
-          errorMessage: normalized.message,
-          errorCode: normalized.code,
-          errorHttpStatus: normalized.httpStatus,
-          errorRaw: normalized.raw,
-          transportLog: error.transportAttempt || null,
-        });
-        this._emitNotificationUpdated(failedLog);
+        let nextCandidate = null;
+
+        for (const candidate of queuedCandidates) {
+          const schoolConfig = configMap.get(String(candidate.school_id));
+          if (!schoolConfig) continue;
+
+          if (this._isChannelPaused(schoolConfig, candidate.delivery_channel || 'whatsapp')) {
+            const pausedLog = await notificationLogService.markPaused(candidate._id, {
+              pausedAt: new Date(),
+              outcome: {
+                code: candidate.delivery_channel === 'email' ? 'EMAIL_CHANNEL_PAUSED' : 'NOTIFICATION_PAUSED',
+                status: 'paused',
+              },
+              errorMessage: candidate.delivery_channel === 'email'
+                ? getOutcomeDescriptor('EMAIL_CHANNEL_PAUSED').user_message
+                : getOutcomeDescriptor('NOTIFICATION_PAUSED').user_message,
+              errorCode: candidate.delivery_channel === 'email'
+                ? 'EMAIL_CHANNEL_PAUSED'
+                : 'NOTIFICATION_PAUSED',
+              errorHttpStatus: 200,
+            });
+            this._emitNotificationUpdated(pausedLog);
+            continue;
+          }
+
+          nextCandidate = candidate;
+          break;
+        }
+
+        if (!nextCandidate) return;
+
+        const processingLog = await NotificationLog.findOneAndUpdate(
+          { _id: nextCandidate._id, status: 'queued' },
+          { $set: { status: 'processing', processing_started_at: new Date() } },
+          { new: true }
+        );
+
+        if (!processingLog) continue;
+        this._emitNotificationUpdated(processingLog);
+
+        const delay = this._getRandomDelayMs();
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+
+        const schoolStillActive = await NotificationConfig.findOne({
+          school_id: processingLog.school_id,
+          isActive: true,
+        }).select('_id').lean();
+
+        if (!schoolStillActive) {
+          const resumedLog = await notificationLogService.markQueued(processingLog._id, {
+            scheduledFor: new Date(),
+          });
+          this._emitNotificationUpdated(resumedLog);
+          continue;
+        }
+
+        try {
+          const finalLog = await this._executeNotificationLog(processingLog);
+          this._emitNotificationUpdated(finalLog);
+        } catch (error) {
+          const { pauseResult } = await this._handleDispatchFailure(processingLog, error);
+          if (pauseResult?.pausedCount !== undefined) {
+            return;
+          }
+        }
       }
     } finally {
       this.isProcessing = false;
@@ -1510,13 +1784,18 @@ class NotificationService {
       normalizedScope === 'operational' &&
       (normalizedStatus === 'queued' || normalizedStatus === 'processing');
     const { startOfDay, endOfDay } = this._getDayRange(dateStr);
-    const query = { school_id: schoolId };
+    const query = isOperationalScope
+      ? { school_id: schoolId }
+      : this._buildHistoricalQuery({
+          schoolId,
+          status: normalizedStatus,
+          startOfDay,
+          endOfDay,
+        });
 
-    if (!isOperationalScope) {
-      query.createdAt = { $gte: startOfDay, $lte: endOfDay };
+    if (isOperationalScope && normalizedStatus && normalizedStatus !== 'Todos') {
+      query.status = normalizedStatus;
     }
-
-    if (normalizedStatus && normalizedStatus !== 'Todos') query.status = normalizedStatus;
 
     const safePage = Math.max(parseInt(page, 10) || 1, 1);
     const shouldPaginate = limit && limit !== 'all' && Number(limit) > 0;
@@ -1526,7 +1805,7 @@ class NotificationService {
       ? (normalizedStatus === 'processing'
           ? { processing_started_at: 1, createdAt: 1 }
           : { scheduled_for: 1, createdAt: 1 })
-      : { createdAt: -1 };
+      : { [this._getHistoricalTimestampField(normalizedStatus)]: -1, createdAt: -1 };
 
     let dbQuery = NotificationLog.find(query).sort(sort);
     if (shouldPaginate) dbQuery = dbQuery.skip((safePage - 1) * safeLimit).limit(safeLimit);
@@ -1563,22 +1842,75 @@ class NotificationService {
 
   async getDailyStats(schoolId, dateStr) {
     const { startOfDay, endOfDay } = this._getDayRange(dateStr);
-    const [logs, operationalLogs] = await Promise.all([
+    const range = { $gte: startOfDay, $lte: endOfDay };
+    const [
+      queuedTodayLogs,
+      processingTodayLogs,
+      sentLogs,
+      failedLogs,
+      skippedLogs,
+      cancelledLogs,
+      pausedLogs,
+      operationalLogs,
+    ] = await Promise.all([
       NotificationLog.find({
         school_id: schoolId,
-        createdAt: { $gte: startOfDay, $lte: endOfDay },
+        status: 'queued',
+        createdAt: range,
       }).select('status delivery_channel provider').lean(),
       NotificationLog.find({
         school_id: schoolId,
-        status: { $in: ['queued', 'processing'] },
+        status: 'processing',
+        createdAt: range,
+      }).select('status delivery_channel provider').lean(),
+      NotificationLog.find({
+        school_id: schoolId,
+        status: 'sent',
+        sent_at: range,
+      }).select('status delivery_channel provider').lean(),
+      NotificationLog.find({
+        school_id: schoolId,
+        status: 'failed',
+        failed_at: range,
+      }).select('status delivery_channel provider').lean(),
+      NotificationLog.find({
+        school_id: schoolId,
+        status: 'skipped',
+        skipped_at: range,
+      }).select('status delivery_channel provider').lean(),
+      NotificationLog.find({
+        school_id: schoolId,
+        status: 'cancelled',
+        cancelled_at: range,
+      }).select('status delivery_channel provider').lean(),
+      NotificationLog.find({
+        school_id: schoolId,
+        status: 'paused',
+        paused_at: range,
+      }).select('status delivery_channel provider').lean(),
+      NotificationLog.find({
+        school_id: schoolId,
+        status: { $in: ['queued', 'processing', 'paused'] },
       }).select('status delivery_channel provider').lean(),
     ]);
+
+    const logs = [
+      ...queuedTodayLogs,
+      ...processingTodayLogs,
+      ...sentLogs,
+      ...failedLogs,
+      ...skippedLogs,
+      ...cancelledLogs,
+      ...pausedLogs,
+    ];
 
     const result = {
       queued: 0,
       processing: 0,
+      paused: 0,
       queued_today: 0,
       processing_today: 0,
+      paused_today: 0,
       sent: 0,
       failed: 0,
       cancelled: 0,
@@ -1595,7 +1927,8 @@ class NotificationService {
     logs.forEach((log) => {
       if (log.status === 'queued') result.queued_today += 1;
       if (log.status === 'processing') result.processing_today += 1;
-      if (['sent', 'failed', 'cancelled', 'skipped'].includes(log.status)) {
+      if (log.status === 'paused') result.paused_today += 1;
+      if (['sent', 'failed', 'cancelled', 'skipped', 'paused'].includes(log.status)) {
         result[log.status] += 1;
       }
       result.total_today += 1;
@@ -1608,6 +1941,7 @@ class NotificationService {
         result.by_channel_status[channel] = {
           queued: 0,
           processing: 0,
+          paused: 0,
           sent: 0,
           failed: 0,
           cancelled: 0,
@@ -1624,17 +1958,19 @@ class NotificationService {
     operationalLogs.forEach((log) => {
       if (log.status === 'queued') result.queued += 1;
       if (log.status === 'processing') result.processing += 1;
+      if (log.status === 'paused') result.paused += 1;
 
       const channel = log.delivery_channel || 'whatsapp';
       if (!result.operational_by_channel_status[channel]) {
         result.operational_by_channel_status[channel] = {
           queued: 0,
           processing: 0,
+          paused: 0,
           total: 0,
         };
       }
 
-      if (log.status === 'queued' || log.status === 'processing') {
+      if (['queued', 'processing', 'paused'].includes(log.status)) {
         result.operational_by_channel_status[channel][log.status] += 1;
         result.operational_by_channel_status[channel].total += 1;
       }
@@ -1802,11 +2138,15 @@ class NotificationService {
     const failedLogs = await NotificationLog.find({
       school_id: schoolId,
       status: 'failed',
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
+      failed_at: { $gte: startOfDay, $lte: endOfDay },
     });
 
     let count = 0;
     for (const log of failedLogs) {
+      if (log.outcome_retryable === false) {
+        continue;
+      }
+
       await notificationLogService.markQueued(log._id, {
         scheduledFor: new Date(),
         dispatchOrigin: 'manual_retry',
@@ -1825,7 +2165,7 @@ class NotificationService {
   async getConfig(schoolId) {
     let config = await NotificationConfig.findOne({ school_id: schoolId });
     if (!config) config = await NotificationConfig.create({ school_id: schoolId });
-    return config;
+    return this._clearExpiredEmailPauseIfNeeded(config);
   }
 
   async saveConfig(schoolId, data = {}) {
@@ -1849,6 +2189,13 @@ class NotificationService {
         },
       },
     };
+
+    if ((data.channels || {}).email?.paused === false) {
+      payload.channels.email.pausedAt = null;
+      payload.channels.email.pausedUntil = null;
+      payload.channels.email.pauseReasonCode = null;
+      payload.channels.email.pauseReasonMessage = null;
+    }
 
     delete payload._id;
     delete payload.createdAt;

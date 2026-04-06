@@ -169,7 +169,9 @@ class NotificationTransportLogService {
     canonicalStatus,
     providerStatus = null,
     providerMessageId = null,
+    internetMessageId = null,
     providerThreadId = null,
+    providerMailboxEventId = null,
     eventAt = new Date(),
     eventType = null,
     rawProviderResponse = null,
@@ -198,7 +200,9 @@ class NotificationTransportLogService {
     const finalEventAt = toDate(eventAt);
 
     if (providerMessageId) attempt.provider_message_id = normalizeString(providerMessageId);
+    if (internetMessageId) attempt.internet_message_id = normalizeString(internetMessageId);
     if (providerThreadId) attempt.provider_thread_id = normalizeString(providerThreadId);
+    if (providerMailboxEventId) attempt.provider_mailbox_event_id = normalizeString(providerMailboxEventId);
     if (providerStatus) attempt.provider_status = normalizeString(providerStatus);
     if (destination) attempt.destination = normalizeString(destination);
     if (destinationPhone) {
@@ -273,6 +277,15 @@ class NotificationTransportLogService {
       status: input.status || 'sent',
       canonicalStatus: 'sent',
       eventType: input.eventType || 'ATTEMPT_SENT',
+    });
+  }
+
+  async markBounced(attemptId, input = {}) {
+    return this._transitionAttempt(attemptId, {
+      ...input,
+      status: input.status || 'bounced',
+      canonicalStatus: 'bounced',
+      eventType: input.eventType || 'ATTEMPT_BOUNCED',
     });
   }
 

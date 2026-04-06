@@ -2,6 +2,7 @@ const cron = require('node-cron');
 
 const InvoiceService = require('../api/services/invoice.service');
 const NotificationService = require('../api/services/notification.service');
+const gmailMailboxReconciliationService = require('../api/services/gmailMailboxReconciliation.service');
 const WhatsappBotService = require('../api/services/whatsappBot.service');
 const tempAccessTokenService = require('../api/services/tempAccessToken.service');
 
@@ -72,6 +73,28 @@ const initCronJobs = () => {
             console.error('Erro no Cron Job de Sync Financeira:', error);
         } finally {
             financeSyncSweepRunning = false;
+        }
+
+    }, {
+        scheduled: true,
+        timezone: 'America/Sao_Paulo',
+    });
+
+    // ------------------------------------------------------------------
+    // JOB 1C - Reconciliacao da caixa Gmail para bounces/DSN
+    // roda a cada 10 minutos e atualiza falhas assincronas do e-mail
+    // ------------------------------------------------------------------
+    cron.schedule('*/10 * * * *', async () => {
+        try {
+            const result = await gmailMailboxReconciliationService.reconcile({
+                maxMessages: 25,
+            });
+
+            if (result?.processed > 0 || result?.skipped) {
+                console.log('[Cron] Gmail mailbox reconciliation', result);
+            }
+        } catch (error) {
+            console.error('Erro no Cron Job de reconciliacao do Gmail:', error);
         }
 
     }, {

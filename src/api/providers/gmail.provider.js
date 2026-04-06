@@ -3,7 +3,8 @@ const path = require('path');
 const axios = require('axios');
 const dotenv = require('dotenv');
 
-const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+const GMAIL_READ_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
 function loadOptionalEnvFiles() {
   const originalEnvKeys = new Set(Object.keys(process.env));
@@ -73,6 +74,7 @@ function buildMimeMessage({
   text,
   html = null,
   attachments = [],
+  internetMessageId = null,
 }) {
   const mixedBoundary = `mixed_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const altBoundary = `alt_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -83,7 +85,7 @@ function buildMimeMessage({
   if (replyTo) lines.push(`Reply-To: ${replyTo}`);
   lines.push(`Subject: ${encodeHeaderWord(subject)}`);
   lines.push(`Date: ${new Date().toUTCString()}`);
-  lines.push(`Message-ID: <${Date.now()}.${Math.random().toString(36).slice(2)}@academyhubsistema.com>`);
+  lines.push(`Message-ID: ${internetMessageId || `<${Date.now()}.${Math.random().toString(36).slice(2)}@academyhubsistema.com>`}`);
   lines.push('MIME-Version: 1.0');
   lines.push('Content-Language: pt-BR');
 
@@ -203,7 +205,7 @@ class GmailProvider {
     return oauth2Client.generateAuthUrl({
       access_type: 'offline',
       prompt,
-      scope: [GMAIL_SCOPE],
+      scope: [GMAIL_SEND_SCOPE, GMAIL_READ_SCOPE],
       state,
     });
   }
@@ -283,6 +285,40 @@ class GmailProvider {
     };
   }
 
+  async _getGrantedScopes() {
+    const { oauth2Client } = await this._createClient();
+    const accessTokenResponse = await oauth2Client.getAccessToken();
+    const accessToken =
+      typeof accessTokenResponse === 'string'
+        ? accessTokenResponse
+        : accessTokenResponse?.token || null;
+
+    if (!accessToken) {
+      const error = new Error('Nao foi possivel obter access token para consultar a caixa do Gmail.');
+      error.code = 'GMAIL_ACCESS_TOKEN_UNAVAILABLE';
+      throw error;
+    }
+
+    const tokenInfo = await oauth2Client.getTokenInfo(accessToken);
+    return Array.isArray(tokenInfo?.scopes)
+      ? tokenInfo.scopes
+      : String(tokenInfo?.scope || '')
+          .split(' ')
+          .map((item) => item.trim())
+          .filter(Boolean);
+  }
+
+  async assertCanReadMailbox() {
+    const scopes = await this._getGrantedScopes();
+    if (!scopes.includes(GMAIL_READ_SCOPE)) {
+      const error = new Error('O refresh token atual nao possui permissao de leitura da caixa do Gmail para reconciliacao de bounces.');
+      error.code = 'GMAIL_READ_SCOPE_MISSING';
+      throw error;
+    }
+
+    return true;
+  }
+
   async _downloadAttachment(attachment = {}) {
     const response = await axios.get(attachment.sourceUrl, {
       responseType: 'arraybuffer',
@@ -341,6 +377,7 @@ class GmailProvider {
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
     const sender = this.getSender();
     const preparedAttachments = await this.prepareAttachments(attachments);
+    const internetMessageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@academyhubsistema.com>`;
 
     const mimeMessage = buildMimeMessage({
       to,
@@ -350,6 +387,7 @@ class GmailProvider {
       text,
       html,
       attachments: preparedAttachments,
+      internetMessageId,
     });
 
     const response = await gmail.users.messages.send({
@@ -362,6 +400,7 @@ class GmailProvider {
     return {
       id: response.data?.id || null,
       threadId: response.data?.threadId || null,
+      internetMessageId,
       labelIds: response.data?.labelIds || [],
       rawResponse: response.data || null,
       attachments: preparedAttachments.map((attachment) => ({
@@ -372,6 +411,42 @@ class GmailProvider {
         size: attachment.size || null,
       })),
     };
+  }
+
+  async listMailboxMessages({ query, maxResults = 25, pageToken = null } = {}) {
+    await this.assertCanReadMailbox();
+
+    const { google, oauth2Client } = await this._createClient();
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    const response = await gmail.users.messages.list({
+      userId: 'me',
+      q: query,
+      maxResults,
+      pageToken: pageToken || undefined,
+      includeSpamTrash: true,
+    });
+
+    return {
+      messages: response.data?.messages || [],
+      nextPageToken: response.data?.nextPageToken || null,
+      resultSizeEstimate: response.data?.resultSizeEstimate || 0,
+    };
+  }
+
+  async getMailboxMessage(messageId, format = 'full') {
+    await this.assertCanReadMailbox();
+
+    const { google, oauth2Client } = await this._createClient();
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    const response = await gmail.users.messages.get({
+      userId: 'me',
+      id: messageId,
+      format,
+    });
+
+    return response.data || null;
   }
 }
 

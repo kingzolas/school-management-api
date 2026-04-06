@@ -197,6 +197,7 @@ class NotificationLogService {
     invoiceId,
     channel = 'whatsapp',
     outcomeCode = null,
+    status = 'skipped',
     dispatchOrigin = 'manual_queue',
     referenceDate = new Date(),
   }) {
@@ -204,7 +205,7 @@ class NotificationLogService {
     const existing = await this.NotificationLogModel.findOne({
       school_id: schoolId,
       invoice_id: invoiceId,
-      status: 'skipped',
+      status,
       delivery_channel: channel,
       dispatch_origin: dispatchOrigin,
       outcome_code: outcomeCode,
@@ -219,6 +220,21 @@ class NotificationLogService {
       startOfDay,
       endOfDay,
     };
+  }
+
+  async findLatestSuccessfulLogForInvoice({
+    schoolId,
+    invoiceId,
+    channel = 'email',
+  }) {
+    return this.NotificationLogModel.findOne({
+      school_id: schoolId,
+      invoice_id: invoiceId,
+      delivery_channel: channel,
+      status: 'sent',
+    })
+      .sort({ sent_at: -1, createdAt: -1 })
+      .lean();
   }
 
   buildOutcomeMetadata(outcome = {}) {
@@ -316,6 +332,7 @@ class NotificationLogService {
   } = {}) {
     const { businessDayKey, timeZone } = this._getBusinessDayContext(referenceDate);
     const resolvedRecipient = this.resolveRecipient(recipient);
+    const outcomeStatus = normalizeString(outcome?.status) || 'skipped';
     const deliveryKey = this.buildOutcomeDeliveryKey({
       schoolId,
       invoiceId,
@@ -332,7 +349,7 @@ class NotificationLogService {
       invoiceId,
       recipient: resolvedRecipient,
       type,
-      status: 'skipped',
+      status: outcomeStatus,
       scheduledFor: referenceDate,
       deliveryChannel,
       provider,
@@ -342,7 +359,8 @@ class NotificationLogService {
       businessTimeZone: timeZone,
       deliveryKey,
       invoiceSnapshot,
-      skipped_at: referenceDate,
+      skipped_at: outcomeStatus === 'skipped' ? referenceDate : null,
+      paused_at: outcomeStatus === 'paused' ? referenceDate : null,
       message_preview: outcome?.user_message || null,
       ...this.buildOutcomeMetadata(outcome),
     });
@@ -391,6 +409,8 @@ class NotificationLogService {
       scheduled_for: scheduledFor,
       processing_started_at: null,
       sent_at: null,
+      failed_at: null,
+      paused_at: null,
       cancelled_at: null,
       error_message: null,
       error_code: null,
@@ -427,6 +447,8 @@ class NotificationLogService {
     return this.updateLogById(logId, {
       status: 'sent',
       sent_at: sentAt,
+      failed_at: null,
+      paused_at: null,
       cancelled_at: null,
       skipped_at: null,
       error_message: null,
@@ -451,6 +473,7 @@ class NotificationLogService {
     errorRaw = null,
     transportLog = null,
     attempts = null,
+    failedAt = new Date(),
   } = {}) {
     const outcomeMetadata = errorCode
       ? this.buildOutcomeMetadata({
@@ -460,6 +483,7 @@ class NotificationLogService {
 
     return this.updateLogById(logId, {
       status: 'failed',
+      failed_at: failedAt,
       error_message: errorMessage,
       error_code: errorCode,
       error_http_status: errorHttpStatus,
@@ -493,6 +517,8 @@ class NotificationLogService {
       cancelled_reason: cancelledReason,
       processing_started_at: null,
       sent_at: null,
+      failed_at: null,
+      paused_at: null,
       error_message: errorMessage,
       error_code: errorCode,
       error_http_status: errorHttpStatus,
@@ -511,12 +537,44 @@ class NotificationLogService {
       status: 'skipped',
       skipped_at: skippedAt,
       sent_at: null,
+      failed_at: null,
+      paused_at: null,
       processing_started_at: null,
       error_message: null,
       error_code: null,
       error_http_status: null,
       error_raw: null,
       ...this.buildOutcomeMetadata(outcome),
+      ...this.attachTransportSummary({}, transportLog),
+    });
+  }
+
+  async markPaused(logId, {
+    pausedAt = new Date(),
+    outcome = {},
+    errorMessage = null,
+    errorCode = null,
+    errorHttpStatus = null,
+    errorRaw = null,
+    transportLog = null,
+  } = {}) {
+    const outcomePayload = errorCode
+      ? { ...outcome, code: outcome?.code || errorCode }
+      : outcome;
+
+    return this.updateLogById(logId, {
+      status: 'paused',
+      paused_at: pausedAt,
+      processing_started_at: null,
+      sent_at: null,
+      failed_at: null,
+      cancelled_at: null,
+      skipped_at: null,
+      error_message: errorMessage,
+      error_code: errorCode || outcomePayload?.code || null,
+      error_http_status: errorHttpStatus,
+      error_raw: errorRaw,
+      ...this.buildOutcomeMetadata(outcomePayload),
       ...this.attachTransportSummary({}, transportLog),
     });
   }

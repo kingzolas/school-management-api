@@ -134,6 +134,11 @@ test('queueMonthInvoicesManually returns queued/skipped breakdown for mixed invo
     },
     {
       target: notificationLogService,
+      key: 'findLatestSuccessfulLogForInvoice',
+      value: async () => null,
+    },
+    {
+      target: notificationLogService,
       key: 'createLog',
       value: async (input) => {
         const log = {
@@ -244,6 +249,11 @@ test('enqueueInvoiceManually returns retryable failed outcome when provider has 
         businessDay: '2026-04-03',
         businessTimeZone: 'America/Sao_Paulo',
       }),
+    },
+    {
+      target: notificationLogService,
+      key: 'findLatestSuccessfulLogForInvoice',
+      value: async () => null,
     },
     {
       target: notificationLogService,
@@ -395,6 +405,11 @@ test('enqueueInvoiceManually skips when email channel is disabled or invoice is 
     },
     {
       target: notificationLogService,
+      key: 'findLatestSuccessfulLogForInvoice',
+      value: async () => null,
+    },
+    {
+      target: notificationLogService,
       key: 'createLog',
       value: async (input) => {
         const log = {
@@ -481,6 +496,11 @@ test('queueMonthInvoicesManually creates auditable skipped log for hold active i
         businessDay: '2026-04-03',
         businessTimeZone: 'America/Sao_Paulo',
       }),
+    },
+    {
+      target: notificationLogService,
+      key: 'findLatestSuccessfulLogForInvoice',
+      value: async () => null,
     },
     {
       target: notificationLogService,
@@ -641,12 +661,29 @@ test('getLogs and getDailyStats expose skipped records with operational visibili
     {
       target: NotificationLog,
       key: 'find',
-      value: () => createQuery([skippedLog]),
+      value: (filter = {}) => {
+        if (filter?.status === 'skipped' && filter?.skipped_at) {
+          return createQuery([skippedLog]);
+        }
+
+        if (filter?.status === 'skipped') {
+          return createQuery([skippedLog]);
+        }
+
+        if (filter?.status?.$in) {
+          return createQuery([]);
+        }
+
+        return createQuery([]);
+      },
     },
     {
       target: NotificationLog,
       key: 'countDocuments',
-      value: async () => 1,
+      value: async (filter = {}) => {
+        if (filter?.status === 'skipped' || filter?.$or) return 1;
+        return 0;
+      },
     },
   ]);
 
@@ -696,6 +733,7 @@ test('getLogs and getDailyStats separate current queue from selected-day history
     provider: 'gmail',
     createdAt: new Date('2026-04-03T12:00:00.000Z'),
     updatedAt: new Date('2026-04-03T12:05:00.000Z'),
+    sent_at: new Date('2026-04-03T12:05:00.000Z'),
     recipient_role: 'tutor',
     recipient_name: 'Responsavel Sent',
     student_name: 'Aluno Sent',
@@ -717,7 +755,15 @@ test('getLogs and getDailyStats separate current queue from selected-day history
           return createQuery([queuedOldLog]);
         }
 
-        if (filter?.createdAt) {
+        if (filter?.status === 'queued' && filter?.createdAt) {
+          return createQuery([]);
+        }
+
+        if (filter?.status === 'processing' && filter?.createdAt) {
+          return createQuery([]);
+        }
+
+        if (filter?.status === 'sent' && filter?.sent_at) {
           return createQuery([sentTodayLog]);
         }
 
@@ -729,7 +775,9 @@ test('getLogs and getDailyStats separate current queue from selected-day history
       key: 'countDocuments',
       value: async (filter = {}) => {
         if (filter?.status === 'queued' && !filter?.createdAt) return 1;
-        if (filter?.createdAt) return 1;
+        if (filter?.status === 'queued' && filter?.createdAt) return 0;
+        if (filter?.status === 'processing' && filter?.createdAt) return 0;
+        if (filter?.status === 'sent' && filter?.sent_at) return 1;
         return 0;
       },
     },

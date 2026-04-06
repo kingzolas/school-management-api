@@ -62,6 +62,46 @@ const EmailChannelConfigSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    stopOnDailyLimit: {
+      type: Boolean,
+      default: true,
+    },
+    paused: {
+      type: Boolean,
+      default: false,
+    },
+    pausedAt: {
+      type: Date,
+      default: null,
+    },
+    pausedUntil: {
+      type: Date,
+      default: null,
+    },
+    pauseReasonCode: {
+      type: String,
+      default: null,
+    },
+    pauseReasonMessage: {
+      type: String,
+      default: null,
+    },
+    lastProviderErrorAt: {
+      type: Date,
+      default: null,
+    },
+    lastProviderErrorCode: {
+      type: String,
+      default: null,
+    },
+    mailboxReadEnabled: {
+      type: Boolean,
+      default: true,
+    },
+    lastMailboxSyncAt: {
+      type: Date,
+      default: null,
+    },
   },
   { _id: false }
 );

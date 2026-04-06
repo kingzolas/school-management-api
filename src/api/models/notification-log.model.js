@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const DELIVERY_CHANNELS = ['whatsapp', 'email'];
 const NOTIFICATION_TYPES = ['new_invoice', 'reminder', 'overdue', 'due_today', 'manual'];
-const NOTIFICATION_STATUSES = ['queued', 'processing', 'sent', 'failed', 'cancelled', 'skipped'];
+const NOTIFICATION_STATUSES = ['queued', 'processing', 'sent', 'failed', 'cancelled', 'skipped', 'paused'];
 const RECIPIENT_ROLES = ['student', 'tutor', 'unknown'];
 
 function normalizeString(value) {
@@ -414,6 +414,8 @@ const NotificationLogSchema = new mongoose.Schema(
     scheduled_for: { type: Date, default: Date.now },
     processing_started_at: { type: Date, default: null },
     sent_at: { type: Date, default: null },
+    failed_at: { type: Date, default: null },
+    paused_at: { type: Date, default: null },
     cancelled_at: { type: Date, default: null },
     cancelled_by_action: { type: String, default: null, index: true },
     cancelled_reason: { type: String, default: null },

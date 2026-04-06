@@ -440,6 +440,11 @@ test('cancelled queue logs no longer block a fresh manual queue on the same day'
     },
     {
       target: notificationLogService,
+      key: 'findLatestSuccessfulLogForInvoice',
+      value: async () => null,
+    },
+    {
+      target: notificationLogService,
       key: 'createLog',
       value: async (input) => {
         const log = createLog('new_queue_log', {

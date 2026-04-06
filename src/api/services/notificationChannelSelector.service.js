@@ -49,6 +49,17 @@ class NotificationChannelSelectorService {
     };
   }
 
+  _isPaused(channelConfig = {}) {
+    if (channelConfig?.paused !== true) return false;
+
+    const pausedUntil = normalizeString(channelConfig.pausedUntil) || channelConfig.pausedUntil || null;
+    if (!pausedUntil) return true;
+
+    const parsed = new Date(pausedUntil);
+    if (Number.isNaN(parsed.getTime())) return true;
+    return parsed > new Date();
+  }
+
   _getAvailability(recipient = {}) {
     const phone = normalizeString(
       recipient.target_phone_normalized ||
@@ -146,8 +157,9 @@ class NotificationChannelSelectorService {
     const primaryEnabled = normalizedConfig.channels[primaryChannel]?.enabled === true ||
       (primaryChannel === 'whatsapp' && normalizedConfig.channels.whatsapp.enabled !== false);
     const primaryAvailable = availability[primaryChannel]?.available === true;
+    const primaryPaused = this._isPaused(normalizedConfig.channels[primaryChannel]);
 
-    if (primaryEnabled && primaryAvailable) {
+    if (primaryEnabled && !primaryPaused && primaryAvailable) {
       return this._buildSuccessResult(
         primaryChannel,
         normalizedConfig,
@@ -161,8 +173,9 @@ class NotificationChannelSelectorService {
       const fallbackEnabled = normalizedConfig.channels[fallbackChannel]?.enabled === true ||
         (fallbackChannel === 'whatsapp' && normalizedConfig.channels.whatsapp.enabled !== false);
       const fallbackAvailable = availability[fallbackChannel]?.available === true;
+      const fallbackPaused = this._isPaused(normalizedConfig.channels[fallbackChannel]);
 
-      if (fallbackEnabled && fallbackAvailable) {
+      if (fallbackEnabled && !fallbackPaused && fallbackAvailable) {
         const reason = !primaryEnabled
           ? 'fallback_primary_disabled'
           : 'fallback_primary_unavailable';
@@ -183,6 +196,15 @@ class NotificationChannelSelectorService {
         availability,
         'primary_channel_disabled',
         this._resolveDisabledReason(primaryChannel)
+      );
+    }
+
+    if (primaryPaused) {
+      return this._buildFailureResult(
+        normalizedConfig,
+        availability,
+        'primary_channel_paused',
+        primaryChannel === 'email' ? 'EMAIL_CHANNEL_PAUSED' : 'TRANSPORT_NOT_CONFIGURED'
       );
     }
 

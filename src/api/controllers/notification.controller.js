@@ -140,7 +140,9 @@ class NotificationController {
       });
 
       if (result.total_queued > 0) {
-        NotificationService.processQueue({ schoolId });
+        NotificationService.processQueue({ schoolId }).catch((error) => {
+          console.error('Erro ao drenar fila apos trigger manual:', error);
+        });
       }
 
       res.status(200).json({
@@ -166,7 +168,9 @@ class NotificationController {
       const result = await NotificationService.queueMonthInvoicesManually(schoolId);
 
       if (result.total_queued > 0) {
-        NotificationService.processQueue({ schoolId });
+        NotificationService.processQueue({ schoolId }).catch((error) => {
+          console.error('Erro ao drenar fila apos trigger do mes:', error);
+        });
       }
 
       res.status(200).json({

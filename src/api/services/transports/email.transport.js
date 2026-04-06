@@ -69,6 +69,7 @@ class EmailTransport {
 
       let updatedAttempt = await this.notificationTransportLogService.markAccepted(attempt._id, {
         providerMessageId: providerResponse.id,
+        internetMessageId: providerResponse.internetMessageId || null,
         providerThreadId: providerResponse.threadId,
         providerStatus: 'ACCEPTED',
         destination: email,
@@ -80,6 +81,7 @@ class EmailTransport {
 
       updatedAttempt = await this.notificationTransportLogService.markSent(updatedAttempt._id, {
         providerMessageId: providerResponse.id,
+        internetMessageId: providerResponse.internetMessageId || null,
         providerThreadId: providerResponse.threadId,
         providerStatus: 'SENT',
         destination: email,
