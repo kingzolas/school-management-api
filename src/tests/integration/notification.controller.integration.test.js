@@ -44,24 +44,19 @@ test('NotificationController keeps transport-logs contract delegating to the mul
   }
 });
 
-test('NotificationController returns structured batch payload for trigger-month', async () => {
-  const originalQueueMonth = NotificationService.queueMonthInvoicesManually;
-  const originalProcessQueue = NotificationService.processQueue;
+test('NotificationController starts month release in background with queue snapshot', async () => {
+  const originalTriggerMonth = NotificationService.triggerMonthReleaseInBackground;
 
-  NotificationService.queueMonthInvoicesManually = async () => ({
-    success: true,
-    total_analisado: 5,
-    total_elegivel: 1,
-    total_queued: 1,
-    total_skipped: 4,
-    total_failed: 0,
-    breakdown: {
-      NOTIFICATION_QUEUED: 1,
-      INVOICE_ALREADY_PAID: 1,
+  NotificationService.triggerMonthReleaseInBackground = async () => ({
+    started: true,
+    alreadyRunning: false,
+    startedAt: new Date('2026-04-06T16:30:00.000Z'),
+    snapshot: {
+      queued: 3,
+      processing: 1,
+      paused: 2,
     },
-    items: [],
   });
-  NotificationService.processQueue = async () => undefined;
 
   const req = {
     user: { schoolId: 'school_1' },
@@ -71,12 +66,12 @@ test('NotificationController returns structured batch payload for trigger-month'
   try {
     await controller.triggerMonthInvoices(req, res, (error) => { throw error; });
     assert.equal(res.statusCode, 200);
-    assert.equal(res.payload.total_analisado, 5);
-    assert.equal(res.payload.total_queued, 1);
-    assert.equal(res.payload.breakdown.INVOICE_ALREADY_PAID, 1);
+    assert.equal(res.payload.background_started, true);
+    assert.equal(res.payload.code, 'MONTH_RELEASE_STARTED');
+    assert.equal(res.payload.total_queued, 3);
+    assert.equal(res.payload.total_paused, 2);
   } finally {
-    NotificationService.queueMonthInvoicesManually = originalQueueMonth;
-    NotificationService.processQueue = originalProcessQueue;
+    NotificationService.triggerMonthReleaseInBackground = originalTriggerMonth;
   }
 });
 

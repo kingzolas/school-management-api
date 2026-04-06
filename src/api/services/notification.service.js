@@ -15,7 +15,10 @@ const EmailTransport = require('./transports/email.transport');
 const {
   DEFAULT_TIME_ZONE,
   getBusinessDayRange,
+  getBusinessMonthRange,
   getTimeZoneParts,
+  parseBusinessDateInput,
+  shiftBusinessDate,
   zonedTimeToUtc,
 } = require('../utils/timeContext');
 const { getEmailIssueCode } = require('../utils/contact.util');
@@ -54,7 +57,8 @@ function normalizeDate(value) {
 
 class NotificationService {
   constructor() {
-    this.isProcessing = false;
+    this.processingLocks = new Set();
+    this.backgroundJobs = new Map();
     this.businessTimeZone = DEFAULT_TIME_ZONE;
     this.processingStaleTimeoutMinutes = Number(process.env.NOTIFICATION_PROCESSING_STALE_MINUTES || 60);
     this.delayMinMs = Number(process.env.NOTIFICATION_PROCESS_DELAY_MIN_MS || (process.env.NODE_ENV === 'test' ? 0 : 15000));
@@ -65,6 +69,114 @@ class NotificationService {
     this.dispatchService = new NotificationDispatchService();
     this.dispatchService.registerTransport('whatsapp', new WhatsappTransport());
     this.dispatchService.registerTransport('email', new EmailTransport());
+  }
+
+  _buildBackgroundJobKey(schoolId, jobType) {
+    return `${String(schoolId || '').trim()}:${String(jobType || '').trim()}`;
+  }
+
+  _buildProcessingLockKey(schoolId = null) {
+    return schoolId ? String(schoolId).trim() : '__all__';
+  }
+
+  _isQueueProcessing(schoolId = null) {
+    const globalLockKey = this._buildProcessingLockKey();
+    if (this.processingLocks.has(globalLockKey)) return true;
+    if (!schoolId) return this.processingLocks.size > 0;
+    return this.processingLocks.has(this._buildProcessingLockKey(schoolId));
+  }
+
+  _startBackgroundJob({ schoolId, jobType, runner }) {
+    const jobKey = this._buildBackgroundJobKey(schoolId, jobType);
+    const existing = this.backgroundJobs.get(jobKey);
+
+    if (existing) {
+      return {
+        started: false,
+        alreadyRunning: true,
+        jobKey,
+        startedAt: existing.startedAt,
+      };
+    }
+
+    const metadata = {
+      startedAt: new Date(),
+      schoolId,
+      jobType,
+    };
+    this.backgroundJobs.set(jobKey, metadata);
+
+    setImmediate(async () => {
+      try {
+        await runner();
+      } catch (error) {
+        console.error(`[NotificationService] Background job failed (${jobKey}):`, error);
+      } finally {
+        this.backgroundJobs.delete(jobKey);
+      }
+    });
+
+    return {
+      started: true,
+      alreadyRunning: false,
+      jobKey,
+      startedAt: metadata.startedAt,
+    };
+  }
+
+  async getOperationalSnapshot(schoolId) {
+    const [queued, processing, paused] = await Promise.all([
+      NotificationLog.countDocuments({ school_id: schoolId, status: 'queued' }),
+      NotificationLog.countDocuments({ school_id: schoolId, status: 'processing' }),
+      NotificationLog.countDocuments({ school_id: schoolId, status: 'paused' }),
+    ]);
+
+    return { queued, processing, paused };
+  }
+
+  async triggerQueueProcessingInBackground(schoolId) {
+    const snapshot = await this.getOperationalSnapshot(schoolId);
+    if (this._isQueueProcessing(schoolId)) {
+      return {
+        started: false,
+        alreadyRunning: true,
+        jobKey: this._buildBackgroundJobKey(schoolId, 'queue-processing'),
+        startedAt: new Date(),
+        snapshot,
+      };
+    }
+
+    const job = this._startBackgroundJob({
+      schoolId,
+      jobType: 'queue-processing',
+      runner: async () => {
+        await this.processQueue({ schoolId });
+      },
+    });
+
+    return {
+      ...job,
+      snapshot,
+    };
+  }
+
+  async triggerMonthReleaseInBackground(schoolId) {
+    const snapshot = await this.getOperationalSnapshot(schoolId);
+    const job = this._startBackgroundJob({
+      schoolId,
+      jobType: 'month-release',
+      runner: async () => {
+        const result = await this.queueMonthInvoicesManually(schoolId);
+        if (result.total_queued > 0) {
+          await this.processQueue({ schoolId });
+        }
+      },
+    });
+
+    return {
+      ...job,
+      snapshot,
+    };
   }
 
   _emitNotificationCreated(log) {
@@ -325,26 +437,12 @@ class NotificationService {
   }
 
   _parseLocalDateInput(dateValue) {
-    if (!dateValue) return null;
-
-    if (dateValue instanceof Date) {
-      const clone = new Date(dateValue);
-      return Number.isNaN(clone.getTime()) ? null : clone;
-    }
-
-    const raw = String(dateValue).trim();
-    if (!raw) return null;
-
-    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (match) {
-      const year = Number(match[1]);
-      const month = Number(match[2]) - 1;
-      const day = Number(match[3]);
-      const localDate = new Date(year, month, day);
-      return Number.isNaN(localDate.getTime()) ? null : localDate;
-    }
-
-    return normalizeDate(raw);
+    return parseBusinessDateInput(dateValue, this.businessTimeZone, {
+      hour: 12,
+      minute: 0,
+      second: 0,
+      millisecond: 0,
+    });
   }
 
   _getDayRange(dateStr) {
@@ -561,6 +659,26 @@ class NotificationService {
       retryable,
       extra: userMessage ? { user_message: userMessage } : {},
     });
+  }
+
+  _buildQueueClearUserMessage(response = {}) {
+    if (response.total_cancelled > 0 && response.total_untouched > 0) {
+      return (
+        `${response.total_cancelled} itens pendentes foram removidos da fila. ` +
+        `${response.total_untouched} itens em processamento ativo foram preservados por seguranca. ` +
+        'O historico de envios foi preservado.'
+      );
+    }
+
+    if (response.total_cancelled > 0) {
+      return `${response.total_cancelled} itens pendentes foram removidos da fila. O historico de envios foi preservado.`;
+    }
+
+    if (response.total_untouched > 0) {
+      return 'Nenhum item pendente foi cancelado automaticamente porque ainda existem registros em processamento ativo.';
+    }
+
+    return 'Nao ha itens pendentes na fila para limpar.';
   }
 
   async _auditSkippedOutcome({
@@ -1213,20 +1331,24 @@ class NotificationService {
         continue;
       }
 
-      const hojeStart = new Date(now); hojeStart.setHours(0, 0, 0, 0);
-      const hojeEnd = new Date(now); hojeEnd.setHours(23, 59, 59, 999);
-      const limitPassado = new Date(now); limitPassado.setDate(limitPassado.getDate() - 60); limitPassado.setHours(0, 0, 0, 0);
-      const futuroStart = new Date(now); futuroStart.setDate(futuroStart.getDate() + 3); futuroStart.setHours(0, 0, 0, 0);
-      const futuroEnd = new Date(now); futuroEnd.setDate(futuroEnd.getDate() + 3); futuroEnd.setHours(23, 59, 59, 999);
+      const hojeRange = getBusinessDayRange(now, this.businessTimeZone);
+      const limitPassadoRange = getBusinessDayRange(
+        shiftBusinessDate(now, -60, this.businessTimeZone, { hour: 12 }),
+        this.businessTimeZone
+      );
+      const futuroRange = getBusinessDayRange(
+        shiftBusinessDate(now, 3, this.businessTimeZone, { hour: 12 }),
+        this.businessTimeZone
+      );
 
       const orConditions = [
-        { dueDate: { $gte: limitPassado, $lte: hojeEnd } },
-        { dueDate: { $gte: futuroStart, $lte: futuroEnd } },
+        { dueDate: { $gte: limitPassadoRange.startOfDay, $lte: hojeRange.endOfDay } },
+        { dueDate: { $gte: futuroRange.startOfDay, $lte: futuroRange.endOfDay } },
       ];
 
-      if (now.getDate() === 1) {
-        const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-        orConditions.push({ dueDate: { $gte: hojeStart, $lte: monthEnd } });
+      if (currentTimeParts.day === 1) {
+        const monthRange = getBusinessMonthRange(now, this.businessTimeZone);
+        orConditions.push({ dueDate: { $gte: hojeRange.startOfDay, $lte: monthRange.endOfMonth } });
       }
 
       const invoices = await Invoice.find({
@@ -1280,14 +1402,13 @@ class NotificationService {
   }
 
   async queueMonthInvoicesManually(schoolId) {
-    const start = new Date(); start.setHours(0, 0, 0, 0);
-    const monthEnd = new Date(start.getFullYear(), start.getMonth() + 1, 0, 23, 59, 59, 999);
+    const monthRange = getBusinessMonthRange(new Date(), this.businessTimeZone);
     const config = await this.getConfig(schoolId);
 
     const invoices = await Invoice.find({
       school_id: schoolId,
       status: { $in: ['pending', 'overdue', 'paid', 'canceled'] },
-      dueDate: { $gte: start, $lte: monthEnd },
+      dueDate: { $gte: monthRange.startOfMonth, $lte: monthRange.endOfMonth },
     }).populate('student').populate('tutor');
 
     const batch = createBatchAccumulator();
@@ -1438,6 +1559,11 @@ class NotificationService {
         status: 'processing',
       }));
     }
+
+    response.user_message = this._buildQueueClearUserMessage(response);
+    response.message = response.user_message;
+    this.invalidateForecastCache({ schoolId });
+    return response;
 
     if (response.total_cancelled > 0 && response.total_untouched > 0) {
       response.user_message =
@@ -1679,8 +1805,9 @@ class NotificationService {
   }
 
   async processQueue(options = {}) {
-    if (this.isProcessing) return;
-    this.isProcessing = true;
+    const processingKey = this._buildProcessingLockKey(options.schoolId || null);
+    if (this._isQueueProcessing(options.schoolId || null)) return;
+    this.processingLocks.add(processingKey);
 
     try {
       await this._recoverStaleProcessingLogs(options);
@@ -1772,7 +1899,7 @@ class NotificationService {
         }
       }
     } finally {
-      this.isProcessing = false;
+      this.processingLocks.delete(processingKey);
     }
   }
 
@@ -1980,18 +2107,25 @@ class NotificationService {
   }
 
   async getForecast(schoolId, targetDate) {
-    const simData = this._parseLocalDateInput(targetDate) || new Date();
-    if (!targetDate) simData.setDate(simData.getDate() + 1);
-    simData.setHours(12, 0, 0, 0);
+    const simData = targetDate
+      ? this._parseLocalDateInput(targetDate)
+      : shiftBusinessDate(new Date(), 1, this.businessTimeZone, { hour: 12 });
 
-    const limitPassado = new Date(simData); limitPassado.setDate(limitPassado.getDate() - 60); limitPassado.setHours(0, 0, 0, 0);
-    const futuroLimit = new Date(simData); futuroLimit.setDate(futuroLimit.getDate() + 5); futuroLimit.setHours(23, 59, 59, 999);
+    const normalizedSimData = simData || shiftBusinessDate(new Date(), 1, this.businessTimeZone, { hour: 12 });
+    const limitPassado = getBusinessDayRange(
+      shiftBusinessDate(normalizedSimData, -60, this.businessTimeZone, { hour: 12 }),
+      this.businessTimeZone
+    ).startOfDay;
+    const futuroLimit = getBusinessDayRange(
+      shiftBusinessDate(normalizedSimData, 5, this.businessTimeZone, { hour: 12 }),
+      this.businessTimeZone
+    ).endOfDay;
     const config = await this.getConfig(schoolId);
     const latestInvoice = await Invoice.findOne({ school_id: schoolId })
       .sort({ updatedAt: -1 })
       .select('updatedAt')
       .lean();
-    const targetDateKey = this._getBusinessDayContext(simData).businessDayKey;
+    const targetDateKey = this._getBusinessDayContext(normalizedSimData).businessDayKey;
     const cacheKey = this._buildForecastCacheKey({
       schoolId,
       targetDateKey,
@@ -2013,7 +2147,7 @@ class NotificationService {
     }).populate('student').populate('tutor');
 
     const forecast = {
-      date: simData,
+      date: normalizedSimData,
       total_expected: 0,
       breakdown: {
         due_today: 0,
@@ -2031,7 +2165,7 @@ class NotificationService {
     for (const invoice of invoices) {
       const analysis = await this._analyzeInvoiceForDispatch(invoice, {
         config,
-        referenceDate: simData,
+        referenceDate: normalizedSimData,
         checkDuplicates: false,
         validateTransportReady: false,
         requirePaymentData: true,

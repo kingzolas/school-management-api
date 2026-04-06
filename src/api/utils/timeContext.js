@@ -62,6 +62,126 @@ function getTimeZoneOffsetMs(date = new Date(), timeZone = DEFAULT_TIME_ZONE) {
   return zonedAsUtc - date.getTime();
 }
 
+function parseBusinessDateInput(
+  value,
+  timeZone = DEFAULT_TIME_ZONE,
+  { hour = 12, minute = 0, second = 0, millisecond = 0 } = {}
+) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    const clone = new Date(value);
+    return Number.isNaN(clone.getTime()) ? null : clone;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    return zonedTimeToUtc(
+      {
+        year: Number(match[1]),
+        month: Number(match[2]),
+        day: Number(match[3]),
+        hour,
+        minute,
+        second,
+        millisecond,
+      },
+      timeZone
+    );
+  }
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function shiftBusinessDate(
+  referenceDate = new Date(),
+  offsetDays = 0,
+  timeZone = DEFAULT_TIME_ZONE,
+  { hour = 12, minute = 0, second = 0, millisecond = 0 } = {}
+) {
+  const parts = getTimeZoneParts(referenceDate, timeZone);
+  return zonedTimeToUtc(
+    {
+      year: parts.year,
+      month: parts.month,
+      day: parts.day + offsetDays,
+      hour,
+      minute,
+      second,
+      millisecond,
+    },
+    timeZone
+  );
+}
+
+function getBusinessMonthRange(date = new Date(), timeZone = DEFAULT_TIME_ZONE) {
+  const parts = getTimeZoneParts(date, timeZone);
+  const startOfMonth = zonedTimeToUtc(
+    {
+      year: parts.year,
+      month: parts.month,
+      day: 1,
+      hour: 0,
+      minute: 0,
+      second: 0,
+      millisecond: 0,
+    },
+    timeZone
+  );
+
+  const nextMonthStart = parts.month === 12
+    ? zonedTimeToUtc(
+        {
+          year: parts.year + 1,
+          month: 1,
+          day: 1,
+          hour: 0,
+          minute: 0,
+          second: 0,
+          millisecond: 0,
+        },
+        timeZone
+      )
+    : zonedTimeToUtc(
+        {
+          year: parts.year,
+          month: parts.month + 1,
+          day: 1,
+          hour: 0,
+          minute: 0,
+          second: 0,
+          millisecond: 0,
+        },
+        timeZone
+      );
+
+  return {
+    startOfMonth,
+    endOfMonth: new Date(nextMonthStart.getTime() - 1),
+    businessMonthKey: [
+      String(parts.year).padStart(4, '0'),
+      String(parts.month).padStart(2, '0'),
+    ].join('-'),
+    timeZone,
+  };
+}
+
+function getBusinessDayDifference(
+  dueDate,
+  referenceDate = new Date(),
+  timeZone = DEFAULT_TIME_ZONE
+) {
+  const dueParts = getTimeZoneParts(dueDate, timeZone);
+  const refParts = getTimeZoneParts(referenceDate, timeZone);
+  const dueKey = Date.UTC(dueParts.year, dueParts.month - 1, dueParts.day);
+  const refKey = Date.UTC(refParts.year, refParts.month - 1, refParts.day);
+  return Math.round((dueKey - refKey) / (24 * 60 * 60 * 1000));
+}
+
 function zonedTimeToUtc(
   { year, month, day, hour = 0, minute = 0, second = 0, millisecond = 0 },
   timeZone = DEFAULT_TIME_ZONE
@@ -123,6 +243,10 @@ module.exports = {
   getTimeZoneParts,
   getTimeZoneOffsetMs,
   zonedTimeToUtc,
+  parseBusinessDateInput,
+  shiftBusinessDate,
+  getBusinessMonthRange,
+  getBusinessDayDifference,
   getBusinessDayKey,
   getBusinessDayRange,
 };

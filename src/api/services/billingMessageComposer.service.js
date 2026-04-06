@@ -1,4 +1,4 @@
-const { DEFAULT_TIME_ZONE, getTimeZoneParts } = require('../utils/timeContext');
+const { DEFAULT_TIME_ZONE, getBusinessDayDifference, getTimeZoneParts } = require('../utils/timeContext');
 const {
   extractDigitableLineFromInvoice,
   normalizeBarcode,
@@ -77,7 +77,12 @@ function escapeHtml(value) {
 }
 
 class BillingMessageComposerService {
-  _selectTemplateGroup(notificationLog = {}, invoice = {}) {
+  _selectTemplateGroup(
+    notificationLog = {},
+    invoice = {},
+    referenceDate = new Date(),
+    businessTimeZone = DEFAULT_TIME_ZONE
+  ) {
     const type = String(notificationLog.type || '').toLowerCase();
     if (type === 'new_invoice' || type === 'reminder') {
       return { group: 'FUTURO', list: TEMPLATES_FUTURO };
@@ -89,11 +94,8 @@ class BillingMessageComposerService {
       return { group: 'ATRASO', list: TEMPLATES_ATRASO };
     }
 
-    const hoje = new Date();
-    hoje.setHours(0, 0, 0, 0);
-    const venc = normalizeDate(invoice.dueDate) || hoje;
-    venc.setHours(0, 0, 0, 0);
-    const diffDays = Math.ceil((venc - hoje) / (1000 * 60 * 60 * 24));
+    const venc = normalizeDate(invoice.dueDate) || referenceDate;
+    const diffDays = getBusinessDayDifference(venc, referenceDate, businessTimeZone);
 
     if (diffDays > 0) return { group: 'FUTURO', list: TEMPLATES_FUTURO };
     if (diffDays < 0) return { group: 'ATRASO', list: TEMPLATES_ATRASO };
@@ -242,18 +244,26 @@ class BillingMessageComposerService {
   }
 
   compose({ notificationLog, invoice, school, config, referenceDate = new Date() }) {
-    const { group, list } = this._selectTemplateGroup(notificationLog, invoice);
+    const businessTimeZone = normalizeString(
+      notificationLog?.business_timezone ||
+      config?.businessTimeZone ||
+      school?.timeZone ||
+      school?.timezone
+    ) || DEFAULT_TIME_ZONE;
+
+    const { group, list } = this._selectTemplateGroup(
+      notificationLog,
+      invoice,
+      referenceDate,
+      businessTimeZone
+    );
     const templateIndex = Number.isInteger(notificationLog?.template_index) && list[notificationLog.template_index]
       ? notificationLog.template_index
       : Math.floor(Math.random() * list.length);
 
     const template = list[templateIndex];
     const dueDate = normalizeDate(invoice?.dueDate) || new Date();
-    const dueDateStart = new Date(dueDate);
-    dueDateStart.setHours(0, 0, 0, 0);
-    const today = new Date(referenceDate);
-    today.setHours(0, 0, 0, 0);
-    const diffDays = Math.ceil((dueDateStart.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    const diffDays = getBusinessDayDifference(dueDate, referenceDate, businessTimeZone);
     const diasAtraso = diffDays < 0 ? Math.abs(diffDays) : 0;
 
     const schoolName = normalizeString(school?.name) || 'Escola';
@@ -263,13 +273,6 @@ class BillingMessageComposerService {
       notificationLog?.tutor_name ||
       notificationLog?.student_name
     ) || 'Olá';
-
-    const businessTimeZone = normalizeString(
-      notificationLog?.business_timezone ||
-      config?.businessTimeZone ||
-      school?.timeZone ||
-      school?.timezone
-    ) || DEFAULT_TIME_ZONE;
 
     const baseText = template
       .replace(/{escola}/g, schoolName)

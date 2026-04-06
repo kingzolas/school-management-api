@@ -246,6 +246,22 @@ class InvoiceService {
         status: 'failed',
         code: 'INVOICE_NOT_FOUND',
         category: 'business_rule',
+        title: 'Fatura nao encontrada',
+        user_message: 'Nao foi possivel localizar a cobranca solicitada.',
+        technical_message: 'Invoice nao encontrada para reenvio manual.',
+        retryable: false,
+        field: null,
+        item_id: invoiceId,
+        invoice_id: invoiceId,
+      };
+    }
+
+    if (!invoice) {
+      return {
+        success: true,
+        status: 'failed',
+        code: 'INVOICE_NOT_FOUND',
+        category: 'business_rule',
         title: 'Fatura nÃ£o encontrada',
         user_message: 'NÃ£o foi possÃ­vel localizar a cobranÃ§a solicitada.',
         technical_message: 'Invoice nÃ£o encontrada para reenvio manual.',

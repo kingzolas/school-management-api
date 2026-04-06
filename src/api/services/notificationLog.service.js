@@ -34,6 +34,12 @@ class NotificationLogService {
     return normalizeWhatsappPhone(phone);
   }
 
+  _blocksSameDayDuplicate(log = {}) {
+    return new Set(['queued', 'processing', 'sent']).has(
+      String(log?.status || '').toLowerCase()
+    );
+  }
+
   buildDeliveryKey({
     schoolId,
     invoiceId,
@@ -153,13 +159,16 @@ class NotificationLogService {
     const logs = await this.NotificationLogModel.find({
       school_id: schoolId,
       invoice_id: invoiceId,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
+      $or: [
+        { business_day: businessDayKey },
+        { createdAt: { $gte: startOfDay, $lte: endOfDay } },
+      ],
     })
       .sort({ createdAt: -1 })
       .lean();
 
     const existing = logs.find((log) => {
-      if (String(log?.status || '').toLowerCase() === 'cancelled') {
+      if (!this._blocksSameDayDuplicate(log)) {
         return false;
       }
 
@@ -209,8 +218,10 @@ class NotificationLogService {
       delivery_channel: channel,
       dispatch_origin: dispatchOrigin,
       outcome_code: outcomeCode,
-      business_day: businessDayKey,
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
+      $or: [
+        { business_day: businessDayKey },
+        { createdAt: { $gte: startOfDay, $lte: endOfDay } },
+      ],
     }).lean();
 
     return {
@@ -232,6 +243,8 @@ class NotificationLogService {
       invoice_id: invoiceId,
       delivery_channel: channel,
       status: 'sent',
+      sent_at: { $ne: null },
+      last_transport_canonical_status: { $nin: ['failed', 'bounced', 'cancelled'] },
     })
       .sort({ sent_at: -1, createdAt: -1 })
       .lean();

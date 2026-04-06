@@ -1,6 +1,10 @@
 const NotificationService = require('../services/notification.service');
 const Invoice = require('../models/invoice.model');
-const { buildOutcomePayload, getOutcomeDescriptor, mapDispatchErrorCode } = require('../utils/notificationOutcome.util');
+const {
+  buildOutcomePayload,
+  getOutcomeDescriptor,
+  mapDispatchErrorCode,
+} = require('../utils/notificationOutcome.util');
 
 function buildControllerErrorPayload(error, fallbackCode = 'INTERNAL_ERROR') {
   const code = mapDispatchErrorCode(error, null) || error?.code || fallbackCode;
@@ -16,12 +20,43 @@ function resolveOutcomeHttpStatus(payload) {
   return getOutcomeDescriptor(payload.code || 'INTERNAL_ERROR').httpStatus || 500;
 }
 
-class NotificationController {
+function buildBackgroundBatchResponse({
+  code,
+  message,
+  snapshot,
+  started,
+  alreadyRunning,
+  startedAt,
+}) {
+  const descriptor = getOutcomeDescriptor(code);
+  return {
+    success: true,
+    has_failures: false,
+    total_analisado: 0,
+    total_elegivel: 0,
+    total_queued: snapshot?.queued || 0,
+    total_paused: snapshot?.paused || 0,
+    total_skipped: 0,
+    total_failed: 0,
+    total_cancelled: 0,
+    total_already_processed: 0,
+    total_untouched: 0,
+    breakdown: {},
+    items: [],
+    code,
+    category: descriptor.category,
+    title: descriptor.title,
+    user_message: descriptor.user_message,
+    background_started: started === true,
+    already_running: alreadyRunning === true,
+    processing_started_at: startedAt || null,
+    queue_snapshot: snapshot || { queued: 0, processing: 0, paused: 0 },
+    message,
+  };
+}
 
-  /**
-   * GET /logs
-   */
-  async getLogs(req, res, next) {
+class NotificationController {
+  async getLogs(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const { status, page, limit, date, scope } = req.query;
@@ -42,16 +77,12 @@ class NotificationController {
     }
   }
 
-  /**
-   * POST /retry-all
-   */
-  async retryAllFailed(req, res, next) {
+  async retryAllFailed(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const { date } = req.query;
 
       const result = await NotificationService.retryAllFailed(schoolId, date);
-
       res.status(200).json({ success: true, ...result });
     } catch (error) {
       const payload = buildControllerErrorPayload(error);
@@ -59,10 +90,7 @@ class NotificationController {
     }
   }
 
-  /**
-   * POST /clear-queue
-   */
-  async clearQueue(req, res, next) {
+  async clearQueue(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const result = await NotificationService.clearPendingQueue(schoolId, {
@@ -77,10 +105,7 @@ class NotificationController {
     }
   }
 
-  /**
-   * GET /stats
-   */
-  async getDashboardStats(req, res, next) {
+  async getDashboardStats(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const { date } = req.query;
@@ -93,11 +118,7 @@ class NotificationController {
     }
   }
 
-  /**
-   * GET /transport-logs
-   * Ledger de transporte WhatsApp via Evolution.
-   */
-  async getTransportLogs(req, res, next) {
+  async getTransportLogs(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const result = await NotificationService.getTransportLogs(schoolId, req.query);
@@ -108,13 +129,9 @@ class NotificationController {
     }
   }
 
-  /**
-   * GET /forecast
-   */
-  async getForecast(req, res, next) {
+  async getForecast(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
-      // O service interpreta YYYY-MM-DD como data local para evitar shift UTC.
       const forecast = await NotificationService.getForecast(schoolId, req.query.date);
       res.status(200).json(forecast);
     } catch (error) {
@@ -123,79 +140,59 @@ class NotificationController {
     }
   }
 
-  /**
-   * POST /trigger
-   * Gatilho Manual COMPLETO
-   */
-  async triggerManualRun(req, res, next) {
+  async triggerManualRun(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
+      const trigger = await NotificationService.triggerQueueProcessingInBackground(schoolId);
+      const code = trigger.alreadyRunning
+        ? 'QUEUE_PROCESS_ALREADY_RUNNING'
+        : 'QUEUE_PROCESS_STARTED';
 
-      console.log('[API] Trigger Manual acionado pelo painel...');
-
-      const result = await NotificationService.scanAndQueueInvoices({
-        schoolId,
-        dispatchOrigin: 'manual_trigger',
-        collectResults: true,
-      });
-
-      if (result.total_queued > 0) {
-        NotificationService.processQueue({ schoolId }).catch((error) => {
-          console.error('Erro ao drenar fila apos trigger manual:', error);
-        });
-      }
-
-      res.status(200).json({
-        ...result,
-        message: result.total_queued > 0
-          ? 'Varredura concluÃ­da e itens elegÃ­veis adicionados Ã  fila.'
-          : 'Varredura concluÃ­da sem novos itens elegÃ­veis para envio.',
-      });
-    } catch (error) {
-      console.error('Erro no trigger:', error);
-      const payload = buildControllerErrorPayload(error);
-      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
-    }
-  }
-
-  /**
-   * POST /trigger-month
-   * Aciona o envio de todos os boletos pendentes do mes atual
-   */
-  async triggerMonthInvoices(req, res, next) {
-    try {
-      const schoolId = req.user.schoolId || req.user.school_id;
-      const result = await NotificationService.queueMonthInvoicesManually(schoolId);
-
-      if (result.total_queued > 0) {
-        NotificationService.processQueue({ schoolId }).catch((error) => {
-          console.error('Erro ao drenar fila apos trigger do mes:', error);
-        });
-      }
-
-      res.status(200).json({
-        ...result,
-        message: result.total_queued > 0
-          ? `${result.total_queued} cobranÃ§a(s) do mÃªs foram adicionadas Ã  fila.`
-          : 'Nenhuma cobranÃ§a elegÃ­vel foi adicionada Ã  fila neste mÃªs.',
-      });
+      res.status(200).json(
+        buildBackgroundBatchResponse({
+          code,
+          message: trigger.alreadyRunning
+            ? 'O processamento da fila ja esta em andamento em segundo plano.'
+            : 'O processamento da fila foi iniciado em segundo plano.',
+          snapshot: trigger.snapshot,
+          started: trigger.started,
+          alreadyRunning: trigger.alreadyRunning,
+          startedAt: trigger.startedAt,
+        })
+      );
     } catch (error) {
       const payload = buildControllerErrorPayload(error);
       res.status(resolveOutcomeHttpStatus(payload)).json(payload);
     }
   }
 
-  /**
-   * POST /enqueue
-   * Reenfileirar manualmente UMA fatura (botao "Reenviar WhatsApp" no app)
-   * Body: { invoiceId, type? }
-   *
-   * Regras:
-   * - invoice deve existir, ser da escola
-   * - invoice nao pode estar paga/cancelada
-   * - se estiver em HOLD (compensacao ativa), NAO enfileira
-   */
-  async enqueueInvoice(req, res, next) {
+  async triggerMonthInvoices(req, res) {
+    try {
+      const schoolId = req.user.schoolId || req.user.school_id;
+      const trigger = await NotificationService.triggerMonthReleaseInBackground(schoolId);
+      const code = trigger.alreadyRunning
+        ? 'MONTH_RELEASE_ALREADY_RUNNING'
+        : 'MONTH_RELEASE_STARTED';
+
+      res.status(200).json(
+        buildBackgroundBatchResponse({
+          code,
+          message: trigger.alreadyRunning
+            ? 'A liberacao dos boletos do mes ja esta em andamento em segundo plano.'
+            : 'A liberacao dos boletos do mes foi iniciada em segundo plano.',
+          snapshot: trigger.snapshot,
+          started: trigger.started,
+          alreadyRunning: trigger.alreadyRunning,
+          startedAt: trigger.startedAt,
+        })
+      );
+    } catch (error) {
+      const payload = buildControllerErrorPayload(error);
+      res.status(resolveOutcomeHttpStatus(payload)).json(payload);
+    }
+  }
+
+  async enqueueInvoice(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const { invoiceId, type } = req.body;
@@ -239,10 +236,7 @@ class NotificationController {
     }
   }
 
-  /**
-   * GET /config
-   */
-  async getConfig(req, res, next) {
+  async getConfig(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const config = await NotificationService.getConfig(schoolId);
@@ -253,10 +247,7 @@ class NotificationController {
     }
   }
 
-  /**
-   * POST /config
-   */
-  async saveConfig(req, res, next) {
+  async saveConfig(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;
       const config = await NotificationService.saveConfig(schoolId, req.body);

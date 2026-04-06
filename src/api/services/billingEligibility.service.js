@@ -1,8 +1,17 @@
 const invoiceCompensationService = require('./invoiceCompensation.service');
+const {
+  DEFAULT_TIME_ZONE,
+  getBusinessDayDifference,
+  getTimeZoneParts,
+} = require('../utils/timeContext');
 
 class BillingEligibilityService {
-  constructor({ invoiceCompensationService: compensationService = invoiceCompensationService } = {}) {
+  constructor({
+    invoiceCompensationService: compensationService = invoiceCompensationService,
+    timeZone = DEFAULT_TIME_ZONE,
+  } = {}) {
     this.invoiceCompensationService = compensationService;
+    this.businessTimeZone = timeZone;
   }
 
   getEligibilityForDate(dueDate, referenceDate = new Date()) {
@@ -17,13 +26,17 @@ class BillingEligibilityService {
       return { shouldSend: false, type: null };
     }
 
-    ref.setHours(0, 0, 0, 0);
-    venc.setHours(0, 0, 0, 0);
+    const diffDays = getBusinessDayDifference(venc, ref, this.businessTimeZone);
+    const refParts = getTimeZoneParts(ref, this.businessTimeZone);
+    const dueParts = getTimeZoneParts(venc, this.businessTimeZone);
 
-    const diffTime = venc - ref;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-    if (ref.getDate() === 1 && diffDays > 0 && diffDays <= 31 && venc.getMonth() === ref.getMonth()) {
+    if (
+      refParts.day === 1 &&
+      diffDays > 0 &&
+      diffDays <= 31 &&
+      dueParts.month === refParts.month &&
+      dueParts.year === refParts.year
+    ) {
       return { shouldSend: true, type: 'new_invoice' };
     }
 
