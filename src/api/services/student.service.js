@@ -4,6 +4,9 @@ const Student = require('../models/student.model');
 const Tutor = require('../models/tutor.model'); 
 // [NOVO] Importamos o helper
 const dbHelper = require('../../helpers/dbHelper'); 
+const attendanceService = require('./attendance.service');
+const studentNoteService = require('./studentNote.service');
+const { ensureStudentEnrollmentAccess } = require('./classAccess.service');
 
 const tutorPopulation = {
     path: 'tutors.tutorId', 
@@ -148,6 +151,266 @@ class StudentService {
         );
     }
 
+    _normalizeText(value) {
+        const text = String(value ?? '').trim();
+        return text ? text : null;
+    }
+
+    _stripAccents(value) {
+        return String(value ?? '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '');
+    }
+
+    _normalizeRelationshipKey(relationship) {
+        return this._stripAccents(relationship).toLowerCase().trim();
+    }
+
+    _calculateAge(birthDate) {
+        if (!birthDate) return null;
+
+        const date = new Date(birthDate);
+        if (Number.isNaN(date.getTime())) return null;
+
+        const today = new Date();
+        let age = today.getFullYear() - date.getFullYear();
+        const monthDiff = today.getMonth() - date.getMonth();
+
+        if (
+            monthDiff < 0 ||
+            (monthDiff === 0 && today.getDate() < date.getDate())
+        ) {
+            age -= 1;
+        }
+
+        return age;
+    }
+
+    _buildBirthdayInfo(birthDate) {
+        if (!birthDate) {
+            return {
+                day: null,
+                month: null,
+                label: null,
+                isToday: false,
+            };
+        }
+
+        const date = new Date(birthDate);
+        if (Number.isNaN(date.getTime())) {
+            return {
+                day: null,
+                month: null,
+                label: null,
+                isToday: false,
+            };
+        }
+
+        const day = date.getDate();
+        const month = date.getMonth() + 1;
+        const today = new Date();
+        const isToday =
+            today.getDate() === date.getDate() &&
+            today.getMonth() === date.getMonth();
+
+        return {
+            day,
+            month,
+            label: `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}`,
+            isToday,
+        };
+    }
+
+    _buildGuardianContact(link = {}) {
+        const tutor =
+            link?.tutorId && typeof link.tutorId === 'object'
+                ? link.tutorId
+                : null;
+
+        const name = this._normalizeText(tutor?.fullName);
+        if (!name) return null;
+
+        return {
+            id: String(tutor._id || ''),
+            name,
+            relationship: this._normalizeText(link.relationship) || 'Responsavel',
+            phoneNumber: this._normalizeText(tutor?.phoneNumber),
+        };
+    }
+
+    _buildTeacherSafeGuardians(student) {
+        const links = Array.isArray(student?.tutors) ? student.tutors : [];
+        const contacts = [];
+        const seen = new Set();
+        let father = null;
+        let mother = null;
+
+        links.forEach((link) => {
+            const contact = this._buildGuardianContact(link);
+            if (!contact) return;
+
+            const dedupeKey = `${contact.id}:${contact.relationship}:${contact.name}`;
+            if (!seen.has(dedupeKey)) {
+                seen.add(dedupeKey);
+                contacts.push(contact);
+            }
+
+            const relationshipKey = this._normalizeRelationshipKey(contact.relationship);
+            if (!father && relationshipKey === 'pai') {
+                father = contact;
+            }
+            if (!mother && relationshipKey === 'mae') {
+                mother = contact;
+            }
+        });
+
+        return {
+            father,
+            mother,
+            contacts,
+        };
+    }
+
+    _pushHealthAlert(alerts, key, label, details, fallbackDescription) {
+        const normalizedDetails = this._normalizeText(details);
+        if (!normalizedDetails && !fallbackDescription) return;
+
+        alerts.push({
+            key,
+            label,
+            description: normalizedDetails || fallbackDescription,
+        });
+    }
+
+    _buildTeacherSafeHealth(healthInfo = {}) {
+        const alerts = [];
+
+        if (healthInfo?.hasAllergy) {
+            this._pushHealthAlert(
+                alerts,
+                'allergy',
+                'Alergias',
+                healthInfo.allergyDetails,
+                'Possui alergias registradas.'
+            );
+        }
+
+        if (healthInfo?.hasMedicationAllergy) {
+            this._pushHealthAlert(
+                alerts,
+                'medication_allergy',
+                'Alergia a medicacao',
+                healthInfo.medicationAllergyDetails,
+                'Possui alergia a medicacao.'
+            );
+        }
+
+        if (healthInfo?.takesMedication) {
+            this._pushHealthAlert(
+                alerts,
+                'continuous_medication',
+                'Medicacao continua',
+                healthInfo.medicationDetails,
+                'Usa medicacao continua.'
+            );
+        }
+
+        if (healthInfo?.hasHealthProblem) {
+            this._pushHealthAlert(
+                alerts,
+                'health_condition',
+                'Condicao de saude',
+                healthInfo.healthProblemDetails,
+                'Possui observacao de saude relevante.'
+            );
+        }
+
+        if (healthInfo?.hasDisability) {
+            this._pushHealthAlert(
+                alerts,
+                'disability',
+                'Deficiencia ou adaptacao',
+                healthInfo.disabilityDetails,
+                'Possui necessidade de atencao relacionada a deficiencia.'
+            );
+        }
+
+        if (healthInfo?.hasVisionProblem) {
+            this._pushHealthAlert(
+                alerts,
+                'vision_problem',
+                'Visao',
+                healthInfo.visionProblemDetails,
+                'Possui observacao de visao.'
+            );
+        }
+
+        if (this._normalizeText(healthInfo?.feverMedication)) {
+            this._pushHealthAlert(
+                alerts,
+                'fever_guidance',
+                'Orientacao para febre',
+                healthInfo.feverMedication,
+                null
+            );
+        }
+
+        if (this._normalizeText(healthInfo?.foodObservations)) {
+            this._pushHealthAlert(
+                alerts,
+                'food_observation',
+                'Observacao alimentar',
+                healthInfo.foodObservations,
+                null
+            );
+        }
+
+        return {
+            hasAlerts: alerts.length > 0,
+            allergies: this._normalizeText(healthInfo?.allergyDetails),
+            medicationAllergies: this._normalizeText(healthInfo?.medicationAllergyDetails),
+            continuousMedication: this._normalizeText(healthInfo?.medicationDetails),
+            healthCondition: this._normalizeText(healthInfo?.healthProblemDetails),
+            disability: this._normalizeText(healthInfo?.disabilityDetails),
+            visionProblem: this._normalizeText(healthInfo?.visionProblemDetails),
+            feverGuidance: this._normalizeText(healthInfo?.feverMedication),
+            foodObservations: this._normalizeText(healthInfo?.foodObservations),
+            alerts,
+        };
+    }
+
+    _serializeTeacherSafeNote(note) {
+        if (!note) return null;
+
+        const payload =
+            typeof note.toObject === 'function'
+                ? note.toObject({ virtuals: false })
+                : { ...note };
+
+        return {
+            _id: String(payload._id || ''),
+            schoolId: String(payload.schoolId || ''),
+            studentId:
+                payload.studentId && typeof payload.studentId === 'object'
+                    ? String(payload.studentId._id || '')
+                    : String(payload.studentId || ''),
+            createdBy:
+                payload.createdBy && typeof payload.createdBy === 'object'
+                    ? {
+                          _id: String(payload.createdBy._id || ''),
+                          fullName: payload.createdBy.fullName || '',
+                          profilePictureUrl: payload.createdBy.profilePictureUrl || null,
+                      }
+                    : null,
+            type: payload.type || 'PRIVATE',
+            title: payload.title || '',
+            description: payload.description || '',
+            isResolved: Boolean(payload.isResolved),
+            createdAt: payload.createdAt || null,
+            updatedAt: payload.updatedAt || null,
+        };
+    }
+
     /**
      * Cria um novo aluno, GERA MATRÍCULA e salva FOTO.
      * [ALTERAÇÃO] Adicionado param 'user' para auditoria
@@ -209,6 +472,78 @@ class StudentService {
                                      .populate(tutorPopulation);
         if (!student) throw new Error('Aluno não encontrado.');
         return student;
+    }
+
+    async getTeacherSummary({ schoolId, classId, studentId, currentUser }) {
+        const { classDoc, enrollment } = await ensureStudentEnrollmentAccess({
+            actor: currentUser,
+            schoolId,
+            classId,
+            studentId,
+            allowedStatuses: ['Ativa'],
+        });
+
+        const student = await Student.findOne({
+            _id: studentId,
+            school_id: schoolId,
+        })
+            .select('fullName enrollmentNumber birthDate gender healthInfo tutors')
+            .populate({
+                path: 'tutors.tutorId',
+                model: 'Tutor',
+                select: 'fullName phoneNumber',
+            });
+
+        if (!student) {
+            throw new Error('Aluno nao encontrado.');
+        }
+
+        const recentAttendance = await attendanceService.getStudentRecentHistorySummary({
+            schoolId,
+            classId,
+            studentId,
+            actor: currentUser,
+            limit: 7,
+            skipAccessCheck: true,
+        });
+
+        const notes = await studentNoteService.listStudentNotes(
+            schoolId,
+            studentId,
+            currentUser,
+            { limit: 10 }
+        );
+
+        return {
+            class: {
+                id: String(classDoc._id),
+                name: classDoc.name || '',
+                grade: classDoc.grade || '',
+                shift: classDoc.shift || '',
+                schoolYear: classDoc.schoolYear || null,
+            },
+            student: {
+                id: String(student._id),
+                fullName: student.fullName || '',
+                enrollmentNumber: this._normalizeText(student.enrollmentNumber),
+                birthDate: student.birthDate || null,
+                age: this._calculateAge(student.birthDate),
+                birthday: this._buildBirthdayInfo(student.birthDate),
+                gender: this._normalizeText(student.gender),
+            },
+            enrollment: {
+                id: String(enrollment._id),
+                status: enrollment.status || null,
+                enrollmentDate: enrollment.enrollmentDate || null,
+                academicYear: enrollment.academicYear || null,
+            },
+            guardians: this._buildTeacherSafeGuardians(student),
+            health: this._buildTeacherSafeHealth(student.healthInfo || {}),
+            recentAttendance,
+            notes: Array.isArray(notes)
+                ? notes.map((note) => this._serializeTeacherSafeNote(note)).filter(Boolean)
+                : [],
+        };
     }
 
     async getStudentPhoto(id, schoolId) {

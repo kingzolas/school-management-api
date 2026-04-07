@@ -1,141 +1,203 @@
-// src/api/services/enrollment.service.js
 const Enrollment = require('../models/enrollment.model');
 const Student = require('../models/student.model');
 const Class = require('../models/class.model');
+const {
+  ensureClassAccess,
+  getAccessibleClassIds,
+  isPrivilegedActor,
+} = require('./classAccess.service');
 
 const defaultPopulation = [
-    { path: 'student', select: 'fullName birthDate' }, 
-    { path: 'class', select: 'name schoolYear grade shift' } 
+  {
+    path: 'student',
+    select: 'fullName birthDate enrollmentNumber gender',
+  },
+  {
+    path: 'class',
+    select: 'name schoolYear grade shift',
+  },
 ];
 
+function normalizeFilter(filter = {}) {
+  const normalized = { ...filter };
+
+  if (normalized.classId && !normalized.class) {
+    normalized.class = normalized.classId;
+  }
+
+  delete normalized.classId;
+
+  return normalized;
+}
+
 class EnrollmentService {
+  async createEnrollment(enrollmentData, schoolId) {
+    const { studentId, classId, agreedFee } = enrollmentData;
 
-    /**
-     * Cria uma nova matrícula, validando a posse das referências.
-     */
-    async createEnrollment(enrollmentData, schoolId) {
-        const { studentId, classId, agreedFee } = enrollmentData;
-
-        // 1. Validação de Segurança: Aluno e Turma devem pertencer à escola
-        const student = await Student.findOne({ _id: studentId, school_id: schoolId });
-        if (!student) throw new Error(`Aluno ${studentId} não encontrado ou não pertence a esta escola.`);
-        
-        const classDoc = await Class.findOne({ _id: classId, school_id: schoolId });
-        if (!classDoc) throw new Error(`Turma ${classId} não encontrada ou não pertence a esta escola.`);
-
-        // 2. Verifica se o aluno já está matriculado neste ano letivo (na mesma escola)
-        const existingEnrollment = await Enrollment.findOne({
-            student: studentId,
-            academicYear: classDoc.schoolYear,
-            school_id: schoolId // [CRÍTICO] Filtro de isolamento
-        });
-        if (existingEnrollment) {
-            throw new Error(`Aluno ${student.fullName} já possui matrícula (${existingEnrollment.status}) no ano letivo ${classDoc.schoolYear}.`);
-        }
-
-        // 3. (Opcional) Verifica capacidade da turma
-        if (classDoc.capacity) {
-            const currentEnrollments = await Enrollment.countDocuments({ class: classId, status: 'Ativa', school_id: schoolId });
-            if (currentEnrollments >= classDoc.capacity) {
-                throw new Error(`Turma ${classDoc.name} (${classDoc.schoolYear}) atingiu a capacidade máxima de ${classDoc.capacity} alunos.`);
-            }
-        }
-
-        // 4. Cria a matrícula
-        const fee = agreedFee !== undefined && agreedFee !== null ? agreedFee : classDoc.monthlyFee;
-        if (fee < 0) { throw new Error('A mensalidade acordada não pode ser negativa.'); }
-
-        const newEnrollment = new Enrollment({
-            student: studentId,
-            class: classId,
-            academicYear: classDoc.schoolYear,
-            agreedFee: fee,
-            school_id: schoolId // [CRÍTICO] Salva a referência da escola
-        });
-
-        await newEnrollment.save();
-        await newEnrollment.populate(defaultPopulation);
-
-        return newEnrollment;
+    const student = await Student.findOne({ _id: studentId, school_id: schoolId });
+    if (!student) {
+      throw new Error(
+        `Aluno ${studentId} nao encontrado ou nao pertence a esta escola.`
+      );
     }
 
-    /**
-     * Busca matrículas com base em filtros, LIMITADO PELA ESCOLA.
-     */
-    async getEnrollments(filter = {}, schoolId) {
-        // [CRÍTICO] Adiciona o filtro de escola
-        const query = { ...filter, school_id: schoolId }; 
-        const enrollments = await Enrollment.find(query).populate(defaultPopulation);
-        return enrollments;
+    const classDoc = await Class.findOne({ _id: classId, school_id: schoolId });
+    if (!classDoc) {
+      throw new Error(
+        `Turma ${classId} nao encontrada ou nao pertence a esta escola.`
+      );
     }
 
-    /**
-     * Busca uma matrícula pelo ID, LIMITADO PELA ESCOLA.
-     */
-    async getEnrollmentById(id, schoolId) {
-        // [CRÍTICO] Adiciona o filtro de escola
-        const enrollment = await Enrollment.findOne({ _id: id, school_id: schoolId }).populate(defaultPopulation);
-        
-        if (!enrollment) {
-            throw new Error(`Matrícula com ID ${id} não encontrada ou não pertence a esta escola.`);
-        }
-        return enrollment;
+    const existingEnrollment = await Enrollment.findOne({
+      student: studentId,
+      academicYear: classDoc.schoolYear,
+      school_id: schoolId,
+    });
+
+    if (existingEnrollment) {
+      throw new Error(
+        `Aluno ${student.fullName} ja possui matricula (${existingEnrollment.status}) no ano letivo ${classDoc.schoolYear}.`
+      );
     }
 
-    /**
-     * Atualiza uma matrícula.
-     */
-    async updateEnrollment(id, updateData, schoolId) {
-        // [AJUSTE] Mapeia 'classId' (do frontend) para 'class' (do modelo)
-        if (updateData.classId) {
-            updateData.class = updateData.classId;
-            delete updateData.classId;
-        }
+    if (classDoc.capacity) {
+      const currentEnrollments = await Enrollment.countDocuments({
+        class: classId,
+        status: 'Ativa',
+        school_id: schoolId,
+      });
 
-        // [AJUSTE] Adicionado 'class' na lista de campos permitidos
-        const allowedUpdates = ['agreedFee', 'status', 'observations', 'class']; 
-        const updates = Object.keys(updateData);
-        const isValidOperation = updates.every(update => allowedUpdates.includes(update));
-
-        if (!isValidOperation) { throw new Error('Atualização inválida! Campos não permitidos.'); }
-        if (updateData.agreedFee !== undefined && updateData.agreedFee < 0) { throw new Error('A mensalidade acordada não pode ser negativa.'); }
-        
-        // Garante que o school_id não pode ser alterado via body
-        delete updateData.school_id;
-
-        // [AJUSTE] Se estiver trocando de turma, valida se a nova turma existe
-        if (updateData.class) {
-            const newClassDoc = await Class.findOne({ _id: updateData.class, school_id: schoolId });
-            if (!newClassDoc) {
-                throw new Error(`Nova turma ${updateData.class} não encontrada ou não pertence a esta escola.`);
-            }
-            // Atualiza também o ano letivo para garantir consistência com a nova turma
-            updateData.academicYear = newClassDoc.schoolYear;
-        }
-
-        const updatedEnrollment = await Enrollment.findOneAndUpdate(
-            { _id: id, school_id: schoolId }, // [CRÍTICO] Query de segurança
-            updateData, 
-            { new: true, runValidators: true }
-        ).populate(defaultPopulation); 
-
-        if (!updatedEnrollment) {
-            throw new Error(`Matrícula com ID ${id} não encontrada ou não pertence a esta escola para atualização.`);
-        }
-        return updatedEnrollment;
+      if (currentEnrollments >= classDoc.capacity) {
+        throw new Error(
+          `Turma ${classDoc.name} (${classDoc.schoolYear}) atingiu a capacidade maxima de ${classDoc.capacity} alunos.`
+        );
+      }
     }
 
-    /**
-     * Deleta (cancela) uma matrícula.
-     */
-    async deleteEnrollment(id, schoolId) {
-        const deletedEnrollment = await Enrollment.findOneAndDelete({ _id: id, school_id: schoolId }); // [CRÍTICO] Query de segurança
-        
-        if (!deletedEnrollment) {
-            throw new Error(`Matrícula com ID ${id} não encontrada ou não pertence a esta escola para deleção.`);
-        }
-        return deletedEnrollment;
+    const fee =
+      agreedFee !== undefined && agreedFee !== null ? agreedFee : classDoc.monthlyFee;
+    if (fee < 0) {
+      throw new Error('A mensalidade acordada nao pode ser negativa.');
     }
+
+    const newEnrollment = new Enrollment({
+      student: studentId,
+      class: classId,
+      academicYear: classDoc.schoolYear,
+      agreedFee: fee,
+      school_id: schoolId,
+    });
+
+    await newEnrollment.save();
+    await newEnrollment.populate(defaultPopulation);
+
+    return newEnrollment;
+  }
+
+  async getEnrollments(filter = {}, schoolId, actor = null) {
+    const normalizedFilter = normalizeFilter(filter);
+    const query = {
+      ...normalizedFilter,
+      school_id: schoolId,
+    };
+
+    if (query.class) {
+      await ensureClassAccess(actor, schoolId, query.class);
+    } else if (actor && !isPrivilegedActor(actor)) {
+      const classIds = await getAccessibleClassIds(actor, schoolId);
+
+      if (!Array.isArray(classIds) || classIds.length === 0) {
+        return [];
+      }
+
+      query.class = { $in: classIds };
+    }
+
+    return Enrollment.find(query).populate(defaultPopulation);
+  }
+
+  async getEnrollmentById(id, schoolId, actor = null) {
+    const enrollment = await Enrollment.findOne({
+      _id: id,
+      school_id: schoolId,
+    }).populate(defaultPopulation);
+
+    if (!enrollment) {
+      throw new Error(
+        `Matricula com ID ${id} nao encontrada ou nao pertence a esta escola.`
+      );
+    }
+
+    if (actor && !isPrivilegedActor(actor)) {
+      await ensureClassAccess(actor, schoolId, enrollment.class?._id || enrollment.class);
+    }
+
+    return enrollment;
+  }
+
+  async updateEnrollment(id, updateData, schoolId) {
+    if (updateData.classId) {
+      updateData.class = updateData.classId;
+      delete updateData.classId;
+    }
+
+    const allowedUpdates = ['agreedFee', 'status', 'observations', 'class'];
+    const updates = Object.keys(updateData);
+    const isValidOperation = updates.every((update) => allowedUpdates.includes(update));
+
+    if (!isValidOperation) {
+      throw new Error('Atualizacao invalida! Campos nao permitidos.');
+    }
+    if (updateData.agreedFee !== undefined && updateData.agreedFee < 0) {
+      throw new Error('A mensalidade acordada nao pode ser negativa.');
+    }
+
+    delete updateData.school_id;
+
+    if (updateData.class) {
+      const newClassDoc = await Class.findOne({
+        _id: updateData.class,
+        school_id: schoolId,
+      });
+
+      if (!newClassDoc) {
+        throw new Error(
+          `Nova turma ${updateData.class} nao encontrada ou nao pertence a esta escola.`
+        );
+      }
+
+      updateData.academicYear = newClassDoc.schoolYear;
+    }
+
+    const updatedEnrollment = await Enrollment.findOneAndUpdate(
+      { _id: id, school_id: schoolId },
+      updateData,
+      { new: true, runValidators: true }
+    ).populate(defaultPopulation);
+
+    if (!updatedEnrollment) {
+      throw new Error(
+        `Matricula com ID ${id} nao encontrada ou nao pertence a esta escola para atualizacao.`
+      );
+    }
+
+    return updatedEnrollment;
+  }
+
+  async deleteEnrollment(id, schoolId) {
+    const deletedEnrollment = await Enrollment.findOneAndDelete({
+      _id: id,
+      school_id: schoolId,
+    });
+
+    if (!deletedEnrollment) {
+      throw new Error(
+        `Matricula com ID ${id} nao encontrada ou nao pertence a esta escola para delecao.`
+      );
+    }
+
+    return deletedEnrollment;
+  }
 }
 
 module.exports = new EnrollmentService();

@@ -1,8 +1,12 @@
+const mongoose = require('mongoose');
+
 const Attendance = require('../models/attendance.model');
 const Enrollment = require('../models/enrollment.model');
-const Horario = require('../models/horario.model');
-const Class = require('../models/class.model');
-const mongoose = require('mongoose');
+const {
+  createHttpError,
+  ensureClassAccess,
+  extractId,
+} = require('./classAccess.service');
 
 const DEFAULT_JUSTIFICATION_DEADLINE_DAYS = Number(
   process.env.ATTENDANCE_JUSTIFICATION_DEADLINE_DAYS || 3
@@ -13,33 +17,21 @@ const ABSENCE_STATES = {
   PENDING: 'PENDING',
   APPROVED: 'APPROVED',
   REJECTED: 'REJECTED',
-  EXPIRED: 'EXPIRED'
+  EXPIRED: 'EXPIRED',
 };
 
-const PRIVILEGED_ROLES = new Set([
-  'ADMIN',
-  'ADMINISTRADOR',
-  'COORDENADOR',
-  'DIRETOR',
-  'GESTOR'
-]);
-
-// ============================================================================
-// CORREÇÃO: Forçando o fuso local para evitar que a data recue um dia
-// ============================================================================
 function parseLocalDate(dateValue) {
   if (!dateValue) return new Date();
-  
+
   if (typeof dateValue === 'string') {
-    // Separa a data ignorando a hora/fuso UTC (caso venha como ISO)
     const datePart = dateValue.split('T')[0];
     const [year, month, day] = datePart.split('-');
-    
+
     if (year && month && day) {
-      // JavaScript usa meses de 0 (Jan) a 11 (Dez)
-      return new Date(year, parseInt(month) - 1, day);
+      return new Date(year, Number.parseInt(month, 10) - 1, Number.parseInt(day, 10));
     }
   }
+
   return new Date(dateValue);
 }
 
@@ -60,57 +52,50 @@ function addDays(dateValue, days) {
   date.setDate(date.getDate() + days);
   return date;
 }
-// ============================================================================
 
-function extractId(value) {
-  if (!value) return null;
-  if (typeof value === 'string') return value;
-  if (value._id) return String(value._id);
-  return String(value);
+function normalizeStatus(status) {
+  return String(status || 'PRESENT').toUpperCase() === 'ABSENT'
+    ? 'ABSENT'
+    : 'PRESENT';
 }
 
-function createHttpError(message, statusCode = 400) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
+function normalizeAbsenceState(state) {
+  const normalized = String(state || ABSENCE_STATES.NONE).toUpperCase();
+  return ABSENCE_STATES[normalized] || ABSENCE_STATES.NONE;
 }
 
-function normalizeRoles(roles) {
-  if (!Array.isArray(roles)) return [];
-  return roles
-    .map((role) => String(role || '').trim().toUpperCase())
-    .filter(Boolean);
-}
-
-function isPrivilegedActor(actor) {
-  const roles = normalizeRoles(actor?.roles || (actor?.role ? [actor.role] : []));
-  return roles.some((role) => PRIVILEGED_ROLES.has(role));
+function roundRate(value) {
+  return Math.round(value * 100) / 100;
 }
 
 function buildAttendanceSummary(payload) {
   const records = Array.isArray(payload?.records) ? payload.records : [];
 
-  const presentCount = records.filter((record) => normalizeStatus(record.status) === 'PRESENT').length;
-  const absentCount = records.filter((record) => normalizeStatus(record.status) === 'ABSENT').length;
+  const presentCount = records.filter(
+    (record) => normalizeStatus(record.status) === 'PRESENT'
+  ).length;
+  const absentCount = records.filter(
+    (record) => normalizeStatus(record.status) === 'ABSENT'
+  ).length;
   const pendingCount = records.filter(
     (record) =>
       normalizeStatus(record.status) === 'ABSENT' &&
-      String(record.absenceState || '').toUpperCase() === ABSENCE_STATES.PENDING
+      normalizeAbsenceState(record.absenceState) === ABSENCE_STATES.PENDING
   ).length;
   const approvedCount = records.filter(
     (record) =>
       normalizeStatus(record.status) === 'ABSENT' &&
-      String(record.absenceState || '').toUpperCase() === ABSENCE_STATES.APPROVED
+      normalizeAbsenceState(record.absenceState) === ABSENCE_STATES.APPROVED
   ).length;
   const rejectedCount = records.filter(
     (record) =>
       normalizeStatus(record.status) === 'ABSENT' &&
-      String(record.absenceState || '').toUpperCase() === ABSENCE_STATES.REJECTED
+      normalizeAbsenceState(record.absenceState) === ABSENCE_STATES.REJECTED
   ).length;
   const expiredCount = records.filter(
     (record) =>
       normalizeStatus(record.status) === 'ABSENT' &&
-      String(record.absenceState || '').toUpperCase() === ABSENCE_STATES.EXPIRED
+      normalizeAbsenceState(record.absenceState) === ABSENCE_STATES.EXPIRED
   ).length;
 
   return {
@@ -122,7 +107,7 @@ function buildAttendanceSummary(payload) {
     approvedCount,
     rejectedCount,
     expiredCount,
-    presenceRate: records.length === 0 ? 0 : presentCount / records.length
+    presenceRate: records.length === 0 ? 0 : roundRate(presentCount / records.length),
   };
 }
 
@@ -135,50 +120,6 @@ function buildAttendanceResponse(document) {
       : { ...document };
 
   return buildAttendanceSummary(payload);
-}
-
-async function ensureClassAccess(actor, schoolId, classId) {
-  if (!classId) {
-    throw createHttpError('ID da turma é obrigatório.', 400);
-  }
-
-  if (!mongoose.Types.ObjectId.isValid(classId)) {
-    throw createHttpError('Turma inválida.', 400);
-  }
-
-  const classDoc = await Class.findOne({
-    _id: classId,
-    school_id: schoolId
-  }).select('_id name school_id');
-
-  if (!classDoc) {
-    throw createHttpError('Turma não encontrada ou não pertence à sua escola.', 404);
-  }
-
-  if (isPrivilegedActor(actor)) {
-    return classDoc;
-  }
-
-  const teacherId = extractId(actor?.id);
-  if (!teacherId) {
-    throw createHttpError('Acesso negado a esta turma.', 403);
-  }
-
-  const access = await Horario.exists({
-    school_id: schoolId,
-    classId: classDoc._id,
-    teacherId
-  });
-
-  if (!access) {
-    throw createHttpError('Turma não encontrada ou não pertence à sua escola.', 404);
-  }
-
-  return classDoc;
-}
-
-function normalizeStatus(status) {
-  return String(status || 'PRESENT').toUpperCase() === 'ABSENT' ? 'ABSENT' : 'PRESENT';
 }
 
 function buildDeadlineForAbsence(targetDate) {
@@ -201,28 +142,95 @@ async function expireOverdueAbsencesForClass(schoolId, classId) {
       classId,
       'records.status': 'ABSENT',
       'records.absenceState': { $in: [ABSENCE_STATES.NONE] },
-      'records.justificationDeadlineAt': { $lt: now }
+      'records.justificationDeadlineAt': { $lt: now },
     },
     {
       $set: {
         'records.$[record].absenceState': ABSENCE_STATES.EXPIRED,
         'records.$[record].justificationUpdatedAt': now,
-        'metadata.syncedAt': now
-      }
+        'metadata.syncedAt': now,
+      },
     },
     {
       arrayFilters: [
         {
           'record.status': 'ABSENT',
           'record.absenceState': { $in: [ABSENCE_STATES.NONE] },
-          'record.justificationDeadlineAt': { $lt: now }
-        }
-      ]
+          'record.justificationDeadlineAt': { $lt: now },
+        },
+      ],
     }
   );
 }
 
-exports.createOrUpdate = async (data, actor) => {
+function buildRecentRecordLabel(status, absenceState) {
+  if (status === 'PRESENT') {
+    return 'Presente';
+  }
+
+  if (absenceState === ABSENCE_STATES.APPROVED) {
+    return 'Falta justificada';
+  }
+
+  if (absenceState === ABSENCE_STATES.PENDING) {
+    return 'Falta aguardando justificativa';
+  }
+
+  if (absenceState === ABSENCE_STATES.REJECTED) {
+    return 'Falta com justificativa recusada';
+  }
+
+  if (absenceState === ABSENCE_STATES.EXPIRED) {
+    return 'Falta sem justificativa';
+  }
+
+  return 'Falta';
+}
+
+function getStudentRecordFromAttendance(entry, studentId) {
+  const targetStudentId = String(studentId);
+  const records = Array.isArray(entry?.records) ? entry.records : [];
+
+  return records.find((record) => extractId(record.studentId) === targetStudentId) || null;
+}
+
+async function expireOverdueAbsencesByStudent(schoolId, studentId, classId = null) {
+  const now = new Date();
+  const query = {
+    schoolId,
+    'records.status': 'ABSENT',
+    'records.studentId': new mongoose.Types.ObjectId(studentId),
+    'records.absenceState': { $in: [ABSENCE_STATES.NONE] },
+    'records.justificationDeadlineAt': { $lt: now },
+  };
+
+  if (classId) {
+    query.classId = classId;
+  }
+
+  await Attendance.updateMany(
+    query,
+    {
+      $set: {
+        'records.$[record].absenceState': ABSENCE_STATES.EXPIRED,
+        'records.$[record].justificationUpdatedAt': now,
+        'metadata.syncedAt': now,
+      },
+    },
+    {
+      arrayFilters: [
+        {
+          'record.studentId': new mongoose.Types.ObjectId(studentId),
+          'record.status': 'ABSENT',
+          'record.absenceState': { $in: [ABSENCE_STATES.NONE] },
+          'record.justificationDeadlineAt': { $lt: now },
+        },
+      ],
+    }
+  );
+}
+
+async function createOrUpdate(data, actor) {
   await ensureClassAccess(actor, data.schoolId, data.classId);
 
   const targetStart = startOfDay(data.date || new Date());
@@ -231,7 +239,7 @@ exports.createOrUpdate = async (data, actor) => {
   const query = {
     schoolId: data.schoolId,
     classId: data.classId,
-    date: { $gte: targetStart, $lte: targetEnd }
+    date: { $gte: targetStart, $lte: targetEnd },
   };
 
   const existingAttendance = await Attendance.findOne(query);
@@ -247,7 +255,7 @@ exports.createOrUpdate = async (data, actor) => {
     const merged = {
       studentId,
       status,
-      observation: record.observation || ''
+      observation: record.observation || '',
     };
 
     if (status === 'ABSENT') {
@@ -274,8 +282,8 @@ exports.createOrUpdate = async (data, actor) => {
     records: normalizedRecords,
     metadata: {
       device: data.metadata?.device || existingAttendance?.metadata?.device || 'mobile',
-      syncedAt: new Date()
-    }
+      syncedAt: new Date(),
+    },
   };
 
   const result = await Attendance.findOneAndUpdate(
@@ -285,19 +293,18 @@ exports.createOrUpdate = async (data, actor) => {
       upsert: true,
       new: true,
       setDefaultsOnInsert: true,
-      runValidators: true
+      runValidators: true,
     }
   );
 
   await expireOverdueAbsencesForClass(data.schoolId, data.classId);
 
   return buildAttendanceResponse(await populateAttendance(result._id));
-};
+}
 
-exports.getDailyList = async (schoolId, classId, dateString, actor) => {
+async function getDailyList(schoolId, classId, dateString, actor) {
   await ensureClassAccess(actor, schoolId, classId);
 
-  // CORREÇÃO: Repassando o valor bruto diretamente para a nova função segura
   const targetStart = startOfDay(dateString || new Date());
   const targetEnd = endOfDay(dateString || new Date());
 
@@ -306,7 +313,7 @@ exports.getDailyList = async (schoolId, classId, dateString, actor) => {
   const existingAttendance = await Attendance.findOne({
     schoolId,
     classId,
-    date: { $gte: targetStart, $lte: targetEnd }
+    date: { $gte: targetStart, $lte: targetEnd },
   }).populate('records.studentId', 'fullName photoUrl profilePictureUrl');
 
   if (existingAttendance) {
@@ -316,7 +323,7 @@ exports.getDailyList = async (schoolId, classId, dateString, actor) => {
   const enrollments = await Enrollment.find({
     school_id: schoolId,
     class: classId,
-    status: 'Ativa'
+    status: 'Ativa',
   }).populate('student', 'fullName photoUrl profilePictureUrl');
 
   const proposedList = {
@@ -332,58 +339,154 @@ exports.getDailyList = async (schoolId, classId, dateString, actor) => {
         absenceState: ABSENCE_STATES.NONE,
         justificationId: null,
         justificationDeadlineAt: null,
-        justificationUpdatedAt: null
-      }))
+        justificationUpdatedAt: null,
+      })),
   };
 
   return { type: 'proposed', data: buildAttendanceSummary(proposedList) };
-};
+}
 
-exports.getClassHistory = async (schoolId, classId, actor) => {
+async function getClassHistory(schoolId, classId, actor) {
   await ensureClassAccess(actor, schoolId, classId);
 
   await expireOverdueAbsencesForClass(schoolId, classId);
 
   const history = await Attendance.find({
     schoolId: new mongoose.Types.ObjectId(schoolId),
-    classId: new mongoose.Types.ObjectId(classId)
+    classId: new mongoose.Types.ObjectId(classId),
   })
     .sort({ date: -1, updatedAt: -1 })
     .populate('records.studentId', 'fullName photoUrl profilePictureUrl');
 
   return history.map((entry) => buildAttendanceResponse(entry));
-};
+}
 
-exports.getHistoryByStudent = async (schoolId, studentId) => {
-  await Attendance.updateMany(
-    {
-      schoolId,
-      'records.status': 'ABSENT',
-      'records.studentId': new mongoose.Types.ObjectId(studentId),
-      'records.absenceState': { $in: [ABSENCE_STATES.NONE] },
-      'records.justificationDeadlineAt': { $lt: new Date() }
-    },
-    {
-      $set: {
-        'records.$[record].absenceState': ABSENCE_STATES.EXPIRED,
-        'records.$[record].justificationUpdatedAt': new Date(),
-        'metadata.syncedAt': new Date()
-      }
-    },
-    {
-      arrayFilters: [
-        {
-          'record.studentId': new mongoose.Types.ObjectId(studentId),
-          'record.status': 'ABSENT',
-          'record.absenceState': { $in: [ABSENCE_STATES.NONE] },
-          'record.justificationDeadlineAt': { $lt: new Date() }
-        }
-      ]
-    }
-  );
+async function getHistoryByStudent(schoolId, studentId, options = {}) {
+  const { classId = null, actor = null } = options;
 
-  return Attendance.find({
+  if (!studentId || !mongoose.Types.ObjectId.isValid(studentId)) {
+    throw createHttpError('Aluno invalido.', 400);
+  }
+
+  if (classId) {
+    await ensureClassAccess(actor, schoolId, classId);
+  }
+
+  await expireOverdueAbsencesByStudent(schoolId, studentId, classId);
+
+  const query = {
     schoolId,
-    'records.studentId': studentId
-  }).select('date classId records.$');
+    'records.studentId': new mongoose.Types.ObjectId(studentId),
+  };
+
+  if (classId) {
+    query.classId = classId;
+  }
+
+  return Attendance.find(query)
+    .sort({ date: -1, updatedAt: -1 })
+    .select('date classId records.$ metadata updatedAt');
+}
+
+async function getStudentRecentHistorySummary({
+  schoolId,
+  classId,
+  studentId,
+  actor,
+  limit = 7,
+  skipAccessCheck = false,
+}) {
+  if (!studentId || !mongoose.Types.ObjectId.isValid(studentId)) {
+    throw createHttpError('Aluno invalido.', 400);
+  }
+
+  if (!skipAccessCheck) {
+    await ensureClassAccess(actor, schoolId, classId);
+  }
+
+  const normalizedLimit = Math.max(1, Math.min(Number(limit) || 7, 15));
+
+  await expireOverdueAbsencesByStudent(schoolId, studentId, classId);
+
+  const history = await Attendance.find({
+    schoolId,
+    classId,
+    'records.studentId': new mongoose.Types.ObjectId(studentId),
+  })
+    .sort({ date: -1, updatedAt: -1 })
+    .limit(normalizedLimit)
+    .select('date records metadata updatedAt')
+    .lean();
+
+  const records = history
+    .map((entry) => {
+      const studentRecord = getStudentRecordFromAttendance(entry, studentId);
+      if (!studentRecord) return null;
+
+      const status = normalizeStatus(studentRecord.status);
+      const absenceState =
+        status === 'ABSENT'
+          ? normalizeAbsenceState(studentRecord.absenceState)
+          : ABSENCE_STATES.NONE;
+
+      return {
+        date: entry.date,
+        status,
+        absenceState,
+        label: buildRecentRecordLabel(status, absenceState),
+        observation: studentRecord.observation || '',
+        updatedAt: studentRecord.justificationUpdatedAt || entry.updatedAt || entry.date,
+      };
+    })
+    .filter(Boolean);
+
+  const presentCount = records.filter((record) => record.status === 'PRESENT').length;
+  const absentCount = records.filter((record) => record.status === 'ABSENT').length;
+  const justifiedAbsences = records.filter(
+    (record) =>
+      record.status === 'ABSENT' && record.absenceState === ABSENCE_STATES.APPROVED
+  ).length;
+  const pendingJustifications = records.filter(
+    (record) =>
+      record.status === 'ABSENT' && record.absenceState === ABSENCE_STATES.PENDING
+  ).length;
+  const rejectedJustifications = records.filter(
+    (record) =>
+      record.status === 'ABSENT' && record.absenceState === ABSENCE_STATES.REJECTED
+  ).length;
+  const expiredJustifications = records.filter(
+    (record) =>
+      record.status === 'ABSENT' && record.absenceState === ABSENCE_STATES.EXPIRED
+  ).length;
+
+  return {
+    window: {
+      type: 'last_records',
+      requestedSize: normalizedLimit,
+      returnedRecords: records.length,
+    },
+    summary: {
+      totalRecords: records.length,
+      presentCount,
+      absentCount,
+      justifiedAbsences,
+      pendingJustifications,
+      rejectedJustifications,
+      expiredJustifications,
+      presenceRate: records.length === 0 ? 0 : roundRate(presentCount / records.length),
+      lastRecordedAt: records[0]?.date || null,
+    },
+    records,
+  };
+}
+
+module.exports = {
+  ABSENCE_STATES,
+  buildAttendanceResponse,
+  buildAttendanceSummary,
+  createOrUpdate,
+  getDailyList,
+  getClassHistory,
+  getHistoryByStudent,
+  getStudentRecentHistorySummary,
 };

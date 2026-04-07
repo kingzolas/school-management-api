@@ -3,15 +3,16 @@ const studentNoteService = require('../services/studentNote.service');
 exports.create = async (req, res) => {
   try {
     const { studentId } = req.params;
+    const schoolId = req.user.schoolId || req.user.school_id;
     
     const noteData = {
       ...req.body,
-      schoolId: req.user.schoolId,
+      schoolId,
       studentId: studentId,
       createdBy: req.user.id || req.user._id
     };
 
-    const result = await studentNoteService.createNote(noteData);
+    const result = await studentNoteService.createNote(noteData, req.user);
 
     return res.status(201).json({
       message: 'Anotação criada com sucesso.',
@@ -26,9 +27,10 @@ exports.create = async (req, res) => {
 exports.listByStudent = async (req, res) => {
   try {
     const { studentId } = req.params;
+    const schoolId = req.user.schoolId || req.user.school_id;
     
     const result = await studentNoteService.listStudentNotes(
-      req.user.schoolId, 
+      schoolId,
       studentId, 
       req.user
     );
@@ -45,9 +47,10 @@ exports.listByStudent = async (req, res) => {
 exports.delete = async (req, res) => {
   try {
     const { noteId } = req.params;
+    const schoolId = req.user.schoolId || req.user.school_id;
 
     const result = await studentNoteService.deleteNote(
-      req.user.schoolId,
+      schoolId,
       noteId,
       req.user
     );

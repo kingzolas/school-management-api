@@ -159,6 +159,27 @@ class StudentController {
         }
     }
 
+    async getTeacherSummary(req, res) {
+        try {
+            const schoolId = getSchoolId(req);
+            const { classId, studentId } = req.params;
+
+            const summary = await StudentService.getTeacherSummary({
+                schoolId,
+                classId,
+                studentId,
+                currentUser: req.user
+            });
+
+            res.status(200).json(summary);
+        } catch (error) {
+            const statusCode = error.statusCode || (error.message.includes('nao encontrado') ? 404 : 400);
+            res.status(statusCode).json({
+                message: error.message || 'Erro ao buscar resumo do aluno para o professor.'
+            });
+        }
+    }
+
     async update(req, res) {
         try {
             const schoolId = getSchoolId(req);
