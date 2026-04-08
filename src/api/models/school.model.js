@@ -3,6 +3,13 @@ const mongoose = require('mongoose');
 const SchoolSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
+    publicIdentifier: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      sparse: true,
+      unique: true,
+    },
     legalName: { type: String },
     cnpj: { type: String },
     stateRegistration: { type: String },

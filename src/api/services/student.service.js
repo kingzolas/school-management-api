@@ -7,6 +7,7 @@ const dbHelper = require('../../helpers/dbHelper');
 const attendanceService = require('./attendance.service');
 const studentNoteService = require('./studentNote.service');
 const { ensureStudentEnrollmentAccess } = require('./classAccess.service');
+const { buildBirthDateKey, normalizeName } = require('../utils/guardianAccess.util');
 
 const tutorPopulation = {
     path: 'tutors.tutorId', 
@@ -561,6 +562,14 @@ class StudentService {
     async updateStudent(id, studentData, schoolId, photoFile, user, reason) {
         
         const updatePayload = { ...studentData };
+
+        if (Object.prototype.hasOwnProperty.call(updatePayload, 'fullName')) {
+            updatePayload.fullNameNormalized = normalizeName(updatePayload.fullName);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(updatePayload, 'birthDate')) {
+            updatePayload.birthDateKey = buildBirthDateKey(updatePayload.birthDate);
+        }
 
         const tutorsFromFlutter = updatePayload.tutors;
         if (Array.isArray(tutorsFromFlutter)) {

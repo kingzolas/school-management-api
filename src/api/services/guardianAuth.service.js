@@ -1,0 +1,2867 @@
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
+const School = require('../models/school.model');
+const Student = require('../models/student.model');
+const Tutor = require('../models/tutor.model');
+const Class = require('../models/class.model');
+const Enrollment = require('../models/enrollment.model');
+const User = require('../models/user.model');
+const Subject = require('../models/subject.model');
+const Invoice = require('../models/invoice.model');
+const Attendance = require('../models/attendance.model');
+const Horario = require('../models/horario.model');
+const Periodo = require('../models/periodo.model');
+const ClassActivity = require('../models/classActivity.model');
+const ClassActivitySubmission = require('../models/classActivitySubmission.model');
+const GuardianAccessAccount = require('../models/guardianAccessAccount.model');
+const GuardianAccessLink = require('../models/guardianAccessLink.model');
+const GuardianAccessEvent = require('../models/guardianAccessEvent.model');
+const GuardianFirstAccessChallenge = require('../models/guardianFirstAccessChallenge.model');
+const invoiceService = require('./invoice.service');
+const {
+  buildBirthDateKey,
+  buildPublicIdentifier,
+  isValidCpf,
+  maskCpf,
+  normalizeCpf,
+  normalizeName,
+  parseDateInput,
+} = require('../utils/guardianAccess.util');
+
+const ADMIN_ROLES = new Set([
+  'ADMIN',
+  'ADMINISTRADOR',
+  'COORDENADOR',
+  'DIRETOR',
+  'GESTOR',
+  'SECRETARIA',
+]);
+
+const CHALLENGE_TTL_MINUTES = 20;
+const LOGIN_BLOCK_MINUTES = 15;
+const MAX_LOGIN_FAILURES = 5;
+const MAX_CHALLENGE_CPF_FAILURES = 3;
+const PIN_SALT_ROUNDS = 10;
+
+class GuardianAuthService {
+  constructor(options = {}) {
+    this.SchoolModel = options.SchoolModel || School;
+    this.StudentModel = options.StudentModel || Student;
+    this.TutorModel = options.TutorModel || Tutor;
+    this.ClassModel = options.ClassModel || Class;
+    this.EnrollmentModel = options.EnrollmentModel || Enrollment;
+    this.UserModel = options.UserModel || User;
+    this.SubjectModel = options.SubjectModel || Subject;
+    this.InvoiceModel = options.InvoiceModel || Invoice;
+    this.AttendanceModel = options.AttendanceModel || Attendance;
+    this.HorarioModel = options.HorarioModel || Horario;
+    this.PeriodoModel = options.PeriodoModel || Periodo;
+    this.ClassActivityModel = options.ClassActivityModel || ClassActivity;
+    this.ClassActivitySubmissionModel =
+      options.ClassActivitySubmissionModel || ClassActivitySubmission;
+    this.GuardianAccessAccountModel =
+      options.GuardianAccessAccountModel || GuardianAccessAccount;
+    this.GuardianAccessLinkModel =
+      options.GuardianAccessLinkModel || GuardianAccessLink;
+    this.GuardianAccessEventModel =
+      options.GuardianAccessEventModel || GuardianAccessEvent;
+    this.GuardianFirstAccessChallengeModel =
+      options.GuardianFirstAccessChallengeModel || GuardianFirstAccessChallenge;
+    this.invoiceService = options.invoiceService || invoiceService;
+    this.bcrypt = options.bcrypt || bcrypt;
+    this.jwt = options.jwt || jwt;
+    this.crypto = options.crypto || crypto;
+    this.now = options.now || (() => new Date());
+    this.guardianJwtSecret =
+      options.guardianJwtSecret ||
+      process.env.GUARDIAN_JWT_SECRET ||
+      process.env.JWT_SECRET;
+  }
+
+  _createHttpError(message, statusCode = 400, extra = {}) {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    Object.assign(error, extra);
+    return error;
+  }
+
+  _getNow() {
+    return this.now();
+  }
+
+  _addMinutes(date, minutes) {
+    return new Date(date.getTime() + minutes * 60 * 1000);
+  }
+
+  _randomToken(size = 24) {
+    return this.crypto.randomBytes(size).toString('hex');
+  }
+
+  _hashValue(value) {
+    return this.crypto
+      .createHash('sha256')
+      .update(String(value || ''))
+      .digest('hex');
+  }
+
+  _buildRequestHashes(requestMeta = {}) {
+    const ipHash = requestMeta.ip ? this._hashValue(requestMeta.ip) : null;
+    const userAgentHash = requestMeta.userAgent
+      ? this._hashValue(requestMeta.userAgent)
+      : null;
+
+    return { ipHash, userAgentHash };
+  }
+
+  _isDebugEnabled() {
+    return String(process.env.GUARDIAN_AUTH_DEBUG || '').toLowerCase() === 'true';
+  }
+
+  _debugLog(scope, payload = {}) {
+    if (!this._isDebugEnabled()) return;
+
+    try {
+      console.info(
+        `[guardian-auth][${scope}] ${JSON.stringify(payload, null, 2)}`
+      );
+    } catch (_) {
+      console.info(`[guardian-auth][${scope}]`, payload);
+    }
+  }
+
+  _extractRoles(actor = {}) {
+    const roles = [];
+
+    if (Array.isArray(actor.roles)) roles.push(...actor.roles);
+    if (actor.role) roles.push(actor.role);
+    if (actor.profile) roles.push(actor.profile);
+    if (actor.userType) roles.push(actor.userType);
+
+    return roles
+      .map((role) => String(role || '').trim().toUpperCase())
+      .filter(Boolean);
+  }
+
+  _assertAdminActor(actor = {}) {
+    const hasPermission = this._extractRoles(actor).some((role) =>
+      ADMIN_ROLES.has(role)
+    );
+
+    if (!hasPermission) {
+      throw this._createHttpError(
+        'Acesso negado para gestao de acessos de responsaveis.',
+        403
+      );
+    }
+  }
+
+  _getAccountStatus(account = {}) {
+    if (!account) return 'unknown';
+
+    const now = this._getNow();
+    if (account.blockedUntil && new Date(account.blockedUntil) > now) {
+      return 'blocked';
+    }
+
+    return account.status || 'pending';
+  }
+
+  _assertValidPin(pin) {
+    if (!/^\d{6}$/.test(String(pin || ''))) {
+      throw this._createHttpError(
+        'O PIN deve conter exatamente 6 digitos numericos.',
+        400
+      );
+    }
+  }
+
+  _assertGuardianJwtSecret() {
+    if (!this.guardianJwtSecret) {
+      throw this._createHttpError(
+        'Segredo JWT de responsavel nao configurado.',
+        500
+      );
+    }
+  }
+
+  async _registerEvent({
+    schoolId,
+    accountId = null,
+    linkId = null,
+    challengeId = null,
+    studentId = null,
+    tutorId = null,
+    actorType,
+    actorUserId = null,
+    eventType,
+    metadata = {},
+  }) {
+    if (!schoolId || !actorType || !eventType) return null;
+
+    return this.GuardianAccessEventModel.create({
+      school_id: schoolId,
+      accountId,
+      linkId,
+      challengeId,
+      studentId,
+      tutorId,
+      actorType,
+      actorUserId,
+      eventType,
+      metadata,
+    });
+  }
+
+  async resolveSchoolByPublicIdentifier(publicIdentifier) {
+    const normalizedPublicIdentifier = buildPublicIdentifier(publicIdentifier);
+
+    if (!normalizedPublicIdentifier) {
+      throw this._createHttpError('schoolPublicId invalido.', 400);
+    }
+
+    const school = await this.SchoolModel.findOne({
+      publicIdentifier: normalizedPublicIdentifier,
+    })
+      .select('_id name publicIdentifier')
+      .lean();
+
+    if (!school) {
+      throw this._createHttpError('Escola nao encontrada.', 404);
+    }
+
+    return school;
+  }
+
+  async _getSchoolSummaryById(schoolId) {
+    if (!schoolId) return null;
+
+    return this.SchoolModel.findById(schoolId)
+      .select('_id name publicIdentifier')
+      .lean();
+  }
+
+  async _listSchoolSummariesByIds(schoolIds = []) {
+    const uniqueSchoolIds = [...new Set(schoolIds.map(String).filter(Boolean))];
+
+    if (!uniqueSchoolIds.length) {
+      return [];
+    }
+
+    const schools = await this.SchoolModel.find({
+      _id: { $in: uniqueSchoolIds },
+    })
+      .select('_id name publicIdentifier')
+      .lean();
+
+    return schools
+      .map((school) => ({
+        schoolId: String(school._id),
+        schoolName: school.name || '',
+        schoolPublicId: school.publicIdentifier || '',
+      }))
+      .filter((school) => school.schoolPublicId)
+      .sort((left, right) =>
+        String(left.schoolName || '').localeCompare(
+          String(right.schoolName || ''),
+          'pt-BR'
+        )
+      );
+  }
+
+  _buildSchoolResponse(school = null) {
+    if (!school?._id) return null;
+
+    return {
+      publicIdentifier: school.publicIdentifier || null,
+      name: school.name || null,
+    };
+  }
+
+  _extractId(value) {
+    if (!value) return null;
+    if (typeof value === 'string') return value;
+    if (value._id) return String(value._id);
+    return String(value);
+  }
+
+  _timeToMinutes(timeValue) {
+    const [hour, minute] = String(timeValue || '')
+      .split(':')
+      .map((part) => Number.parseInt(part, 10));
+
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+      return null;
+    }
+
+    return hour * 60 + minute;
+  }
+
+  _getWeekdayLabel(dayOfWeek) {
+    switch (Number(dayOfWeek)) {
+      case 1:
+        return 'Segunda';
+      case 2:
+        return 'Terca';
+      case 3:
+        return 'Quarta';
+      case 4:
+        return 'Quinta';
+      case 5:
+        return 'Sexta';
+      case 6:
+        return 'Sabado';
+      case 7:
+        return 'Domingo';
+      default:
+        return 'Dia';
+    }
+  }
+
+  _buildGuardianClassSummary(classDoc = null) {
+    const classId = this._extractId(classDoc?._id || classDoc);
+    if (!classId) return null;
+
+    return {
+      id: classId,
+      name: classDoc?.name || '',
+      grade: classDoc?.grade || '',
+      shift: classDoc?.shift || '',
+      schoolYear: classDoc?.schoolYear ?? null,
+      room: classDoc?.room || null,
+    };
+  }
+
+  _sortGuardianLinkedStudents(students = []) {
+    return [...students].sort((left, right) =>
+      String(left.fullName || '').localeCompare(
+        String(right.fullName || ''),
+        'pt-BR'
+      )
+    );
+  }
+
+  _pickDefaultGuardianStudent(students = []) {
+    if (!students.length) return null;
+
+    const withClass = students.find((student) => student.class != null);
+    return withClass || students[0];
+  }
+
+  _serializeGuardianLesson(
+    lesson,
+    { subjectById = new Map(), teacherById = new Map(), classById = new Map() } = {}
+  ) {
+    const subjectId = this._extractId(lesson?.subjectId);
+    const teacherId = this._extractId(lesson?.teacherId);
+    const classId = this._extractId(lesson?.classId);
+
+    const subject = subjectById.get(subjectId) || {};
+    const teacher = teacherById.get(teacherId) || {};
+    const classDoc = classById.get(classId) || {};
+
+    return {
+      id: this._extractId(lesson?._id),
+      dayOfWeek: Number(lesson?.dayOfWeek || 0),
+      weekdayLabel: this._getWeekdayLabel(lesson?.dayOfWeek),
+      startTime: lesson?.startTime || '',
+      endTime: lesson?.endTime || '',
+      timeLabel: `${lesson?.startTime || '--:--'} - ${lesson?.endTime || '--:--'}`,
+      subjectName: subject?.name || 'Disciplina',
+      teacherName: teacher?.fullName || 'Professor',
+      room: lesson?.room || classDoc?.room || null,
+      className: classDoc?.name || '',
+      grade: classDoc?.grade || '',
+      shift: classDoc?.shift || '',
+    };
+  }
+
+  _computeGuardianSchedulePointers(entries = [], referenceDate = this._getNow()) {
+    if (!entries.length) {
+      return {
+        currentClass: null,
+        nextClass: null,
+      };
+    }
+
+    const currentDayOfWeek = referenceDate.getDay() === 0 ? 7 : referenceDate.getDay();
+    const currentMinutes = referenceDate.getHours() * 60 + referenceDate.getMinutes();
+
+    const sortedEntries = [...entries].sort((left, right) => {
+      if (left.dayOfWeek !== right.dayOfWeek) {
+        return left.dayOfWeek - right.dayOfWeek;
+      }
+
+      return this._timeToMinutes(left.startTime) - this._timeToMinutes(right.startTime);
+    });
+
+    let currentClass = null;
+    let nextClass = null;
+
+    for (const entry of sortedEntries) {
+      const startMinutes = this._timeToMinutes(entry.startTime);
+      const endMinutes = this._timeToMinutes(entry.endTime);
+
+      if (
+        entry.dayOfWeek === currentDayOfWeek &&
+        startMinutes !== null &&
+        endMinutes !== null &&
+        currentMinutes >= startMinutes &&
+        currentMinutes < endMinutes
+      ) {
+        currentClass = entry;
+        break;
+      }
+    }
+
+    if (currentClass) {
+      for (const entry of sortedEntries) {
+        const startMinutes = this._timeToMinutes(entry.startTime);
+        if (
+          entry.dayOfWeek === currentDayOfWeek &&
+          startMinutes !== null &&
+          startMinutes > currentMinutes
+        ) {
+          nextClass = entry;
+          break;
+        }
+      }
+
+      if (!nextClass) {
+        nextClass = sortedEntries.find((entry) => entry.dayOfWeek > currentDayOfWeek) || null;
+      }
+
+      if (!nextClass) {
+        nextClass =
+          sortedEntries.find((entry) => entry.dayOfWeek < currentDayOfWeek) || null;
+      }
+
+      return { currentClass, nextClass };
+    }
+
+    nextClass =
+      sortedEntries.find((entry) => {
+        const startMinutes = this._timeToMinutes(entry.startTime);
+
+        if (entry.dayOfWeek === currentDayOfWeek) {
+          return startMinutes !== null && startMinutes > currentMinutes;
+        }
+
+        return entry.dayOfWeek > currentDayOfWeek;
+      }) || null;
+
+    if (!nextClass) {
+      nextClass =
+        sortedEntries.find((entry) => entry.dayOfWeek < currentDayOfWeek) || null;
+    }
+
+    return {
+      currentClass: null,
+      nextClass,
+    };
+  }
+
+  _buildGuardianAttendanceLabel(status, absenceState) {
+    if (status === 'PRESENT') {
+      return 'Presente';
+    }
+
+    switch (String(absenceState || 'NONE').toUpperCase()) {
+      case 'APPROVED':
+        return 'Falta justificada';
+      case 'PENDING':
+        return 'Falta aguardando justificativa';
+      case 'REJECTED':
+        return 'Falta com justificativa recusada';
+      case 'EXPIRED':
+        return 'Falta sem justificativa';
+      default:
+        return 'Falta';
+    }
+  }
+
+  _buildGuardianActivityWorkflowState(activity = {}) {
+    const now = this._getNow().getTime();
+    const status = String(activity.status || 'ACTIVE').toUpperCase();
+
+    if (status === 'CANCELLED') return 'CANCELLED';
+    if (status === 'COMPLETED') return 'COMPLETED';
+
+    const assignedAt = activity.assignedAt ? new Date(activity.assignedAt).getTime() : null;
+    if (assignedAt && assignedAt > now) {
+      return 'PLANNED';
+    }
+
+    const referenceDate = activity.correctionDate || activity.dueDate;
+    const referenceTime = referenceDate ? new Date(referenceDate).getTime() : null;
+
+    if (referenceTime && referenceTime <= now) {
+      return 'IN_REVIEW';
+    }
+
+    return 'ACTIVE';
+  }
+
+  async _getRelevantGuardianTerm(schoolId) {
+    const terms = await this.PeriodoModel.find({
+      school_id: schoolId,
+      tipo: 'Letivo',
+    })
+      .select('_id titulo dataInicio dataFim')
+      .lean();
+
+    if (!terms.length) {
+      return null;
+    }
+
+    const sortedTerms = [...terms].sort(
+      (left, right) => new Date(left.dataInicio) - new Date(right.dataInicio)
+    );
+    const now = this._getNow().getTime();
+
+    const activeTerm = sortedTerms.find((term) => {
+      const start = new Date(term.dataInicio).getTime();
+      const end = new Date(term.dataFim).getTime();
+      return start <= now && end >= now;
+    });
+
+    if (activeTerm) {
+      return activeTerm;
+    }
+
+    const nextTerm = sortedTerms.find(
+      (term) => new Date(term.dataInicio).getTime() > now
+    );
+
+    return nextTerm || sortedTerms[sortedTerms.length - 1] || null;
+  }
+
+  async _listGuardianLinkedStudents({ schoolId, accountId }) {
+    const links = await this.GuardianAccessLinkModel.find({
+      school_id: schoolId,
+      guardianAccessAccountId: accountId,
+      status: 'active',
+    })
+      .select('studentId relationshipSnapshot linkedAt')
+      .lean();
+
+    const studentIds = [...new Set(links.map((link) => this._extractId(link.studentId)).filter(Boolean))];
+    if (!studentIds.length) {
+      return [];
+    }
+
+    const [students, enrollments] = await Promise.all([
+      this.StudentModel.find({
+        _id: { $in: studentIds },
+        school_id: schoolId,
+        isActive: true,
+      })
+        .select('_id fullName birthDate classId isActive')
+        .lean(),
+      this.EnrollmentModel.find({
+        school_id: schoolId,
+        student: { $in: studentIds },
+        status: { $in: ['Ativa', 'Pendente'] },
+      })
+        .select('_id student class academicYear enrollmentDate status')
+        .lean(),
+    ]);
+
+    const classIds = [
+      ...new Set(
+        [
+          ...students.map((student) => this._extractId(student.classId)),
+          ...enrollments.map((enrollment) => this._extractId(enrollment.class)),
+        ].filter(Boolean)
+      ),
+    ];
+
+    const classes = classIds.length
+      ? await this.ClassModel.find({
+          _id: { $in: classIds },
+          school_id: schoolId,
+        })
+          .select('_id name grade shift schoolYear room')
+          .lean()
+      : [];
+
+    const classById = new Map(
+      classes.map((classDoc) => [this._extractId(classDoc._id), classDoc])
+    );
+
+    const latestEnrollmentByStudentId = new Map();
+    const sortedEnrollments = [...enrollments].sort((left, right) => {
+      const yearDiff = Number(right.academicYear || 0) - Number(left.academicYear || 0);
+      if (yearDiff !== 0) return yearDiff;
+
+      const leftDate = new Date(left.enrollmentDate || 0).getTime();
+      const rightDate = new Date(right.enrollmentDate || 0).getTime();
+      return rightDate - leftDate;
+    });
+
+    sortedEnrollments.forEach((enrollment) => {
+      const studentId = this._extractId(enrollment.student);
+      if (!studentId || latestEnrollmentByStudentId.has(studentId)) return;
+      latestEnrollmentByStudentId.set(studentId, enrollment);
+    });
+
+    const relationshipByStudentId = new Map(
+      links.map((link) => [
+        this._extractId(link.studentId),
+        link.relationshipSnapshot || 'Responsavel',
+      ])
+    );
+
+    return this._sortGuardianLinkedStudents(
+      students.map((student) => {
+        const studentId = this._extractId(student._id);
+        const enrollment = latestEnrollmentByStudentId.get(studentId) || null;
+        const classInfo =
+          classById.get(
+            this._extractId(enrollment?.class) || this._extractId(student.classId)
+          ) || null;
+
+        return {
+          id: studentId,
+          fullName: student.fullName || '',
+          birthDate: student.birthDate || null,
+          relationship: relationshipByStudentId.get(studentId) || 'Responsavel',
+          class: this._buildGuardianClassSummary(classInfo),
+          enrollment: enrollment
+            ? {
+                id: this._extractId(enrollment._id),
+                academicYear: enrollment.academicYear ?? null,
+                enrollmentDate: enrollment.enrollmentDate || null,
+                status: enrollment.status || null,
+              }
+            : null,
+        };
+      })
+    );
+  }
+
+  async _resolveGuardianStudentContext({ schoolId, accountId, studentId = null }) {
+    const linkedStudents = await this._listGuardianLinkedStudents({
+      schoolId,
+      accountId,
+    });
+
+    if (!linkedStudents.length) {
+      throw this._createHttpError(
+        'Nenhum aluno vinculado a esta conta foi encontrado.',
+        404
+      );
+    }
+
+    const selectedStudent = studentId
+      ? linkedStudents.find((item) => item.id === String(studentId))
+      : this._pickDefaultGuardianStudent(linkedStudents);
+
+    if (!selectedStudent) {
+      throw this._createHttpError('Aluno vinculado nao encontrado.', 404);
+    }
+
+    return {
+      linkedStudents,
+      selectedStudent,
+    };
+  }
+
+  async _buildGuardianScheduleData({ schoolId, student }) {
+    const classId = this._extractId(student?.class?.id);
+
+    if (!classId) {
+      return {
+        term: null,
+        currentClass: null,
+        nextClass: null,
+        today: [],
+        week: [],
+      };
+    }
+
+    const term = await this._getRelevantGuardianTerm(schoolId);
+    const baseFilter = {
+      school_id: schoolId,
+      classId,
+    };
+
+    const filterWithTerm = term?._id
+      ? { ...baseFilter, termId: this._extractId(term._id) }
+      : baseFilter;
+
+    let rawLessons = await this.HorarioModel.find(filterWithTerm)
+      .select('_id classId subjectId teacherId dayOfWeek startTime endTime room')
+      .lean();
+
+    if (!rawLessons.length && term?._id) {
+      rawLessons = await this.HorarioModel.find(baseFilter)
+        .select('_id classId subjectId teacherId dayOfWeek startTime endTime room')
+        .lean();
+    }
+
+    const subjectIds = [
+      ...new Set(rawLessons.map((lesson) => this._extractId(lesson.subjectId)).filter(Boolean)),
+    ];
+    const teacherIds = [
+      ...new Set(rawLessons.map((lesson) => this._extractId(lesson.teacherId)).filter(Boolean)),
+    ];
+
+    const [subjects, teachers, classes] = await Promise.all([
+      subjectIds.length
+        ? this.SubjectModel.find({ _id: { $in: subjectIds } })
+            .select('_id name level')
+            .lean()
+        : [],
+      teacherIds.length
+        ? this.UserModel.find({ _id: { $in: teacherIds } })
+            .select('_id fullName profilePictureUrl')
+            .lean()
+        : [],
+      this.ClassModel.find({ _id: classId, school_id: schoolId })
+        .select('_id name grade shift schoolYear room')
+        .lean(),
+    ]);
+
+    const subjectById = new Map(
+      subjects.map((subject) => [this._extractId(subject._id), subject])
+    );
+    const teacherById = new Map(
+      teachers.map((teacher) => [this._extractId(teacher._id), teacher])
+    );
+    const classById = new Map(
+      classes.map((classDoc) => [this._extractId(classDoc._id), classDoc])
+    );
+
+    const serializedLessons = rawLessons
+      .map((lesson) =>
+        this._serializeGuardianLesson(lesson, {
+          subjectById,
+          teacherById,
+          classById,
+        })
+      )
+      .sort((left, right) => {
+        if (left.dayOfWeek !== right.dayOfWeek) {
+          return left.dayOfWeek - right.dayOfWeek;
+        }
+
+        return this._timeToMinutes(left.startTime) - this._timeToMinutes(right.startTime);
+      });
+
+    const currentDayOfWeek = this._getNow().getDay() === 0 ? 7 : this._getNow().getDay();
+    const { currentClass, nextClass } = this._computeGuardianSchedulePointers(
+      serializedLessons,
+      this._getNow()
+    );
+
+    return {
+      term: term
+        ? {
+            id: this._extractId(term._id),
+            title: term.titulo || '',
+            startDate: term.dataInicio || null,
+            endDate: term.dataFim || null,
+          }
+        : null,
+      currentClass,
+      nextClass,
+      today: serializedLessons.filter((lesson) => lesson.dayOfWeek === currentDayOfWeek),
+      week: [1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({
+        dayOfWeek,
+        label: this._getWeekdayLabel(dayOfWeek),
+        items: serializedLessons.filter((lesson) => lesson.dayOfWeek === dayOfWeek),
+      })),
+    };
+  }
+
+  async _buildGuardianAttendanceData({ schoolId, student }) {
+    const studentId = this._extractId(student?.id || student?._id);
+    const classId = this._extractId(student?.class?.id);
+
+    if (!studentId) {
+      return {
+        summary: {
+          totalRecords: 0,
+          presentCount: 0,
+          absentCount: 0,
+          justifiedAbsences: 0,
+          pendingJustifications: 0,
+          rejectedJustifications: 0,
+          expiredJustifications: 0,
+          presenceRate: 0,
+          lastRecordedAt: null,
+          recentAbsences: 0,
+          attentionLevel: 'neutral',
+        },
+        recentRecords: [],
+      };
+    }
+
+    const query = {
+      schoolId,
+      'records.studentId': studentId,
+    };
+
+    if (classId) {
+      query.classId = classId;
+    }
+
+    const history = await this.AttendanceModel.find(query)
+      .sort({ date: -1, updatedAt: -1 })
+      .select('date records updatedAt')
+      .lean();
+
+    const records = history
+      .map((entry) => {
+        const studentRecord = (Array.isArray(entry.records) ? entry.records : []).find(
+          (record) => this._extractId(record.studentId) === studentId
+        );
+
+        if (!studentRecord) return null;
+
+        const status =
+          String(studentRecord.status || 'PRESENT').toUpperCase() === 'ABSENT'
+            ? 'ABSENT'
+            : 'PRESENT';
+        const absenceState = status === 'ABSENT'
+          ? String(studentRecord.absenceState || 'NONE').toUpperCase()
+          : 'NONE';
+
+        return {
+          date: entry.date || null,
+          status,
+          absenceState,
+          label: this._buildGuardianAttendanceLabel(status, absenceState),
+          observation: studentRecord.observation || '',
+          updatedAt:
+            studentRecord.justificationUpdatedAt || entry.updatedAt || entry.date || null,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => new Date(right.date || 0) - new Date(left.date || 0));
+
+    const presentCount = records.filter((record) => record.status === 'PRESENT').length;
+    const absentCount = records.filter((record) => record.status === 'ABSENT').length;
+    const justifiedAbsences = records.filter(
+      (record) =>
+        record.status === 'ABSENT' && record.absenceState === 'APPROVED'
+    ).length;
+    const pendingJustifications = records.filter(
+      (record) =>
+        record.status === 'ABSENT' && record.absenceState === 'PENDING'
+    ).length;
+    const rejectedJustifications = records.filter(
+      (record) =>
+        record.status === 'ABSENT' && record.absenceState === 'REJECTED'
+    ).length;
+    const expiredJustifications = records.filter(
+      (record) =>
+        record.status === 'ABSENT' && record.absenceState === 'EXPIRED'
+    ).length;
+    const totalRecords = records.length;
+    const presenceRate =
+      totalRecords === 0
+        ? 0
+        : Math.round((presentCount / totalRecords) * 10000) / 100;
+    const recentAbsences = records.slice(0, 10).filter((record) => record.status === 'ABSENT').length;
+
+    let attentionLevel = 'neutral';
+    if (totalRecords > 0) {
+      attentionLevel = presenceRate >= 90 && recentAbsences <= 1 ? 'good' : 'attention';
+    }
+
+    return {
+      summary: {
+        totalRecords,
+        presentCount,
+        absentCount,
+        justifiedAbsences,
+        pendingJustifications,
+        rejectedJustifications,
+        expiredJustifications,
+        presenceRate,
+        lastRecordedAt: records[0]?.date || null,
+        recentAbsences,
+        attentionLevel,
+      },
+      recentRecords: records.slice(0, 20),
+    };
+  }
+
+  async _buildGuardianActivitiesData({ schoolId, student }) {
+    const studentId = this._extractId(student?.id || student?._id);
+    const classId = this._extractId(student?.class?.id);
+
+    if (!studentId || !classId) {
+      return {
+        summary: {
+          totalActivities: 0,
+          deliveredCount: 0,
+          pendingCount: 0,
+          overdueCount: 0,
+          recentCount: 0,
+          lastActivity: null,
+        },
+        items: [],
+      };
+    }
+
+    const activities = await this.ClassActivityModel.find({
+      schoolId,
+      classId,
+      visibilityToGuardians: true,
+      status: { $ne: 'CANCELLED' },
+    })
+      .select(
+        '_id classId teacherId subjectId title description assignedAt dueDate correctionDate status visibilityToGuardians summary'
+      )
+      .lean();
+
+    const sortedActivities = [...activities].sort((left, right) => {
+      const leftDate = new Date(left.dueDate || left.assignedAt || left.createdAt || 0).getTime();
+      const rightDate = new Date(
+        right.dueDate || right.assignedAt || right.createdAt || 0
+      ).getTime();
+      return rightDate - leftDate;
+    });
+
+    const activityIds = sortedActivities.map((activity) => this._extractId(activity._id));
+    const teacherIds = [
+      ...new Set(
+        sortedActivities.map((activity) => this._extractId(activity.teacherId)).filter(Boolean)
+      ),
+    ];
+    const subjectIds = [
+      ...new Set(
+        sortedActivities.map((activity) => this._extractId(activity.subjectId)).filter(Boolean)
+      ),
+    ];
+
+    const [submissions, teachers, subjects] = await Promise.all([
+      activityIds.length
+        ? this.ClassActivitySubmissionModel.find({
+            schoolId,
+            classId,
+            studentId,
+            activityId: { $in: activityIds },
+          })
+            .select(
+              '_id activityId deliveryStatus submittedAt isCorrected correctedAt score teacherNote'
+            )
+            .lean()
+        : [],
+      teacherIds.length
+        ? this.UserModel.find({ _id: { $in: teacherIds } })
+            .select('_id fullName profilePictureUrl')
+            .lean()
+        : [],
+      subjectIds.length
+        ? this.SubjectModel.find({ _id: { $in: subjectIds } })
+            .select('_id name level')
+            .lean()
+        : [],
+    ]);
+
+    const submissionByActivityId = new Map(
+      submissions.map((submission) => [
+        this._extractId(submission.activityId),
+        submission,
+      ])
+    );
+    const teacherById = new Map(
+      teachers.map((teacher) => [this._extractId(teacher._id), teacher])
+    );
+    const subjectById = new Map(
+      subjects.map((subject) => [this._extractId(subject._id), subject])
+    );
+
+    const nowTime = this._getNow().getTime();
+    const items = sortedActivities.map((activity) => {
+      const activityId = this._extractId(activity._id);
+      const submission = submissionByActivityId.get(activityId) || null;
+      const dueTime = activity.dueDate ? new Date(activity.dueDate).getTime() : null;
+      const deliveryStatus = String(submission?.deliveryStatus || 'PENDING').toUpperCase();
+      const isDelivered = ['DELIVERED', 'PARTIAL', 'EXCUSED'].includes(deliveryStatus);
+      const isPending = ['PENDING', 'NOT_DELIVERED', 'PARTIAL'].includes(deliveryStatus);
+      const isOverdue = Boolean(
+        isPending && dueTime && dueTime < nowTime && !isDelivered
+      );
+      const teacher = teacherById.get(this._extractId(activity.teacherId)) || {};
+      const subject = subjectById.get(this._extractId(activity.subjectId)) || {};
+
+      return {
+        id: activityId,
+        title: activity.title || 'Atividade',
+        description: activity.description || '',
+        assignedAt: activity.assignedAt || null,
+        dueDate: activity.dueDate || null,
+        correctionDate: activity.correctionDate || null,
+        status: activity.status || 'ACTIVE',
+        workflowState: this._buildGuardianActivityWorkflowState(activity),
+        subjectName: subject.name || '',
+        teacherName: teacher.fullName || '',
+        deliveryStatus,
+        submittedAt: submission?.submittedAt || null,
+        isCorrected: Boolean(submission?.isCorrected),
+        correctedAt: submission?.correctedAt || null,
+        score: submission?.score ?? null,
+        teacherNote: submission?.teacherNote || '',
+        isDelivered,
+        isPending,
+        isOverdue,
+      };
+    });
+
+    const deliveredCount = items.filter((item) => item.isDelivered).length;
+    const pendingCount = items.filter((item) => item.isPending && !item.isOverdue).length;
+    const overdueCount = items.filter((item) => item.isOverdue).length;
+    const recentCount = items.filter((item) => {
+      const referenceDate = item.assignedAt || item.dueDate;
+      if (!referenceDate) return false;
+      const diff = nowTime - new Date(referenceDate).getTime();
+      return diff <= 1000 * 60 * 60 * 24 * 21;
+    }).length;
+
+    const lastActivity = items[0]
+      ? {
+          id: items[0].id,
+          title: items[0].title,
+          dueDate: items[0].dueDate,
+          subjectName: items[0].subjectName,
+          teacherName: items[0].teacherName,
+          deliveryStatus: items[0].deliveryStatus,
+        }
+      : null;
+
+    return {
+      summary: {
+        totalActivities: items.length,
+        deliveredCount,
+        pendingCount,
+        overdueCount,
+        recentCount,
+        lastActivity,
+      },
+      items,
+    };
+  }
+
+  async findStudentsByPublicIdentity({ schoolId, studentFullName, birthDate }) {
+    const fullNameNormalized = normalizeName(studentFullName);
+    const birthDateKey = buildBirthDateKey(birthDate);
+    const parsedBirthDate = parseDateInput(birthDate);
+
+    if (!fullNameNormalized) {
+      throw this._createHttpError(
+        'Nome completo e data de nascimento sao obrigatorios.',
+        400,
+        { reason: 'invalid_student_name_payload' }
+      );
+    }
+
+    if (!birthDateKey || !parsedBirthDate) {
+      throw this._createHttpError(
+        'Nome completo e data de nascimento sao obrigatorios.',
+        400,
+        { reason: 'invalid_birth_date_payload' }
+      );
+    }
+
+    const filter = {
+      fullNameNormalized,
+      birthDateKey,
+      isActive: true,
+    };
+
+    if (schoolId) {
+      filter.school_id = schoolId;
+    }
+
+    this._debugLog('first-access.find-students.input', {
+      schoolId: schoolId ? String(schoolId) : null,
+      studentFullName,
+      fullNameNormalized,
+      birthDate,
+      birthDateKey,
+    });
+
+    const indexedMatches = await this.StudentModel.find(filter)
+      .select(
+        '_id fullName birthDate birthDateKey fullNameNormalized school_id financialTutorId tutors isActive'
+      )
+      .lean();
+
+    this._debugLog('first-access.find-students.indexed-result', {
+      matchesCount: indexedMatches.length,
+      matchIds: indexedMatches.map((student) => String(student._id)),
+    });
+
+    if (indexedMatches.length) {
+      return indexedMatches;
+    }
+
+    const dayStart = new Date(
+      Date.UTC(
+        parsedBirthDate.getUTCFullYear(),
+        parsedBirthDate.getUTCMonth(),
+        parsedBirthDate.getUTCDate()
+      )
+    );
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+    const fallbackFilter = {
+      birthDate: {
+        $gte: dayStart,
+        $lt: dayEnd,
+      },
+      isActive: true,
+    };
+
+    if (schoolId) {
+      fallbackFilter.school_id = schoolId;
+    }
+
+    const fallbackCandidates = await this.StudentModel.find(fallbackFilter)
+      .select(
+        '_id fullName birthDate birthDateKey fullNameNormalized school_id financialTutorId tutors isActive'
+      )
+      .lean();
+
+    const fallbackMatches = fallbackCandidates.filter((student) => {
+      const candidateFullNameNormalized =
+        student.fullNameNormalized || normalizeName(student.fullName);
+      const candidateBirthDateKey =
+        student.birthDateKey || buildBirthDateKey(student.birthDate);
+
+      return (
+        candidateFullNameNormalized === fullNameNormalized &&
+        candidateBirthDateKey === birthDateKey
+      );
+    });
+
+    this._debugLog('first-access.find-students.fallback-result', {
+      candidatesCount: fallbackCandidates.length,
+      matchesCount: fallbackMatches.length,
+      matchIds: fallbackMatches.map((student) => String(student._id)),
+    });
+
+    return fallbackMatches;
+  }
+
+  async getSingleStudentByPublicIdentity({
+    schoolId,
+    studentFullName,
+    birthDate,
+  }) {
+    const students = await this.findStudentsByPublicIdentity({
+      schoolId,
+      studentFullName,
+      birthDate,
+    });
+
+    if (students.length === 0) {
+      return { status: 'not_found', student: null };
+    }
+
+    if (students.length > 1) {
+      return { status: 'ambiguous', student: null, students };
+    }
+
+    return { status: 'ok', student: students[0] };
+  }
+
+  async _buildStudentAmbiguityError(students = []) {
+    const schoolIds = [...new Set(students.map((student) => String(student.school_id)).filter(Boolean))];
+
+    if (schoolIds.length > 1) {
+      const candidateSchools = await this._listSchoolSummariesByIds(schoolIds);
+
+      if (candidateSchools.length > 1) {
+        const message =
+          'Encontramos mais de uma escola com um aluno compativel. Selecione a escola para continuar.';
+
+        return this._createHttpError(message, 409, {
+          payload: {
+            status: 'student_ambiguous',
+            ambiguityType: 'across_schools',
+            message,
+            candidateSchools,
+          },
+        });
+      }
+    }
+
+    const message =
+      'Encontramos mais de um cadastro compativel. Procure a secretaria para continuar.';
+
+    return this._createHttpError(message, 409, {
+      payload: {
+        status: 'student_ambiguous',
+        ambiguityType: 'within_school',
+        message,
+      },
+    });
+  }
+
+  _buildDuplicateCpfMapFromTutors(tutors = []) {
+    const buckets = new Map();
+
+    tutors.forEach((tutor) => {
+      const effectiveCpfNormalized =
+        tutor.effectiveCpfNormalized || tutor.cpfNormalized || normalizeCpf(tutor.cpf);
+
+      if (!effectiveCpfNormalized) return;
+
+      if (!buckets.has(effectiveCpfNormalized)) {
+        buckets.set(effectiveCpfNormalized, []);
+      }
+
+      buckets.get(effectiveCpfNormalized).push(String(tutor._id));
+    });
+
+    return new Map(
+      [...buckets.entries()].filter(([, tutorIds]) => tutorIds.length > 1)
+    );
+  }
+
+  _buildTutorRelationshipMap(student = {}) {
+    const relationshipByTutorId = new Map();
+
+    if (student.financialTutorId) {
+      relationshipByTutorId.set(
+        String(student.financialTutorId),
+        'Responsavel Financeiro'
+      );
+    }
+
+    const tutorLinks = Array.isArray(student.tutors) ? student.tutors : [];
+
+    tutorLinks.forEach((link) => {
+      const tutorId = link?.tutorId?._id || link?.tutorId;
+      if (!tutorId) return;
+
+      const relationship = link.relationship || 'Responsavel';
+      if (!relationshipByTutorId.has(String(tutorId))) {
+        relationshipByTutorId.set(String(tutorId), relationship);
+      }
+    });
+
+    return relationshipByTutorId;
+  }
+
+  async resolveEligibleGuardiansByStudent(studentOrId, schoolId = null) {
+    let student = studentOrId;
+
+    if (!studentOrId || typeof studentOrId !== 'object' || !studentOrId._id) {
+      student = await this.StudentModel.findOne({
+        _id: studentOrId,
+        school_id: schoolId,
+      })
+        .select('_id school_id fullName financialTutorId tutors')
+        .lean();
+    }
+
+    if (!student) {
+      throw this._createHttpError('Aluno nao encontrado.', 404);
+    }
+
+    const resolvedSchoolId = schoolId || student.school_id;
+    const relationshipByTutorId = this._buildTutorRelationshipMap(student);
+    const tutorIds = [...relationshipByTutorId.keys()];
+
+    if (!tutorIds.length) {
+      return [];
+    }
+
+    const tutors = await this.TutorModel.find({
+      _id: { $in: tutorIds },
+      school_id: resolvedSchoolId,
+    })
+      .select('_id fullName cpf cpfNormalized school_id students')
+      .lean();
+
+    const tutorsWithEffectiveCpf = tutors.map((tutor) => ({
+      ...tutor,
+      effectiveCpfNormalized:
+        tutor.cpfNormalized || normalizeCpf(tutor.cpf),
+    }));
+
+    const duplicateCpfMap =
+      this._buildDuplicateCpfMapFromTutors(tutorsWithEffectiveCpf);
+
+    this._debugLog('first-access.guardian-eligibility', {
+      studentId: String(student._id),
+      schoolId: String(resolvedSchoolId),
+      relatedTutorIds: tutorIds,
+      tutors: tutorsWithEffectiveCpf.map((tutor) => ({
+        tutorId: String(tutor._id),
+        fullName: tutor.fullName,
+        cpfNormalized: tutor.cpfNormalized || null,
+        effectiveCpfNormalized: tutor.effectiveCpfNormalized || null,
+      })),
+      duplicateCpfKeys: [...duplicateCpfMap.keys()],
+    });
+
+    return tutorsWithEffectiveCpf
+      .filter((tutor) => tutor.effectiveCpfNormalized)
+      .filter(
+        (tutor) => !duplicateCpfMap.has(String(tutor.effectiveCpfNormalized))
+      )
+      .map((tutor) => ({
+        tutorId: String(tutor._id),
+        fullName: tutor.fullName,
+        relationship:
+          relationshipByTutorId.get(String(tutor._id)) || 'Responsavel',
+        cpfNormalized: tutor.effectiveCpfNormalized,
+        identifierType: 'cpf',
+        identifierMasked: maskCpf(tutor.effectiveCpfNormalized),
+      }))
+      .sort((left, right) =>
+        String(left.fullName || '').localeCompare(
+          String(right.fullName || ''),
+          'pt-BR'
+        )
+      );
+  }
+
+  async _createFirstAccessChallenge({
+    schoolId,
+    studentId,
+    guardians,
+    requestMeta = {},
+  }) {
+    const now = this._getNow();
+    const { ipHash, userAgentHash } = this._buildRequestHashes(requestMeta);
+
+    return this.GuardianFirstAccessChallengeModel.create({
+      school_id: schoolId,
+      studentId,
+      candidateGuardians: guardians.map((guardian) => ({
+        optionId: this._randomToken(8),
+        tutorId: guardian.tutorId,
+        displayName: guardian.fullName,
+        relationship: guardian.relationship,
+      })),
+      stage: 'awaiting_selection',
+      expiresAt: this._addMinutes(now, CHALLENGE_TTL_MINUTES),
+      ipHash,
+      userAgentHash,
+    });
+  }
+
+  async _loadChallenge(challengeId, { includeVerificationHash = false } = {}) {
+    if (!challengeId) {
+      throw this._createHttpError('challengeId obrigatorio.', 400);
+    }
+
+    const query = this.GuardianFirstAccessChallengeModel.findById(challengeId);
+    query.select(
+      [
+        'school_id',
+        'studentId',
+        'candidateGuardians',
+        'selectedTutorId',
+        'stage',
+        'failedCpfAttempts',
+        'verifiedAt',
+        'completedAt',
+        'expiresAt',
+        includeVerificationHash ? '+verificationTokenHash' : null,
+      ]
+        .filter(Boolean)
+        .join(' ')
+    );
+
+    const challenge = await query;
+
+    if (!challenge) {
+      throw this._createHttpError('Challenge nao encontrado.', 404);
+    }
+
+    const now = this._getNow();
+    if (challenge.expiresAt && new Date(challenge.expiresAt) <= now) {
+      challenge.stage = 'expired';
+      await challenge.save();
+      throw this._createHttpError('Challenge expirado.', 410);
+    }
+
+    if (challenge.stage === 'blocked') {
+      throw this._createHttpError(
+        'Tentativas excedidas para este primeiro acesso.',
+        423
+      );
+    }
+
+    if (challenge.stage === 'completed') {
+      throw this._createHttpError('Este primeiro acesso ja foi concluido.', 409);
+    }
+
+    if (challenge.stage === 'expired') {
+      throw this._createHttpError('Challenge expirado.', 410);
+    }
+
+    return challenge;
+  }
+
+  async _incrementChallengeFailure(challenge, metadata = {}) {
+    challenge.failedCpfAttempts = Number(challenge.failedCpfAttempts || 0) + 1;
+
+    if (challenge.failedCpfAttempts >= MAX_CHALLENGE_CPF_FAILURES) {
+      challenge.stage = 'blocked';
+    }
+
+    await challenge.save();
+
+    await this._registerEvent({
+      schoolId: challenge.school_id,
+      challengeId: challenge._id,
+      studentId: challenge.studentId,
+      tutorId: challenge.selectedTutorId,
+      actorType: 'public',
+      eventType: 'RESPONSIBLE_VERIFICATION_FAILED',
+      metadata: {
+        attempts: challenge.failedCpfAttempts,
+        blocked: challenge.stage === 'blocked',
+        ...metadata,
+      },
+    });
+  }
+
+  async _findTutorForChallenge(challenge, optionId) {
+    const candidate = Array.isArray(challenge.candidateGuardians)
+      ? challenge.candidateGuardians.find(
+          (item) => String(item.optionId) === String(optionId)
+        )
+      : null;
+
+    if (!candidate?.tutorId) {
+      throw this._createHttpError(
+        'Responsavel selecionado nao encontrado para este challenge.',
+        400
+      );
+    }
+
+    const tutor = await this.TutorModel.findOne({
+      _id: candidate.tutorId,
+      school_id: challenge.school_id,
+    })
+      .select('_id fullName cpf cpfNormalized school_id students')
+      .lean();
+
+    if (!tutor) {
+      throw this._createHttpError('Responsavel nao encontrado.', 404);
+    }
+
+    return { candidate, tutor };
+  }
+
+  async _findOrCreateGuardianAccount({ schoolId, tutor, pin }) {
+    const identifierNormalized = tutor?.cpfNormalized || normalizeCpf(tutor?.cpf);
+
+    if (!identifierNormalized) {
+      throw this._createHttpError('Responsavel sem CPF elegivel.', 400);
+    }
+
+    const pinHash = await this.bcrypt.hash(String(pin), PIN_SALT_ROUNDS);
+    const identifierMasked = maskCpf(identifierNormalized);
+
+    let account = await this.GuardianAccessAccountModel.findOne({
+      school_id: schoolId,
+      $or: [{ tutorId: tutor._id }, { identifierNormalized }],
+    }).select('+pinHash');
+
+    if (account && String(account.tutorId) !== String(tutor._id)) {
+      throw this._createHttpError(
+        'CPF duplicado em contas de responsavel na mesma escola.',
+        409
+      );
+    }
+
+    if (!account) {
+      return this.GuardianAccessAccountModel.create({
+        school_id: schoolId,
+        tutorId: tutor._id,
+        identifierType: 'cpf',
+        identifierNormalized,
+        identifierMasked,
+        pinHash,
+        status: 'active',
+        activatedAt: this._getNow(),
+        pinUpdatedAt: this._getNow(),
+        failedLoginCount: 0,
+        blockedUntil: null,
+        lastFailedAt: null,
+      });
+    }
+
+    if (account.status === 'inactive') {
+      throw this._createHttpError(
+        'Conta de responsavel inativa. Contate a escola.',
+        403
+      );
+    }
+
+    account.identifierType = 'cpf';
+    account.identifierNormalized = identifierNormalized;
+    account.identifierMasked = identifierMasked;
+    account.pinHash = pinHash;
+    account.status = 'active';
+    account.activatedAt = account.activatedAt || this._getNow();
+    account.pinUpdatedAt = this._getNow();
+    account.failedLoginCount = 0;
+    account.blockedUntil = null;
+    account.lastFailedAt = null;
+    await account.save();
+
+    return account;
+  }
+
+  async _syncAccountLinksForTutor({
+    schoolId,
+    tutorId,
+    accountId,
+    source = 'sync',
+  }) {
+    const students = await this.StudentModel.find({
+      school_id: schoolId,
+      isActive: true,
+      $or: [{ financialTutorId: tutorId }, { 'tutors.tutorId': tutorId }],
+    })
+      .select('_id financialTutorId tutors')
+      .lean();
+
+    const syncedLinks = [];
+
+    for (const student of students) {
+      let relationshipSnapshot = 'Responsavel';
+
+      if (String(student.financialTutorId || '') === String(tutorId)) {
+        relationshipSnapshot = 'Responsavel Financeiro';
+      } else {
+        const tutorLink = Array.isArray(student.tutors)
+          ? student.tutors.find(
+              (item) => String(item?.tutorId?._id || item?.tutorId) === String(tutorId)
+            )
+          : null;
+
+        if (tutorLink?.relationship) {
+          relationshipSnapshot = tutorLink.relationship;
+        }
+      }
+
+      const link = await this.GuardianAccessLinkModel.findOneAndUpdate(
+        {
+          school_id: schoolId,
+          studentId: student._id,
+          tutorId,
+        },
+        {
+          $set: {
+            guardianAccessAccountId: accountId,
+            relationshipSnapshot,
+            source,
+            status: 'active',
+            revokedAt: null,
+          },
+          $setOnInsert: {
+            linkedAt: this._getNow(),
+          },
+        },
+        {
+          new: true,
+          upsert: true,
+          runValidators: true,
+        }
+      );
+
+      syncedLinks.push(link);
+    }
+
+    await this._registerEvent({
+      schoolId,
+      accountId,
+      tutorId,
+      actorType: 'system',
+      eventType: 'STUDENT_LINK_SYNCED',
+      metadata: {
+        linkedStudentsCount: syncedLinks.length,
+        source,
+      },
+    });
+
+    return syncedLinks;
+  }
+
+  _buildAccountSummary(account, tutor = null, relationship = 'Responsavel') {
+    return {
+      accountId: String(account._id),
+      tutorId: String(account.tutorId),
+      guardianName: tutor?.fullName || null,
+      relationship,
+      identifierType: account.identifierType,
+      identifierMasked: account.identifierMasked,
+      status: this._getAccountStatus(account),
+      createdAt: account.createdAt || null,
+      activatedAt: account.activatedAt || null,
+      pinUpdatedAt: account.pinUpdatedAt || null,
+      lastLoginAt: account.lastLoginAt || null,
+      failedLoginCount: Number(account.failedLoginCount || 0),
+      blockedUntil: account.blockedUntil || null,
+    };
+  }
+
+  async startFirstAccess({
+    schoolPublicId,
+    studentFullName,
+    birthDate,
+    requestMeta = {},
+  }) {
+    this._debugLog('first-access.request', {
+      schoolPublicId: schoolPublicId || null,
+      studentFullName,
+      birthDate,
+      normalizedStudentFullName: normalizeName(studentFullName),
+      normalizedBirthDateKey: buildBirthDateKey(birthDate),
+    });
+
+    let school = null;
+    let studentResult = null;
+
+    if (schoolPublicId) {
+      school = await this.resolveSchoolByPublicIdentifier(schoolPublicId);
+      studentResult = await this.getSingleStudentByPublicIdentity({
+        schoolId: school._id,
+        studentFullName,
+        birthDate,
+      });
+    } else {
+      studentResult = await this.getSingleStudentByPublicIdentity({
+        studentFullName,
+        birthDate,
+      });
+
+      if (studentResult.status === 'ok') {
+        school = await this._getSchoolSummaryById(studentResult.student.school_id);
+      }
+    }
+
+    if (studentResult.status === 'not_found') {
+      this._debugLog('first-access.discarded', {
+        reason: 'student_not_found',
+        schoolId: school?._id ? String(school._id) : null,
+      });
+
+      if (school?._id) {
+        await this._registerEvent({
+          schoolId: school._id,
+          actorType: 'public',
+          eventType: 'FIRST_ACCESS_FAILED',
+          metadata: { reason: 'student_not_found' },
+        });
+      }
+
+      throw this._createHttpError(
+        'Nao foi possivel validar as informacoes informadas.',
+        404,
+        { reason: 'student_not_found' }
+      );
+    }
+
+    if (studentResult.status === 'ambiguous') {
+      this._debugLog('first-access.discarded', {
+        reason: 'student_ambiguous',
+        schoolId: school?._id ? String(school._id) : null,
+        matchIds: studentResult.students.map((student) => String(student._id)),
+      });
+
+      if (school?._id) {
+        await this._registerEvent({
+          schoolId: school._id,
+          actorType: 'public',
+          eventType: 'FIRST_ACCESS_FAILED',
+          metadata: {
+            reason: 'student_ambiguous',
+            matches: studentResult.students.length,
+          },
+        });
+      }
+
+      throw await this._buildStudentAmbiguityError(studentResult.students);
+    }
+
+    if (!school?._id) {
+      throw this._createHttpError('Escola nao encontrada.', 404);
+    }
+
+    const guardians = await this.resolveEligibleGuardiansByStudent(
+      studentResult.student,
+      school._id
+    );
+
+    if (!guardians.length) {
+      this._debugLog('first-access.discarded', {
+        reason: 'student_found_but_no_eligible_guardians',
+        schoolId: String(school._id),
+        studentId: String(studentResult.student._id),
+      });
+
+      await this._registerEvent({
+        schoolId: school._id,
+        studentId: studentResult.student._id,
+        actorType: 'public',
+        eventType: 'FIRST_ACCESS_FAILED',
+        metadata: { reason: 'no_eligible_guardian' },
+      });
+
+      throw this._createHttpError(
+        'Nao foi possivel validar as informacoes informadas.',
+        404,
+        { reason: 'student_found_but_no_eligible_guardians' }
+      );
+    }
+
+    this._debugLog('first-access.success', {
+      schoolId: String(school._id),
+      studentId: String(studentResult.student._id),
+      guardiansCount: guardians.length,
+      guardianTutorIds: guardians.map((guardian) => guardian.tutorId),
+    });
+
+    const challenge = await this._createFirstAccessChallenge({
+      schoolId: school._id,
+      studentId: studentResult.student._id,
+      guardians,
+      requestMeta,
+    });
+
+    await this._registerEvent({
+      schoolId: school._id,
+      studentId: studentResult.student._id,
+      challengeId: challenge._id,
+      actorType: 'public',
+      eventType: 'FIRST_ACCESS_STARTED',
+      metadata: {
+        guardiansCount: guardians.length,
+      },
+    });
+
+    return {
+      status: 'challenge_started',
+      challengeId: String(challenge._id),
+      guardians: challenge.candidateGuardians.map((guardian) => ({
+        optionId: guardian.optionId,
+        displayName: guardian.displayName,
+        relationship: guardian.relationship || 'Responsavel',
+      })),
+      school: this._buildSchoolResponse(school),
+      message: 'Responsaveis encontrados para este aluno.',
+    };
+  }
+
+  async verifyResponsible({ challengeId, optionId, cpf }) {
+    const challenge = await this._loadChallenge(challengeId);
+    const normalizedCpf = normalizeCpf(cpf);
+
+    if (challenge.stage !== 'awaiting_selection') {
+      throw this._createHttpError(
+        'Este primeiro acesso nao aceita mais validacao de responsavel.',
+        409
+      );
+    }
+
+    const { candidate, tutor } = await this._findTutorForChallenge(
+      challenge,
+      optionId
+    );
+
+    if (!normalizedCpf || !isValidCpf(normalizedCpf)) {
+      await this._incrementChallengeFailure(challenge, {
+        reason: 'invalid_cpf_format',
+        tutorId: String(candidate.tutorId),
+      });
+
+      throw this._createHttpError(
+        'Nao foi possivel validar o responsavel.',
+        challenge.stage === 'blocked' ? 423 : 400
+      );
+    }
+
+    if (String(tutor.cpfNormalized || '') !== normalizedCpf) {
+      await this._incrementChallengeFailure(challenge, {
+        reason: 'cpf_mismatch',
+        tutorId: String(candidate.tutorId),
+      });
+
+      throw this._createHttpError(
+        'Nao foi possivel validar o responsavel.',
+        challenge.stage === 'blocked' ? 423 : 401
+      );
+    }
+
+    const verificationToken = this._randomToken();
+    challenge.selectedTutorId = tutor._id;
+    challenge.verificationTokenHash = this._hashValue(verificationToken);
+    challenge.stage = 'awaiting_pin';
+    challenge.verifiedAt = this._getNow();
+    challenge.failedCpfAttempts = 0;
+    await challenge.save();
+
+    await this._registerEvent({
+      schoolId: challenge.school_id,
+      challengeId: challenge._id,
+      studentId: challenge.studentId,
+      tutorId: tutor._id,
+      actorType: 'public',
+      eventType: 'RESPONSIBLE_VERIFIED',
+      metadata: { optionId },
+    });
+
+    return {
+      status: 'responsible_verified',
+      verificationToken,
+      message: 'Responsavel validado com sucesso.',
+    };
+  }
+
+  async setPin({ challengeId, verificationToken, pin }) {
+    this._assertValidPin(pin);
+
+    const challenge = await this._loadChallenge(challengeId, {
+      includeVerificationHash: true,
+    });
+
+    if (challenge.stage !== 'awaiting_pin') {
+      throw this._createHttpError(
+        'Este primeiro acesso nao esta pronto para criacao de PIN.',
+        409
+      );
+    }
+
+    if (
+      !verificationToken ||
+      this._hashValue(verificationToken) !== challenge.verificationTokenHash
+    ) {
+      await this._registerEvent({
+        schoolId: challenge.school_id,
+        challengeId: challenge._id,
+        studentId: challenge.studentId,
+        tutorId: challenge.selectedTutorId,
+        actorType: 'public',
+        eventType: 'PIN_SET_FAILED',
+        metadata: { reason: 'invalid_verification_token' },
+      });
+
+      throw this._createHttpError('Token de verificacao invalido.', 401);
+    }
+
+    const tutor = await this.TutorModel.findOne({
+      _id: challenge.selectedTutorId,
+      school_id: challenge.school_id,
+    })
+      .select('_id fullName cpf cpfNormalized')
+      .lean();
+
+    if (!tutor) {
+      throw this._createHttpError('Responsavel nao encontrado.', 404);
+    }
+
+    const account = await this._findOrCreateGuardianAccount({
+      schoolId: challenge.school_id,
+      tutor,
+      pin,
+    });
+
+    await this._syncAccountLinksForTutor({
+      schoolId: challenge.school_id,
+      tutorId: tutor._id,
+      accountId: account._id,
+      source: 'first_access',
+    });
+
+    challenge.stage = 'completed';
+    challenge.completedAt = this._getNow();
+    challenge.verificationTokenHash = null;
+    await challenge.save();
+
+    await this._registerEvent({
+      schoolId: challenge.school_id,
+      accountId: account._id,
+      challengeId: challenge._id,
+      studentId: challenge.studentId,
+      tutorId: tutor._id,
+      actorType: 'public',
+      eventType: 'PIN_SET',
+      metadata: { identifierType: 'cpf' },
+    });
+
+    return {
+      status: 'pin_configured',
+      identifierType: 'cpf',
+      identifierMasked: account.identifierMasked,
+      message: 'PIN configurado com sucesso.',
+    };
+  }
+
+  _buildGuardianJwtPayload(account) {
+    return {
+      sub: String(account._id),
+      accountId: String(account._id),
+      tutorId: String(account.tutorId),
+      school_id: String(account.school_id),
+      principalType: 'guardian',
+      tokenType: 'guardian_auth',
+      tokenVersion: Number(account.tokenVersion || 0),
+    };
+  }
+
+  _signGuardianToken(account) {
+    this._assertGuardianJwtSecret();
+
+    return this.jwt.sign(
+      this._buildGuardianJwtPayload(account),
+      this.guardianJwtSecret,
+      { expiresIn: '30d' }
+    );
+  }
+
+  async _registerLoginFailure(account, metadata = {}) {
+    const now = this._getNow();
+    account.failedLoginCount = Number(account.failedLoginCount || 0) + 1;
+    account.lastFailedAt = now;
+
+    let blocked = false;
+    if (account.failedLoginCount >= MAX_LOGIN_FAILURES) {
+      account.blockedUntil = this._addMinutes(now, LOGIN_BLOCK_MINUTES);
+      blocked = true;
+    }
+
+    await account.save();
+
+    await this._registerEvent({
+      schoolId: account.school_id,
+      accountId: account._id,
+      tutorId: account.tutorId,
+      actorType: 'public',
+      eventType: blocked ? 'ACCOUNT_BLOCKED' : 'LOGIN_FAILED',
+      metadata: {
+        attempts: account.failedLoginCount,
+        blockedUntil: account.blockedUntil,
+        ...metadata,
+      },
+    });
+  }
+
+  async _findGuardianAccounts(filter = {}, { includePinHash = false } = {}) {
+    const query = this.GuardianAccessAccountModel.find(filter);
+
+    if (includePinHash && query && typeof query.select === 'function') {
+      query.select('+pinHash');
+    }
+
+    const result = await query;
+    return Array.isArray(result) ? result : [];
+  }
+
+  async _buildLoginAmbiguityError(accounts = []) {
+    const candidateSchools = await this._listSchoolSummariesByIds(
+      accounts.map((account) => account.school_id)
+    );
+    const message =
+      'Encontramos mais de uma escola vinculada a este CPF. Selecione a escola para continuar.';
+
+    return this._createHttpError(message, 409, {
+      payload: {
+        status: 'school_selection_required',
+        message,
+        candidateSchools,
+      },
+    });
+  }
+
+  async _completeGuardianLogin(account) {
+    account.failedLoginCount = 0;
+    account.lastFailedAt = null;
+    account.blockedUntil = null;
+    account.lastLoginAt = this._getNow();
+    await account.save();
+
+    const syncedLinks = await this._syncAccountLinksForTutor({
+      schoolId: account.school_id,
+      tutorId: account.tutorId,
+      accountId: account._id,
+      source: 'sync',
+    });
+
+    await this._registerEvent({
+      schoolId: account.school_id,
+      accountId: account._id,
+      tutorId: account.tutorId,
+      actorType: 'public',
+      eventType: 'LOGIN_SUCCESS',
+      metadata: {
+        linkedStudentsCount: syncedLinks.length,
+      },
+    });
+
+    const school = await this._getSchoolSummaryById(account.school_id);
+
+    return {
+      token: this._signGuardianToken(account),
+      guardian: {
+        identifierType: account.identifierType,
+        identifierMasked: account.identifierMasked,
+        status: this._getAccountStatus(account),
+        linkedStudentsCount: syncedLinks.length,
+      },
+      school: this._buildSchoolResponse(school),
+    };
+  }
+
+  async login({ schoolPublicId, identifier, pin }) {
+    this._assertValidPin(pin);
+
+    const normalizedCpf = normalizeCpf(identifier);
+
+    if (!normalizedCpf || !isValidCpf(normalizedCpf)) {
+      throw this._createHttpError('CPF ou PIN invalidos.', 401);
+    }
+
+    if (schoolPublicId) {
+      const school = await this.resolveSchoolByPublicIdentifier(schoolPublicId);
+      const account = await this.GuardianAccessAccountModel.findOne({
+        school_id: school._id,
+        identifierNormalized: normalizedCpf,
+      }).select('+pinHash');
+
+      if (!account || !account.pinHash || account.status !== 'active') {
+        throw this._createHttpError('CPF ou PIN invalidos.', 401);
+      }
+
+      if (
+        account.blockedUntil &&
+        new Date(account.blockedUntil) > this._getNow()
+      ) {
+        await this._registerEvent({
+          schoolId: account.school_id,
+          accountId: account._id,
+          tutorId: account.tutorId,
+          actorType: 'public',
+          eventType: 'ACCOUNT_BLOCKED',
+          metadata: {
+            blockedUntil: account.blockedUntil,
+            reason: 'login_while_blocked',
+          },
+        });
+
+        throw this._createHttpError(
+          'Acesso temporariamente bloqueado. Tente novamente mais tarde.',
+          423
+        );
+      }
+
+      const isMatch = await this.bcrypt.compare(String(pin), account.pinHash);
+
+      if (!isMatch) {
+        await this._registerLoginFailure(account, { reason: 'pin_mismatch' });
+
+        if (
+          account.blockedUntil &&
+          new Date(account.blockedUntil) > this._getNow()
+        ) {
+          throw this._createHttpError(
+            'Acesso temporariamente bloqueado. Tente novamente mais tarde.',
+            423
+          );
+        }
+
+        throw this._createHttpError('CPF ou PIN invalidos.', 401);
+      }
+
+      return this._completeGuardianLogin(account);
+    }
+
+    const accounts = await this._findGuardianAccounts(
+      { identifierNormalized: normalizedCpf },
+      { includePinHash: true }
+    );
+
+    if (!accounts.length) {
+      throw this._createHttpError('CPF ou PIN invalidos.', 401);
+    }
+
+    if (accounts.length === 1) {
+      const [account] = accounts;
+
+      if (!account.pinHash || account.status !== 'active') {
+        throw this._createHttpError('CPF ou PIN invalidos.', 401);
+      }
+
+      if (
+        account.blockedUntil &&
+        new Date(account.blockedUntil) > this._getNow()
+      ) {
+        await this._registerEvent({
+          schoolId: account.school_id,
+          accountId: account._id,
+          tutorId: account.tutorId,
+          actorType: 'public',
+          eventType: 'ACCOUNT_BLOCKED',
+          metadata: {
+            blockedUntil: account.blockedUntil,
+            reason: 'login_while_blocked',
+          },
+        });
+
+        throw this._createHttpError(
+          'Acesso temporariamente bloqueado. Tente novamente mais tarde.',
+          423
+        );
+      }
+
+      const isMatch = await this.bcrypt.compare(String(pin), account.pinHash);
+
+      if (!isMatch) {
+        await this._registerLoginFailure(account, { reason: 'pin_mismatch' });
+
+        if (
+          account.blockedUntil &&
+          new Date(account.blockedUntil) > this._getNow()
+        ) {
+          throw this._createHttpError(
+            'Acesso temporariamente bloqueado. Tente novamente mais tarde.',
+            423
+          );
+        }
+
+        throw this._createHttpError('CPF ou PIN invalidos.', 401);
+      }
+
+      return this._completeGuardianLogin(account);
+    }
+
+    const matchingAccounts = [];
+
+    for (const account of accounts) {
+      if (!account.pinHash || account.status !== 'active') continue;
+      if (
+        account.blockedUntil &&
+        new Date(account.blockedUntil) > this._getNow()
+      ) {
+        continue;
+      }
+
+      const isMatch = await this.bcrypt.compare(String(pin), account.pinHash);
+      if (isMatch) {
+        matchingAccounts.push(account);
+      }
+    }
+
+    if (matchingAccounts.length === 1) {
+      return this._completeGuardianLogin(matchingAccounts[0]);
+    }
+
+    if (matchingAccounts.length > 1) {
+      throw await this._buildLoginAmbiguityError(matchingAccounts);
+    }
+
+    throw this._createHttpError('CPF ou PIN invalidos.', 401);
+  }
+
+  async listStudentGuardianAccesses({ schoolId, studentId, actor }) {
+    this._assertAdminActor(actor);
+
+    const student = await this.StudentModel.findOne({
+      _id: studentId,
+      school_id: schoolId,
+    })
+      .select('_id fullName financialTutorId tutors')
+      .lean();
+
+    if (!student) {
+      throw this._createHttpError('Aluno nao encontrado.', 404);
+    }
+
+    const eligibleGuardians = await this.resolveEligibleGuardiansByStudent(
+      student,
+      schoolId
+    );
+
+    if (!eligibleGuardians.length) {
+      return {
+        student: {
+          id: String(student._id),
+          fullName: student.fullName,
+        },
+        accesses: [],
+      };
+    }
+
+    const tutorIds = eligibleGuardians.map((guardian) => guardian.tutorId);
+    const accounts = await this.GuardianAccessAccountModel.find({
+      school_id: schoolId,
+      tutorId: { $in: tutorIds },
+    });
+
+    const accountByTutorId = new Map(
+      accounts.map((account) => [String(account.tutorId), account])
+    );
+
+    for (const guardian of eligibleGuardians) {
+      const account = accountByTutorId.get(String(guardian.tutorId));
+      if (!account) continue;
+
+      await this.GuardianAccessLinkModel.findOneAndUpdate(
+        {
+          school_id: schoolId,
+          studentId,
+          tutorId: guardian.tutorId,
+        },
+        {
+          $set: {
+            guardianAccessAccountId: account._id,
+            relationshipSnapshot: guardian.relationship,
+          },
+          $setOnInsert: {
+            source: 'sync',
+            status: 'active',
+            linkedAt: this._getNow(),
+          },
+        },
+        {
+          new: true,
+          upsert: true,
+          runValidators: true,
+        }
+      );
+    }
+
+    return {
+      student: {
+        id: String(student._id),
+        fullName: student.fullName,
+      },
+      accesses: eligibleGuardians
+        .filter((guardian) => accountByTutorId.has(String(guardian.tutorId)))
+        .map((guardian) =>
+          this._buildAccountSummary(
+            accountByTutorId.get(String(guardian.tutorId)),
+            guardian,
+            guardian.relationship
+          )
+        )
+        .sort((left, right) =>
+          String(left.guardianName || '').localeCompare(
+            String(right.guardianName || ''),
+            'pt-BR'
+          )
+        ),
+    };
+  }
+
+  async _getGuardianLinkedStudentIds({ schoolId, accountId }) {
+    if (!schoolId || !accountId) return [];
+
+    const links = await this.GuardianAccessLinkModel.find({
+      school_id: schoolId,
+      guardianAccessAccountId: accountId,
+      status: 'active',
+    })
+      .select('studentId')
+      .lean();
+
+    return [...new Set(links.map((link) => String(link.studentId || '')).filter(Boolean))];
+  }
+
+  _buildGuardianInvoiceAccessFilter({ schoolId, tutorId, studentIds, invoiceIds }) {
+    const filter = {
+      school_id: schoolId,
+      student: { $in: studentIds },
+      $or: [{ tutor: tutorId }, { tutor: null }, { tutor: { $exists: false } }],
+    };
+
+    if (Array.isArray(invoiceIds) && invoiceIds.length) {
+      filter._id = { $in: invoiceIds };
+    }
+
+    return filter;
+  }
+
+  async listGuardianInvoices({ schoolId, accountId, tutorId }) {
+    if (!schoolId || !accountId || !tutorId) {
+      throw this._createHttpError(
+        'Contexto de responsavel invalido para listar boletos.',
+        401
+      );
+    }
+
+    const studentIds = await this._getGuardianLinkedStudentIds({
+      schoolId,
+      accountId,
+    });
+
+    if (!studentIds.length) {
+      return {
+        invoices: [],
+        linkedStudentsCount: 0,
+      };
+    }
+
+    const invoices = await this.InvoiceModel.find(
+      this._buildGuardianInvoiceAccessFilter({
+        schoolId,
+        tutorId,
+        studentIds,
+      })
+    )
+      .sort({ dueDate: 1, createdAt: -1 })
+      .populate('student', 'fullName')
+      .populate('tutor', 'fullName')
+      .lean();
+
+    return {
+      invoices,
+      linkedStudentsCount: studentIds.length,
+    };
+  }
+
+  async downloadGuardianBatchPdf({ schoolId, accountId, tutorId, invoiceIds }) {
+    if (!Array.isArray(invoiceIds) || !invoiceIds.length) {
+      throw this._createHttpError('Lista de boletos invalida.', 400);
+    }
+
+    const studentIds = await this._getGuardianLinkedStudentIds({
+      schoolId,
+      accountId,
+    });
+
+    if (!studentIds.length) {
+      throw this._createHttpError(
+        'Nenhum aluno vinculado a este responsavel foi encontrado.',
+        404
+      );
+    }
+
+    const normalizedInvoiceIds = [
+      ...new Set(invoiceIds.map((invoiceId) => String(invoiceId || '')).filter(Boolean)),
+    ];
+
+    const accessibleInvoices = await this.InvoiceModel.find(
+      this._buildGuardianInvoiceAccessFilter({
+        schoolId,
+        tutorId,
+        studentIds,
+        invoiceIds: normalizedInvoiceIds,
+      })
+    )
+      .select('_id')
+      .lean();
+
+    const accessibleInvoiceIds = accessibleInvoices.map((invoice) =>
+      String(invoice._id)
+    );
+
+    if (!accessibleInvoiceIds.length) {
+      throw this._createHttpError(
+        'Nenhum boleto acessivel foi encontrado para esta conta.',
+        404
+      );
+    }
+
+    return this.invoiceService.generateBatchPdf(accessibleInvoiceIds, schoolId);
+  }
+
+  async getGuardianPortalHome({ schoolId, accountId, studentId = null }) {
+    if (!schoolId || !accountId) {
+      throw this._createHttpError(
+        'Contexto de responsavel invalido para carregar o portal.',
+        401
+      );
+    }
+
+    const { linkedStudents, selectedStudent } =
+      await this._resolveGuardianStudentContext({
+        schoolId,
+        accountId,
+        studentId,
+      });
+
+    const [schedule, attendance, activities] = await Promise.all([
+      this._buildGuardianScheduleData({ schoolId, student: selectedStudent }),
+      this._buildGuardianAttendanceData({ schoolId, student: selectedStudent }),
+      this._buildGuardianActivitiesData({ schoolId, student: selectedStudent }),
+    ]);
+
+    return {
+      linkedStudents,
+      selectedStudent,
+      schedule: {
+        term: schedule.term,
+        currentClass: schedule.currentClass,
+        nextClass: schedule.nextClass,
+        todayCount: Array.isArray(schedule.today) ? schedule.today.length : 0,
+      },
+      attendance,
+      activities: {
+        summary: activities.summary,
+      },
+    };
+  }
+
+  async getGuardianSchedule({ schoolId, accountId, studentId }) {
+    if (!schoolId || !accountId) {
+      throw this._createHttpError(
+        'Contexto de responsavel invalido para carregar a grade.',
+        401
+      );
+    }
+
+    const { linkedStudents, selectedStudent } =
+      await this._resolveGuardianStudentContext({
+        schoolId,
+        accountId,
+        studentId,
+      });
+
+    return {
+      linkedStudents,
+      selectedStudent,
+      schedule: await this._buildGuardianScheduleData({
+        schoolId,
+        student: selectedStudent,
+      }),
+    };
+  }
+
+  async getGuardianAttendance({ schoolId, accountId, studentId }) {
+    if (!schoolId || !accountId) {
+      throw this._createHttpError(
+        'Contexto de responsavel invalido para carregar a frequencia.',
+        401
+      );
+    }
+
+    const { linkedStudents, selectedStudent } =
+      await this._resolveGuardianStudentContext({
+        schoolId,
+        accountId,
+        studentId,
+      });
+
+    return {
+      linkedStudents,
+      selectedStudent,
+      attendance: await this._buildGuardianAttendanceData({
+        schoolId,
+        student: selectedStudent,
+      }),
+    };
+  }
+
+  async getGuardianActivities({ schoolId, accountId, studentId }) {
+    if (!schoolId || !accountId) {
+      throw this._createHttpError(
+        'Contexto de responsavel invalido para carregar as atividades.',
+        401
+      );
+    }
+
+    const { linkedStudents, selectedStudent } =
+      await this._resolveGuardianStudentContext({
+        schoolId,
+        accountId,
+        studentId,
+      });
+
+    return {
+      linkedStudents,
+      selectedStudent,
+      activities: await this._buildGuardianActivitiesData({
+        schoolId,
+        student: selectedStudent,
+      }),
+    };
+  }
+
+  async _getAdminAccountOrThrow(accountId, schoolId, actor) {
+    this._assertAdminActor(actor);
+
+    const account = await this.GuardianAccessAccountModel.findOne({
+      _id: accountId,
+      school_id: schoolId,
+    }).select('+pinHash');
+
+    if (!account) {
+      throw this._createHttpError('Conta de responsavel nao encontrada.', 404);
+    }
+
+    return account;
+  }
+
+  async resetPin({ schoolId, accountId, actor }) {
+    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
+
+    account.pinHash = null;
+    account.status = 'pending';
+    account.pinUpdatedAt = null;
+    account.failedLoginCount = 0;
+    account.lastFailedAt = null;
+    account.blockedUntil = null;
+    account.tokenVersion = Number(account.tokenVersion || 0) + 1;
+    await account.save();
+
+    await this._registerEvent({
+      schoolId,
+      accountId: account._id,
+      tutorId: account.tutorId,
+      actorType: 'staff',
+      actorUserId: actor.id || actor._id || null,
+      eventType: 'PIN_RESET',
+      metadata: { newStatus: 'pending' },
+    });
+
+    return {
+      status: 'pending',
+      identifierType: account.identifierType,
+      identifierMasked: account.identifierMasked,
+      message:
+        'PIN resetado com sucesso. O responsavel precisara refazer o primeiro acesso.',
+    };
+  }
+
+  async unlockAccount({ schoolId, accountId, actor }) {
+    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
+
+    account.failedLoginCount = 0;
+    account.lastFailedAt = null;
+    account.blockedUntil = null;
+    await account.save();
+
+    await this._registerEvent({
+      schoolId,
+      accountId: account._id,
+      tutorId: account.tutorId,
+      actorType: 'staff',
+      actorUserId: actor.id || actor._id || null,
+      eventType: 'ACCOUNT_UNLOCKED',
+      metadata: {},
+    });
+
+    return {
+      status: this._getAccountStatus(account),
+      message: 'Conta desbloqueada com sucesso.',
+    };
+  }
+
+  async deactivateAccount({ schoolId, accountId, actor }) {
+    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
+
+    account.status = 'inactive';
+    account.failedLoginCount = 0;
+    account.lastFailedAt = null;
+    account.blockedUntil = null;
+    account.tokenVersion = Number(account.tokenVersion || 0) + 1;
+    await account.save();
+
+    await this._registerEvent({
+      schoolId,
+      accountId: account._id,
+      tutorId: account.tutorId,
+      actorType: 'staff',
+      actorUserId: actor.id || actor._id || null,
+      eventType: 'ACCOUNT_DEACTIVATED',
+      metadata: {},
+    });
+
+    return {
+      status: 'inactive',
+      message: 'Conta desativada com sucesso.',
+    };
+  }
+
+  async reactivateAccount({ schoolId, accountId, actor }) {
+    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
+
+    account.status = account.pinHash ? 'active' : 'pending';
+    account.failedLoginCount = 0;
+    account.lastFailedAt = null;
+    account.blockedUntil = null;
+    account.tokenVersion = Number(account.tokenVersion || 0) + 1;
+    await account.save();
+
+    await this._registerEvent({
+      schoolId,
+      accountId: account._id,
+      tutorId: account.tutorId,
+      actorType: 'staff',
+      actorUserId: actor.id || actor._id || null,
+      eventType: 'ACCOUNT_REACTIVATED',
+      metadata: {
+        restoredStatus: account.status,
+      },
+    });
+
+    return {
+      status: account.status,
+      message: 'Conta reativada com sucesso.',
+    };
+  }
+
+  async generateEligibilityReport({ schoolId = null, schoolPublicId = null } = {}) {
+    let schools = [];
+
+    if (schoolPublicId) {
+      schools = [await this.resolveSchoolByPublicIdentifier(schoolPublicId)];
+    } else if (schoolId) {
+      const school = await this.SchoolModel.findById(schoolId)
+        .select('_id name publicIdentifier')
+        .lean();
+
+      if (!school) {
+        throw this._createHttpError('Escola nao encontrada.', 404);
+      }
+
+      schools = [school];
+    } else {
+      schools = await this.SchoolModel.find({})
+        .select('_id name publicIdentifier')
+        .lean();
+    }
+
+    const reports = [];
+    for (const school of schools) {
+      reports.push(await this._generateSchoolEligibilityReport(school));
+    }
+
+    return {
+      generatedAt: this._getNow().toISOString(),
+      schools: reports,
+    };
+  }
+
+  async _generateSchoolEligibilityReport(school) {
+    const schoolId = school._id;
+
+    const [students, tutors] = await Promise.all([
+      this.StudentModel.find({ school_id: schoolId })
+        .select(
+          '_id fullName fullNameNormalized birthDate birthDateKey financialTutorId tutors isActive'
+        )
+        .lean(),
+      this.TutorModel.find({ school_id: schoolId })
+        .select('_id fullName cpf cpfNormalized students')
+        .lean(),
+    ]);
+
+    const tutorById = new Map(tutors.map((tutor) => [String(tutor._id), tutor]));
+    const studentById = new Map(
+      students.map((student) => [String(student._id), student])
+    );
+
+    const duplicateCpfBuckets = new Map();
+    tutors.forEach((tutor) => {
+      if (!tutor.cpfNormalized) return;
+      if (!duplicateCpfBuckets.has(tutor.cpfNormalized)) {
+        duplicateCpfBuckets.set(tutor.cpfNormalized, []);
+      }
+      duplicateCpfBuckets.get(tutor.cpfNormalized).push(tutor);
+    });
+
+    const duplicateCpfs = [...duplicateCpfBuckets.entries()]
+      .filter(([, bucket]) => bucket.length > 1)
+      .map(([cpfNormalized, bucket]) => ({
+        cpfNormalized,
+        identifierMasked: maskCpf(cpfNormalized),
+        tutors: bucket.map((tutor) => ({
+          tutorId: String(tutor._id),
+          fullName: tutor.fullName,
+        })),
+      }));
+
+    const duplicateCpfSet = new Set(
+      duplicateCpfs.map((entry) => entry.cpfNormalized)
+    );
+
+    const ambiguousBuckets = new Map();
+    students
+      .filter((student) => student.isActive)
+      .forEach((student) => {
+        const key = `${student.fullNameNormalized || 'null'}::${student.birthDateKey || 'null'}`;
+        if (!ambiguousBuckets.has(key)) ambiguousBuckets.set(key, []);
+        ambiguousBuckets.get(key).push(student);
+      });
+
+    const ambiguousStudents = [...ambiguousBuckets.entries()]
+      .filter(([, bucket]) => bucket.length > 1)
+      .map(([identityKey, bucket]) => ({
+        identityKey,
+        students: bucket.map((student) => ({
+          studentId: String(student._id),
+          fullName: student.fullName,
+          birthDateKey: student.birthDateKey,
+        })),
+      }));
+
+    const tutorsWithoutCpf = tutors
+      .filter((tutor) => !tutor.cpfNormalized)
+      .map((tutor) => ({
+        tutorId: String(tutor._id),
+        fullName: tutor.fullName,
+      }));
+
+    const studentsWithoutEligibleTutor = [];
+    const relationshipDivergences = [];
+
+    for (const student of students.filter((item) => item.isActive)) {
+      const relatedTutorIds = new Set();
+
+      if (student.financialTutorId) {
+        relatedTutorIds.add(String(student.financialTutorId));
+      }
+
+      (Array.isArray(student.tutors) ? student.tutors : []).forEach((link) => {
+        const tutorId = link?.tutorId?._id || link?.tutorId;
+        if (tutorId) relatedTutorIds.add(String(tutorId));
+      });
+
+      const relatedTutors = [...relatedTutorIds]
+        .map((tutorId) => tutorById.get(String(tutorId)))
+        .filter(Boolean);
+
+      const eligibleCount = relatedTutors.filter(
+        (tutor) =>
+          tutor.cpfNormalized && !duplicateCpfSet.has(String(tutor.cpfNormalized))
+      ).length;
+
+      if (!eligibleCount) {
+        studentsWithoutEligibleTutor.push({
+          studentId: String(student._id),
+          fullName: student.fullName,
+          birthDateKey: student.birthDateKey,
+          reasons: [
+            relatedTutors.length ? 'linked_tutors_not_eligible' : 'no_linked_tutors',
+          ],
+        });
+      }
+
+      if (student.financialTutorId) {
+        const financialTutor = tutorById.get(String(student.financialTutorId));
+
+        if (!financialTutor) {
+          relationshipDivergences.push({
+            type: 'financial_tutor_missing',
+            studentId: String(student._id),
+            tutorId: String(student.financialTutorId),
+            detail: 'financialTutorId aponta para um tutor inexistente na escola.',
+          });
+        } else if (
+          !Array.isArray(financialTutor.students) ||
+          !financialTutor.students.some(
+            (linkedStudentId) => String(linkedStudentId) === String(student._id)
+          )
+        ) {
+          relationshipDivergences.push({
+            type: 'financial_tutor_missing_reverse_link',
+            studentId: String(student._id),
+            tutorId: String(student.financialTutorId),
+            detail: 'Tutor financeiro nao referencia o aluno em Tutor.students[].',
+          });
+        }
+      }
+
+      (Array.isArray(student.tutors) ? student.tutors : []).forEach((link) => {
+        const tutorId = link?.tutorId?._id || link?.tutorId;
+        if (!tutorId) return;
+
+        const tutor = tutorById.get(String(tutorId));
+        if (!tutor) {
+          relationshipDivergences.push({
+            type: 'student_tutor_missing',
+            studentId: String(student._id),
+            tutorId: String(tutorId),
+            detail: 'Student.tutors[] aponta para um tutor inexistente na escola.',
+          });
+          return;
+        }
+
+        if (
+          !Array.isArray(tutor.students) ||
+          !tutor.students.some(
+            (linkedStudentId) => String(linkedStudentId) === String(student._id)
+          )
+        ) {
+          relationshipDivergences.push({
+            type: 'student_tutor_missing_reverse_link',
+            studentId: String(student._id),
+            tutorId: String(tutorId),
+            detail:
+              'Tutor vinculado em Student.tutors[] nao referencia o aluno em Tutor.students[].',
+          });
+        }
+      });
+    }
+
+    tutors.forEach((tutor) => {
+      (Array.isArray(tutor.students) ? tutor.students : []).forEach((studentId) => {
+        const student = studentById.get(String(studentId));
+
+        if (!student) {
+          relationshipDivergences.push({
+            type: 'tutor_reverse_student_missing',
+            studentId: String(studentId),
+            tutorId: String(tutor._id),
+            detail: 'Tutor.students[] referencia um aluno inexistente na escola.',
+          });
+          return;
+        }
+
+        const linkedInStudentTutors = (Array.isArray(student.tutors)
+          ? student.tutors
+          : []
+        ).some(
+          (link) => String(link?.tutorId?._id || link?.tutorId) === String(tutor._id)
+        );
+
+        const isFinancialTutor =
+          String(student.financialTutorId || '') === String(tutor._id);
+
+        if (!linkedInStudentTutors && !isFinancialTutor) {
+          relationshipDivergences.push({
+            type: 'tutor_reverse_orphan_link',
+            studentId: String(student._id),
+            tutorId: String(tutor._id),
+            detail:
+              'Tutor.students[] aponta para aluno sem correspondencia em Student.tutors[] ou financialTutorId.',
+          });
+        }
+      });
+    });
+
+    return {
+      school: {
+        id: String(school._id),
+        name: school.name,
+        publicIdentifier: school.publicIdentifier || null,
+      },
+      summary: {
+        totalStudents: students.length,
+        activeStudents: students.filter((student) => student.isActive).length,
+        totalTutors: tutors.length,
+        tutorsWithoutCpf: tutorsWithoutCpf.length,
+        duplicateCpfs: duplicateCpfs.length,
+        ambiguousStudents: ambiguousStudents.length,
+        studentsWithoutEligibleTutor: studentsWithoutEligibleTutor.length,
+        relationshipDivergences: relationshipDivergences.length,
+      },
+      tutorsWithoutCpf,
+      duplicateCpfs,
+      ambiguousStudents,
+      studentsWithoutEligibleTutor,
+      relationshipDivergences,
+    };
+  }
+}
+
+module.exports = new GuardianAuthService();
+module.exports.GuardianAuthService = GuardianAuthService;

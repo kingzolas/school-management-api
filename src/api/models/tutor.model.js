@@ -2,6 +2,7 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 const addressSchema = require('./address.model');
+const { normalizeCpf } = require('../utils/guardianAccess.util');
 
 const tutorFinancialScoreSummarySchema = new Schema({
     totalInvoices: {
@@ -129,6 +130,11 @@ const tutorSchema = new Schema({
         sparse: true,
         required: [false, 'O CPF do tutor é obrigatório.']
     },
+    cpfNormalized: {
+        type: String,
+        default: null,
+        index: true
+    },
 
     email: {
         type: String,
@@ -164,6 +170,7 @@ const tutorSchema = new Schema({
 tutorSchema.pre('save', function(next) {
     if (this.rg === '') { this.rg = null; }
     if (this.cpf === '') { this.cpf = null; }
+    this.cpfNormalized = normalizeCpf(this.cpf);
     if (this.email === '') { this.email = null; }
     if (this.profession === '') { this.profession = null; }
 
@@ -174,6 +181,7 @@ tutorSchema.pre('save', function(next) {
     next();
 });
 
+tutorSchema.index({ school_id: 1, cpfNormalized: 1 });
 const Tutor = mongoose.model('Tutor', tutorSchema);
 
 module.exports = Tutor;

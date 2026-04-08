@@ -16,6 +16,13 @@ const verifyToken = (req, res, next) => {
             return res.status(401).json({ message: 'Não autorizado! Token inválido ou expirado.' });
         }
 
+        if (
+            decodedPayload?.principalType === 'guardian' ||
+            decodedPayload?.tokenType === 'guardian_auth'
+        ) {
+            return res.status(401).json({ message: 'Token nao autorizado neste fluxo.' });
+        }
+
         // 1. Atribui o payload decodificado ao req.user
         req.user = decodedPayload;
 

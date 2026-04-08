@@ -54,8 +54,8 @@ const analyticsRoutes = require('./api/routes/analytics.routes');
 const notificationRoutes = require('./api/routes/notification.routes.js');
 
 const invoiceCompensationRoutes = require('./api/routes/invoiceCompensation.routes.js');
+const guardianAuthRoutes = require('./api/routes/guardianAuth.routes.js');
 
-const studentPortalAccessRoutes = require('./api/routes/studentPortalAccess.routes');
 const examRoutes = require('./api/routes/exam.routes.js');
 const reportCardRoutes = require('./api/routes/reportCard.routes.js');
 const classActivityRoutes = require('./api/routes/classActivity.routes.js');
@@ -81,6 +81,7 @@ app.get('/', (req, res) => {
 // Autenticação
 app.use('/api/auth', authRoutes);                 // Login Staff/Admin
 app.use('/api/auth/student', authStudentRoutes);  // Login Aluno
+app.use('/api', guardianAuthRoutes);
 
 // Funcionalidades Principais
 app.use('/api/schools', schoolRoutes);
@@ -136,8 +137,6 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/releases', releaseRoutes);
 
 app.use('/api/invoice-compensations', invoiceCompensationRoutes);
-
-app.use('/api/auth/student', studentPortalAccessRoutes);
 
 app.use('/api/exams', examRoutes);
 

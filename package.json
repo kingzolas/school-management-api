@@ -9,6 +9,7 @@
     "academy:render": "node scripts/run-academy-hub.js render",
     "seed": "node src/seed.js",
     "test": "node --test src/tests",
+    "guardian:eligibility-report": "node src/scripts/reportGuardianAccessEligibility.js",
     "gmail:bootstrap": "node src/scripts/bootstrapGmailOAuth.js",
     "gmail:validate": "node src/scripts/validateGmailProvider.js",
     "gmail:test-send": "node src/scripts/sendControlledGmailTest.js",

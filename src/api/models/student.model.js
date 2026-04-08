@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 const addressSchema = require('./address.model');
+const { buildBirthDateKey, normalizeName } = require('../utils/guardianAccess.util');
 
 const auditLogPlugin = require('../../helpers/auditLog.plugin');
 
@@ -61,7 +62,9 @@ const studentSchema = new Schema({
     accessCredentials: { type: studentAuthSchema, default: () => ({}) },
 
     fullName: { type: String, required: [true, 'O nome completo é obrigatório.'], trim: true },
+    fullNameNormalized: { type: String, default: null, index: true },
     birthDate: { type: Date, required: [true, 'A data de nascimento é obrigatória.'] },
+    birthDateKey: { type: String, default: null, index: true },
     gender: { type: String, required: true, enum: ['Masculino', 'Feminino', 'Outro'] },
     race: { type: String, required: true, enum: ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Prefiro não dizer'] },
     nationality: { type: String, required: true },
@@ -118,6 +121,9 @@ const studentSchema = new Schema({
 // --- [NOVO] HOOK DE CORREÇÃO (Sanitização) ---
 // Roda ANTES da validação do Mongoose. Transforma 'pai' em 'Pai', etc.
 studentSchema.pre('validate', function(next) {
+    this.fullNameNormalized = normalizeName(this.fullName);
+    this.birthDateKey = buildBirthDateKey(this.birthDate);
+
     if (this.tutors && this.tutors.length > 0) {
         const mapRel = {
             'pai': 'Pai',
@@ -187,6 +193,7 @@ studentSchema.pre('save', function(next) {
 });
 
 studentSchema.plugin(auditLogPlugin, { entityName: 'Student' });
+studentSchema.index({ school_id: 1, fullNameNormalized: 1, birthDateKey: 1, isActive: 1 });
 
 const Student = mongoose.model('Student', studentSchema);
 module.exports = Student;
