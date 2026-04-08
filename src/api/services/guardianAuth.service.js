@@ -1353,7 +1353,9 @@ class GuardianAuthService {
 
   async _loadChallenge(challengeId, { includeVerificationHash = false } = {}) {
     if (!challengeId) {
-      throw this._createHttpError('challengeId obrigatorio.', 400);
+      throw this._createHttpError('challengeId obrigatorio.', 400, {
+        reason: 'challenge_invalid_or_expired',
+      });
     }
 
     const query = this.GuardianFirstAccessChallengeModel.findById(challengeId);
@@ -1377,29 +1379,38 @@ class GuardianAuthService {
     const challenge = await query;
 
     if (!challenge) {
-      throw this._createHttpError('Challenge nao encontrado.', 404);
+      throw this._createHttpError('Challenge nao encontrado.', 404, {
+        reason: 'challenge_invalid_or_expired',
+      });
     }
 
     const now = this._getNow();
     if (challenge.expiresAt && new Date(challenge.expiresAt) <= now) {
       challenge.stage = 'expired';
       await challenge.save();
-      throw this._createHttpError('Challenge expirado.', 410);
+      throw this._createHttpError('Challenge expirado.', 410, {
+        reason: 'challenge_invalid_or_expired',
+      });
     }
 
     if (challenge.stage === 'blocked') {
       throw this._createHttpError(
         'Tentativas excedidas para este primeiro acesso.',
-        423
+        423,
+        { reason: 'challenge_invalid_or_expired' }
       );
     }
 
     if (challenge.stage === 'completed') {
-      throw this._createHttpError('Este primeiro acesso ja foi concluido.', 409);
+      throw this._createHttpError('Este primeiro acesso ja foi concluido.', 409, {
+        reason: 'challenge_invalid_or_expired',
+      });
     }
 
     if (challenge.stage === 'expired') {
-      throw this._createHttpError('Challenge expirado.', 410);
+      throw this._createHttpError('Challenge expirado.', 410, {
+        reason: 'challenge_invalid_or_expired',
+      });
     }
 
     return challenge;
@@ -1437,9 +1448,22 @@ class GuardianAuthService {
       : null;
 
     if (!candidate?.tutorId) {
+      this._debugLog('first-access.verify-responsible.challenge-tutor-missing', {
+        challengeId: challenge?._id ? String(challenge._id) : null,
+        optionId: optionId || null,
+        candidateGuardians: Array.isArray(challenge?.candidateGuardians)
+          ? challenge.candidateGuardians.map((item) => ({
+              optionId: item.optionId,
+              tutorId: item.tutorId ? String(item.tutorId) : null,
+            }))
+          : [],
+        reason: 'tutor_not_found_in_challenge',
+      });
+
       throw this._createHttpError(
         'Responsavel selecionado nao encontrado para este challenge.',
-        400
+        400,
+        { reason: 'tutor_not_found_in_challenge' }
       );
     }
 
@@ -1451,10 +1475,41 @@ class GuardianAuthService {
       .lean();
 
     if (!tutor) {
-      throw this._createHttpError('Responsavel nao encontrado.', 404);
+      this._debugLog('first-access.verify-responsible.tutor-not-found', {
+        challengeId: challenge?._id ? String(challenge._id) : null,
+        optionId: optionId || null,
+        selectedTutorId: candidate?.tutorId ? String(candidate.tutorId) : null,
+        schoolId: challenge?.school_id ? String(challenge.school_id) : null,
+        reason: 'tutor_not_found_in_challenge',
+      });
+
+      throw this._createHttpError('Responsavel nao encontrado.', 404, {
+        reason: 'tutor_not_found_in_challenge',
+      });
     }
 
     return { candidate, tutor };
+  }
+
+  async _persistTutorCpfNormalizedIfMissing({ tutorId, cpfNormalized }) {
+    if (!tutorId || !cpfNormalized) return false;
+    if (typeof this.TutorModel.updateOne !== 'function') return false;
+
+    try {
+      const result = await this.TutorModel.updateOne(
+        { _id: tutorId, $or: [{ cpfNormalized: null }, { cpfNormalized: '' }] },
+        { $set: { cpfNormalized } }
+      );
+
+      return Boolean(result?.modifiedCount || result?.matchedCount);
+    } catch (error) {
+      this._debugLog('first-access.verify-responsible.persist-cpf-normalized-failed', {
+        tutorId: String(tutorId),
+        cpfNormalized,
+        message: error?.message || 'unknown_error',
+      });
+      return false;
+    }
   }
 
   async _findOrCreateGuardianAccount({ schoolId, tutor, pin }) {
@@ -1761,13 +1816,35 @@ class GuardianAuthService {
   }
 
   async verifyResponsible({ challengeId, optionId, cpf }) {
-    const challenge = await this._loadChallenge(challengeId);
     const normalizedCpf = normalizeCpf(cpf);
+    let challenge = null;
+
+    this._debugLog('first-access.verify-responsible.received', {
+      challengeId: challengeId || null,
+      optionId: optionId || null,
+      cpfRaw: cpf || null,
+      cpfNormalized: normalizedCpf,
+    });
+
+    try {
+      challenge = await this._loadChallenge(challengeId);
+    } catch (error) {
+      this._debugLog('first-access.verify-responsible.challenge-failed', {
+        challengeId: challengeId || null,
+        optionId: optionId || null,
+        cpfRaw: cpf || null,
+        cpfNormalized: normalizedCpf,
+        reason: error?.reason || 'challenge_invalid_or_expired',
+        message: error?.message || null,
+      });
+      throw error;
+    }
 
     if (challenge.stage !== 'awaiting_selection') {
       throw this._createHttpError(
         'Este primeiro acesso nao aceita mais validacao de responsavel.',
-        409
+        409,
+        { reason: 'challenge_invalid_or_expired' }
       );
     }
 
@@ -1776,7 +1853,45 @@ class GuardianAuthService {
       optionId
     );
 
+    const tutorCpfNormalized =
+      typeof tutor.cpfNormalized === 'string' && tutor.cpfNormalized.trim()
+        ? tutor.cpfNormalized.trim()
+        : null;
+    const legacyCpfNormalized = normalizeCpf(tutor.cpf);
+    const effectiveTutorCpfNormalized =
+      tutorCpfNormalized || legacyCpfNormalized;
+    const isLegacyTutorWithoutNormalized =
+      !tutorCpfNormalized && Boolean(legacyCpfNormalized);
+
+    this._debugLog('first-access.verify-responsible.loaded-tutor', {
+      challengeId: String(challenge._id),
+      optionId: optionId || null,
+      selectedTutorId: String(candidate.tutorId),
+      challengeSelectedTutorId: challenge.selectedTutorId
+        ? String(challenge.selectedTutorId)
+        : null,
+      tutor: {
+        tutorId: tutor?._id ? String(tutor._id) : null,
+        fullName: tutor?.fullName || null,
+        schoolId: tutor?.school_id ? String(tutor.school_id) : null,
+        cpf: tutor?.cpf || null,
+        cpfNormalized: tutorCpfNormalized,
+        effectiveCpfNormalized: effectiveTutorCpfNormalized,
+      },
+      cpfRaw: cpf || null,
+      cpfNormalized: normalizedCpf,
+    });
+
     if (!normalizedCpf || !isValidCpf(normalizedCpf)) {
+      this._debugLog('first-access.verify-responsible.failed', {
+        challengeId: String(challenge._id),
+        optionId: optionId || null,
+        selectedTutorId: String(candidate.tutorId),
+        cpfRaw: cpf || null,
+        cpfNormalized: normalizedCpf,
+        reason: 'invalid_cpf_format',
+      });
+
       await this._incrementChallengeFailure(challenge, {
         reason: 'invalid_cpf_format',
         tutorId: String(candidate.tutorId),
@@ -1788,17 +1903,83 @@ class GuardianAuthService {
       );
     }
 
-    if (String(tutor.cpfNormalized || '') !== normalizedCpf) {
+    if (!effectiveTutorCpfNormalized) {
+      this._debugLog('first-access.verify-responsible.failed', {
+        challengeId: String(challenge._id),
+        optionId: optionId || null,
+        selectedTutorId: String(candidate.tutorId),
+        cpfRaw: cpf || null,
+        cpfNormalized: normalizedCpf,
+        tutorCpf: tutor?.cpf || null,
+        tutorCpfNormalized: tutorCpfNormalized,
+        legacyCpfNormalized,
+        comparisonResult: false,
+        reason: 'tutor_cpf_missing',
+      });
+
       await this._incrementChallengeFailure(challenge, {
-        reason: 'cpf_mismatch',
+        reason: 'tutor_cpf_missing',
         tutorId: String(candidate.tutorId),
       });
 
       throw this._createHttpError(
         'Nao foi possivel validar o responsavel.',
-        challenge.stage === 'blocked' ? 423 : 401
+        challenge.stage === 'blocked' ? 423 : 401,
+        { reason: 'tutor_cpf_missing' }
       );
     }
+
+    if (String(effectiveTutorCpfNormalized) !== normalizedCpf) {
+      this._debugLog('first-access.verify-responsible.failed', {
+        challengeId: String(challenge._id),
+        optionId: optionId || null,
+        selectedTutorId: String(candidate.tutorId),
+        cpfRaw: cpf || null,
+        cpfNormalized: normalizedCpf,
+        tutorCpf: tutor?.cpf || null,
+        tutorCpfNormalized: tutorCpfNormalized,
+        legacyCpfNormalized,
+        effectiveTutorCpfNormalized,
+        comparisonResult: false,
+        reason: 'tutor_cpf_mismatch',
+      });
+
+      await this._incrementChallengeFailure(challenge, {
+        reason: 'tutor_cpf_mismatch',
+        tutorId: String(candidate.tutorId),
+      });
+
+      throw this._createHttpError(
+        'Nao foi possivel validar o responsavel.',
+        challenge.stage === 'blocked' ? 423 : 401,
+        { reason: 'tutor_cpf_mismatch' }
+      );
+    }
+
+    let persistedLegacyCpfNormalized = false;
+    if (isLegacyTutorWithoutNormalized) {
+      persistedLegacyCpfNormalized = await this._persistTutorCpfNormalizedIfMissing({
+        tutorId: tutor._id,
+        cpfNormalized: effectiveTutorCpfNormalized,
+      });
+    }
+
+    this._debugLog('first-access.verify-responsible.comparison', {
+      challengeId: String(challenge._id),
+      optionId: optionId || null,
+      selectedTutorId: String(candidate.tutorId),
+      cpfRaw: cpf || null,
+      cpfNormalized: normalizedCpf,
+      tutorCpf: tutor?.cpf || null,
+      tutorCpfNormalized: tutorCpfNormalized,
+      legacyCpfNormalized,
+      effectiveTutorCpfNormalized,
+      comparisonResult: true,
+      reason: isLegacyTutorWithoutNormalized
+        ? 'tutor_cpf_legacy_not_normalized'
+        : 'responsible_verified',
+      persistedLegacyCpfNormalized,
+    });
 
     const verificationToken = this._randomToken();
     challenge.selectedTutorId = tutor._id;
@@ -1815,7 +1996,11 @@ class GuardianAuthService {
       tutorId: tutor._id,
       actorType: 'public',
       eventType: 'RESPONSIBLE_VERIFIED',
-      metadata: { optionId },
+      metadata: {
+        optionId,
+        legacyCpfNormalizedRecovered: isLegacyTutorWithoutNormalized,
+        legacyCpfNormalizedPersisted: persistedLegacyCpfNormalized,
+      },
     });
 
     return {

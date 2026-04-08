@@ -123,6 +123,15 @@ function createHarness(seed = {}) {
       findOne(filter = {}) {
         return createQuery(state.tutors.find((item) => matchesFilter(item, filter)) || null);
       },
+      async updateOne(filter = {}, update = {}) {
+        const tutor = state.tutors.find((item) => matchesFilter(item, filter)) || null;
+        if (!tutor) {
+          return { matchedCount: 0, modifiedCount: 0 };
+        }
+
+        Object.assign(tutor, update.$set || {});
+        return { matchedCount: 1, modifiedCount: 1 };
+      },
       aggregate(pipeline = []) {
         const match = pipeline[0]?.$match || {};
         const tutors = state.tutors.filter((item) => matchesFilter(item, match));
@@ -433,6 +442,64 @@ test('guardian auth rejects invalid CPF in responsible verification', async () =
         cpf: '11111111111',
       }),
     (error) => error.statusCode === 400
+  );
+});
+
+test('guardian auth verifies responsible with legacy tutor CPF when cpfNormalized is missing', async () => {
+  const seed = createBaseSeed();
+  seed.tutors[0].cpfNormalized = null;
+
+  const harness = createHarness(seed);
+  const started = await harness.service.startFirstAccess({
+    studentFullName: 'Ana Souza',
+    birthDate: '2012-03-10',
+  });
+
+  const verified = await harness.service.verifyResponsible({
+    challengeId: started.challengeId,
+    optionId: started.guardians[0].optionId,
+    cpf: '123.456.789-09',
+  });
+
+  assert.equal(verified.status, 'responsible_verified');
+  assert.equal(harness.state.tutors[0].cpfNormalized, '12345678909');
+});
+
+test('guardian auth reports tutor CPF missing during responsible verification', async () => {
+  const seed = createBaseSeed();
+  seed.challenges.push({
+    _id: 'challenge-cpf-missing',
+    school_id: 'school-1',
+    studentId: 'student-1',
+    stage: 'awaiting_selection',
+    failedCpfAttempts: 0,
+    expiresAt: '2026-04-07T12:00:00.000Z',
+    candidateGuardians: [
+      {
+        optionId: 'option-1',
+        tutorId: 'tutor-1',
+        displayName: 'Maria Souza',
+        relationship: 'Mae',
+      },
+    ],
+  });
+  seed.tutors[0].cpf = null;
+  seed.tutors[0].cpfNormalized = null;
+
+  const harness = createHarness(seed);
+
+  await assert.rejects(
+    () =>
+      harness.service.verifyResponsible({
+        challengeId: 'challenge-cpf-missing',
+        optionId: 'option-1',
+        cpf: '123.456.789-09',
+      }),
+    (error) => {
+      assert.equal(error.statusCode, 401);
+      assert.equal(error.reason, 'tutor_cpf_missing');
+      return true;
+    }
   );
 });
 
