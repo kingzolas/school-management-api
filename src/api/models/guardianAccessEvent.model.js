@@ -1,4 +1,7 @@
 const mongoose = require('mongoose');
+const {
+  GUARDIAN_ACCESS_EVENT_TYPE_VALUES,
+} = require('../constants/guardianAccessEventTypes');
 
 const { Schema } = mongoose;
 
@@ -51,22 +54,7 @@ const guardianAccessEventSchema = new Schema(
     },
     eventType: {
       type: String,
-      enum: [
-        'FIRST_ACCESS_STARTED',
-        'FIRST_ACCESS_FAILED',
-        'RESPONSIBLE_VERIFIED',
-        'RESPONSIBLE_VERIFICATION_FAILED',
-        'PIN_SET',
-        'PIN_SET_FAILED',
-        'LOGIN_SUCCESS',
-        'LOGIN_FAILED',
-        'ACCOUNT_BLOCKED',
-        'ACCOUNT_UNLOCKED',
-        'ACCOUNT_DEACTIVATED',
-        'ACCOUNT_REACTIVATED',
-        'PIN_RESET',
-        'STUDENT_LINK_SYNCED',
-      ],
+      enum: GUARDIAN_ACCESS_EVENT_TYPE_VALUES,
       required: true,
       index: true,
     },

@@ -21,6 +21,9 @@ const GuardianAccessEvent = require('../models/guardianAccessEvent.model');
 const GuardianFirstAccessChallenge = require('../models/guardianFirstAccessChallenge.model');
 const invoiceService = require('./invoice.service');
 const {
+  GUARDIAN_ACCESS_EVENT_TYPES,
+} = require('../constants/guardianAccessEventTypes');
+const {
   buildBirthDateKey,
   buildPublicIdentifier,
   isValidCpf,
@@ -214,6 +217,18 @@ class GuardianAuthService {
     });
   }
 
+  async _registerEventBestEffort(scope, payload = {}) {
+    try {
+      return await this._registerEvent(payload);
+    } catch (error) {
+      this._debugLog(scope, {
+        message: error?.message || 'event_registration_failed',
+        eventType: payload?.eventType || null,
+      });
+      return null;
+    }
+  }
+
   async resolveSchoolByPublicIdentifier(publicIdentifier) {
     const normalizedPublicIdentifier = buildPublicIdentifier(publicIdentifier);
 
@@ -347,6 +362,61 @@ class GuardianAuthService {
 
     const withClass = students.find((student) => student.class != null);
     return withClass || students[0];
+  }
+
+  _getEffectiveTutorCpfNormalized(tutor = null) {
+    const directNormalized =
+      typeof tutor?.cpfNormalized === 'string' && tutor.cpfNormalized.trim()
+        ? tutor.cpfNormalized.trim()
+        : null;
+
+    return directNormalized || normalizeCpf(tutor?.cpf);
+  }
+
+  async _findGuardianAccountByIdentifier({
+    schoolId,
+    identifierNormalized,
+    includePinHash = false,
+  }) {
+    if (!schoolId || !identifierNormalized) return null;
+
+    const query = this.GuardianAccessAccountModel.findOne({
+      school_id: schoolId,
+      identifierNormalized,
+    });
+
+    if (includePinHash && query && typeof query.select === 'function') {
+      query.select('+pinHash');
+    }
+
+    return query;
+  }
+
+  _buildGuardianStudentPayload(student = null) {
+    if (!student?.id) return null;
+
+    return {
+      id: String(student.id),
+      fullName: student.fullName || '',
+      relationship: student.relationship || 'Responsavel',
+      class: student.class || null,
+      enrollment: student.enrollment || null,
+      birthDate: student.birthDate || null,
+    };
+  }
+
+  async _buildGuardianLoginContext({ schoolId, accountId }) {
+    const linkedStudents = await this._listGuardianLinkedStudents({
+      schoolId,
+      accountId,
+    });
+    const defaultStudent = this._pickDefaultGuardianStudent(linkedStudents);
+
+    return {
+      linkedStudents,
+      linkedStudentsCount: linkedStudents.length,
+      defaultStudent,
+    };
   }
 
   _serializeGuardianLesson(
@@ -1284,8 +1354,7 @@ class GuardianAuthService {
 
     const tutorsWithEffectiveCpf = tutors.map((tutor) => ({
       ...tutor,
-      effectiveCpfNormalized:
-        tutor.cpfNormalized || normalizeCpf(tutor.cpf),
+      effectiveCpfNormalized: this._getEffectiveTutorCpfNormalized(tutor),
     }));
 
     const duplicateCpfMap =
@@ -1304,20 +1373,34 @@ class GuardianAuthService {
       duplicateCpfKeys: [...duplicateCpfMap.keys()],
     });
 
-    return tutorsWithEffectiveCpf
+    const guardianBucketByCpf = new Map();
+
+    tutorsWithEffectiveCpf
       .filter((tutor) => tutor.effectiveCpfNormalized)
-      .filter(
-        (tutor) => !duplicateCpfMap.has(String(tutor.effectiveCpfNormalized))
-      )
-      .map((tutor) => ({
-        tutorId: String(tutor._id),
-        fullName: tutor.fullName,
-        relationship:
-          relationshipByTutorId.get(String(tutor._id)) || 'Responsavel',
-        cpfNormalized: tutor.effectiveCpfNormalized,
-        identifierType: 'cpf',
-        identifierMasked: maskCpf(tutor.effectiveCpfNormalized),
-      }))
+      .forEach((tutor) => {
+        const bucketKey = String(tutor.effectiveCpfNormalized);
+        const relationship =
+          relationshipByTutorId.get(String(tutor._id)) || 'Responsavel';
+        const isFinancialTutor =
+          String(student.financialTutorId || '') === String(tutor._id);
+        const candidate = {
+          tutorId: String(tutor._id),
+          fullName: tutor.fullName,
+          relationship,
+          cpfNormalized: tutor.effectiveCpfNormalized,
+          identifierType: 'cpf',
+          identifierMasked: maskCpf(tutor.effectiveCpfNormalized),
+          _score: isFinancialTutor ? 2 : relationship !== 'Responsavel' ? 1 : 0,
+        };
+
+        const existing = guardianBucketByCpf.get(bucketKey);
+        if (!existing || candidate._score > existing._score) {
+          guardianBucketByCpf.set(bucketKey, candidate);
+        }
+      });
+
+    return [...guardianBucketByCpf.values()]
+      .map(({ _score, ...guardian }) => guardian)
       .sort((left, right) =>
         String(left.fullName || '').localeCompare(
           String(right.fullName || ''),
@@ -1365,6 +1448,8 @@ class GuardianAuthService {
         'studentId',
         'candidateGuardians',
         'selectedTutorId',
+        'existingAccountId',
+        'pinMode',
         'stage',
         'failedCpfAttempts',
         'verifiedAt',
@@ -1431,7 +1516,7 @@ class GuardianAuthService {
       studentId: challenge.studentId,
       tutorId: challenge.selectedTutorId,
       actorType: 'public',
-      eventType: 'RESPONSIBLE_VERIFICATION_FAILED',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.RESPONSIBLE_VERIFICATION_FAILED,
       metadata: {
         attempts: challenge.failedCpfAttempts,
         blocked: challenge.stage === 'blocked',
@@ -1510,6 +1595,102 @@ class GuardianAuthService {
       });
       return false;
     }
+  }
+
+  async _loadChallengeTutor(challenge) {
+    if (!challenge?.selectedTutorId) {
+      throw this._createHttpError('Responsavel nao encontrado.', 404, {
+        reason: 'tutor_not_found_in_challenge',
+      });
+    }
+
+    const tutor = await this.TutorModel.findOne({
+      _id: challenge.selectedTutorId,
+      school_id: challenge.school_id,
+    })
+      .select('_id fullName cpf cpfNormalized school_id')
+      .lean();
+
+    if (!tutor) {
+      throw this._createHttpError('Responsavel nao encontrado.', 404, {
+        reason: 'tutor_not_found_in_challenge',
+      });
+    }
+
+    return tutor;
+  }
+
+  async _validateChallengeVerificationToken({
+    challenge,
+    verificationToken,
+    failedEventType,
+  }) {
+    if (
+      !verificationToken ||
+      this._hashValue(verificationToken) !== challenge.verificationTokenHash
+    ) {
+      await this._registerEvent({
+        schoolId: challenge.school_id,
+        challengeId: challenge._id,
+        studentId: challenge.studentId,
+        tutorId: challenge.selectedTutorId,
+        actorType: 'public',
+        eventType: failedEventType,
+        metadata: { reason: 'invalid_verification_token' },
+      });
+
+      throw this._createHttpError('Token de verificacao invalido.', 401);
+    }
+  }
+
+  async _upsertGuardianStudentLink({
+    schoolId,
+    accountId,
+    studentId,
+    tutorId,
+    relationshipSnapshot = 'Responsavel',
+    source = 'first_access',
+  }) {
+    return this.GuardianAccessLinkModel.findOneAndUpdate(
+      {
+        school_id: schoolId,
+        guardianAccessAccountId: accountId,
+        studentId,
+      },
+      {
+        $set: {
+          guardianAccessAccountId: accountId,
+          tutorId,
+          relationshipSnapshot,
+          source,
+          status: 'active',
+          revokedAt: null,
+        },
+        $setOnInsert: {
+          linkedAt: this._getNow(),
+        },
+      },
+      {
+        new: true,
+        upsert: true,
+        runValidators: true,
+      }
+    );
+  }
+
+  async _findExistingGuardianAccountForTutor({
+    schoolId,
+    tutor,
+    includePinHash = false,
+  }) {
+    const identifierNormalized = this._getEffectiveTutorCpfNormalized(tutor);
+    if (!identifierNormalized) return null;
+
+    return this._findGuardianAccountByIdentifier({
+      schoolId,
+      identifierNormalized,
+      includePinHash,
+    });
   }
 
   async _findOrCreateGuardianAccount({ schoolId, tutor, pin }) {
@@ -1606,30 +1787,14 @@ class GuardianAuthService {
         }
       }
 
-      const link = await this.GuardianAccessLinkModel.findOneAndUpdate(
-        {
-          school_id: schoolId,
-          studentId: student._id,
-          tutorId,
-        },
-        {
-          $set: {
-            guardianAccessAccountId: accountId,
-            relationshipSnapshot,
-            source,
-            status: 'active',
-            revokedAt: null,
-          },
-          $setOnInsert: {
-            linkedAt: this._getNow(),
-          },
-        },
-        {
-          new: true,
-          upsert: true,
-          runValidators: true,
-        }
-      );
+      const link = await this._upsertGuardianStudentLink({
+        schoolId,
+        accountId,
+        studentId: student._id,
+        tutorId,
+        relationshipSnapshot,
+        source,
+      });
 
       syncedLinks.push(link);
     }
@@ -1639,7 +1804,7 @@ class GuardianAuthService {
       accountId,
       tutorId,
       actorType: 'system',
-      eventType: 'STUDENT_LINK_SYNCED',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.STUDENT_LINK_SYNCED,
       metadata: {
         linkedStudentsCount: syncedLinks.length,
         source,
@@ -1712,7 +1877,7 @@ class GuardianAuthService {
         await this._registerEvent({
           schoolId: school._id,
           actorType: 'public',
-          eventType: 'FIRST_ACCESS_FAILED',
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.FIRST_ACCESS_FAILED,
           metadata: { reason: 'student_not_found' },
         });
       }
@@ -1735,7 +1900,7 @@ class GuardianAuthService {
         await this._registerEvent({
           schoolId: school._id,
           actorType: 'public',
-          eventType: 'FIRST_ACCESS_FAILED',
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.FIRST_ACCESS_FAILED,
           metadata: {
             reason: 'student_ambiguous',
             matches: studentResult.students.length,
@@ -1766,7 +1931,7 @@ class GuardianAuthService {
         schoolId: school._id,
         studentId: studentResult.student._id,
         actorType: 'public',
-        eventType: 'FIRST_ACCESS_FAILED',
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.FIRST_ACCESS_FAILED,
         metadata: { reason: 'no_eligible_guardian' },
       });
 
@@ -1796,7 +1961,7 @@ class GuardianAuthService {
       studentId: studentResult.student._id,
       challengeId: challenge._id,
       actorType: 'public',
-      eventType: 'FIRST_ACCESS_STARTED',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.FIRST_ACCESS_STARTED,
       metadata: {
         guardiansCount: guardians.length,
       },
@@ -1981,32 +2146,89 @@ class GuardianAuthService {
       persistedLegacyCpfNormalized,
     });
 
-    const verificationToken = this._randomToken();
+    const existingAccount = await this._findExistingGuardianAccountForTutor({
+      schoolId: challenge.school_id,
+      tutor,
+    });
+    const existingLink = existingAccount
+      ? await this.GuardianAccessLinkModel.findOne({
+          school_id: challenge.school_id,
+          guardianAccessAccountId: existingAccount._id,
+          studentId: challenge.studentId,
+          status: 'active',
+        })
+      : null;
+
     challenge.selectedTutorId = tutor._id;
+    challenge.failedCpfAttempts = 0;
+    challenge.verifiedAt = this._getNow();
+    challenge.existingAccountId = existingAccount?._id || null;
+
+    if (existingLink) {
+      challenge.stage = 'completed';
+      challenge.completedAt = this._getNow();
+      challenge.pinMode = 'link_existing';
+      challenge.verificationTokenHash = null;
+      await challenge.save();
+
+      await this._registerEventBestEffort('first-access.student-already-linked.event-failed', {
+        schoolId: challenge.school_id,
+        accountId: existingAccount._id,
+        linkId: existingLink._id,
+        challengeId: challenge._id,
+        studentId: challenge.studentId,
+        tutorId: tutor._id,
+        actorType: 'public',
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.STUDENT_ALREADY_LINKED,
+        metadata: {
+          optionId,
+          legacyCpfNormalizedRecovered: isLegacyTutorWithoutNormalized,
+          legacyCpfNormalizedPersisted: persistedLegacyCpfNormalized,
+        },
+      });
+
+      return {
+        status: 'student_already_linked',
+        identifierType: 'cpf',
+        identifierMasked: existingAccount.identifierMasked,
+        message: 'Este aluno ja esta disponivel nesta conta.',
+      };
+    }
+
+    const verificationToken = this._randomToken();
+    challenge.pinMode = existingAccount ? 'link_existing' : 'create';
     challenge.verificationTokenHash = this._hashValue(verificationToken);
     challenge.stage = 'awaiting_pin';
-    challenge.verifiedAt = this._getNow();
-    challenge.failedCpfAttempts = 0;
+    challenge.completedAt = null;
     await challenge.save();
 
     await this._registerEvent({
       schoolId: challenge.school_id,
+      accountId: existingAccount?._id || null,
       challengeId: challenge._id,
       studentId: challenge.studentId,
       tutorId: tutor._id,
       actorType: 'public',
-      eventType: 'RESPONSIBLE_VERIFIED',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.RESPONSIBLE_VERIFIED,
       metadata: {
         optionId,
+        nextAction: existingAccount ? 'link_existing_account' : 'create_pin',
         legacyCpfNormalizedRecovered: isLegacyTutorWithoutNormalized,
         legacyCpfNormalizedPersisted: persistedLegacyCpfNormalized,
       },
     });
 
     return {
-      status: 'responsible_verified',
+      status: existingAccount
+        ? 'existing_account_requires_pin'
+        : 'new_account_requires_pin',
       verificationToken,
-      message: 'Responsavel validado com sucesso.',
+      identifierType: 'cpf',
+      identifierMasked:
+        existingAccount?.identifierMasked || maskCpf(effectiveTutorCpfNormalized),
+      message: existingAccount
+        ? 'Conta existente encontrada. Informe o PIN atual para vincular este aluno.'
+        : 'Responsavel validado com sucesso. Crie o PIN para concluir o acesso.',
     };
   }
 
@@ -2017,40 +2239,20 @@ class GuardianAuthService {
       includeVerificationHash: true,
     });
 
-    if (challenge.stage !== 'awaiting_pin') {
+    if (challenge.stage !== 'awaiting_pin' || challenge.pinMode !== 'create') {
       throw this._createHttpError(
         'Este primeiro acesso nao esta pronto para criacao de PIN.',
         409
       );
     }
 
-    if (
-      !verificationToken ||
-      this._hashValue(verificationToken) !== challenge.verificationTokenHash
-    ) {
-      await this._registerEvent({
-        schoolId: challenge.school_id,
-        challengeId: challenge._id,
-        studentId: challenge.studentId,
-        tutorId: challenge.selectedTutorId,
-        actorType: 'public',
-        eventType: 'PIN_SET_FAILED',
-        metadata: { reason: 'invalid_verification_token' },
-      });
+    await this._validateChallengeVerificationToken({
+      challenge,
+      verificationToken,
+      failedEventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_SET_FAILED,
+    });
 
-      throw this._createHttpError('Token de verificacao invalido.', 401);
-    }
-
-    const tutor = await this.TutorModel.findOne({
-      _id: challenge.selectedTutorId,
-      school_id: challenge.school_id,
-    })
-      .select('_id fullName cpf cpfNormalized')
-      .lean();
-
-    if (!tutor) {
-      throw this._createHttpError('Responsavel nao encontrado.', 404);
-    }
+    const tutor = await this._loadChallengeTutor(challenge);
 
     const account = await this._findOrCreateGuardianAccount({
       schoolId: challenge.school_id,
@@ -2058,10 +2260,16 @@ class GuardianAuthService {
       pin,
     });
 
-    await this._syncAccountLinksForTutor({
+    const relationshipSnapshot =
+      challenge.candidateGuardians.find(
+        (item) => String(item.tutorId) === String(tutor._id)
+      )?.relationship || 'Responsavel';
+    const link = await this._upsertGuardianStudentLink({
       schoolId: challenge.school_id,
-      tutorId: tutor._id,
       accountId: account._id,
+      studentId: challenge.studentId,
+      tutorId: tutor._id,
+      relationshipSnapshot,
       source: 'first_access',
     });
 
@@ -2070,14 +2278,15 @@ class GuardianAuthService {
     challenge.verificationTokenHash = null;
     await challenge.save();
 
-    await this._registerEvent({
+    await this._registerEventBestEffort('first-access.pin-set.event-failed', {
       schoolId: challenge.school_id,
       accountId: account._id,
+      linkId: link?._id || null,
       challengeId: challenge._id,
       studentId: challenge.studentId,
       tutorId: tutor._id,
       actorType: 'public',
-      eventType: 'PIN_SET',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_SET,
       metadata: { identifierType: 'cpf' },
     });
 
@@ -2086,6 +2295,113 @@ class GuardianAuthService {
       identifierType: 'cpf',
       identifierMasked: account.identifierMasked,
       message: 'PIN configurado com sucesso.',
+    };
+  }
+
+  async linkExistingAccount({ challengeId, verificationToken, pin }) {
+    this._assertValidPin(pin);
+
+    const challenge = await this._loadChallenge(challengeId, {
+      includeVerificationHash: true,
+    });
+
+    if (challenge.stage !== 'awaiting_pin' || challenge.pinMode !== 'link_existing') {
+      throw this._createHttpError(
+        'Este primeiro acesso nao esta pronto para vinculacao com PIN existente.',
+        409
+      );
+    }
+
+    await this._validateChallengeVerificationToken({
+      challenge,
+      verificationToken,
+      failedEventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_LINK_FAILED,
+    });
+
+    const tutor = await this._loadChallengeTutor(challenge);
+    const account = await this.GuardianAccessAccountModel.findOne({
+      _id: challenge.existingAccountId,
+      school_id: challenge.school_id,
+    }).select('+pinHash');
+
+    if (!account || !account.pinHash || account.status !== 'active') {
+      throw this._createHttpError(
+        'Nao foi possivel validar o PIN da conta existente.',
+        401
+      );
+    }
+
+    if (
+      account.blockedUntil &&
+      new Date(account.blockedUntil) > this._getNow()
+    ) {
+      throw this._createHttpError(
+        'Acesso temporariamente bloqueado. Tente novamente mais tarde.',
+        423
+      );
+    }
+
+    const isMatch = await this.bcrypt.compare(String(pin), account.pinHash);
+    if (!isMatch) {
+      await this._registerLoginFailure(account, {
+        reason: 'existing_account_pin_mismatch',
+      });
+
+      if (
+        account.blockedUntil &&
+        new Date(account.blockedUntil) > this._getNow()
+      ) {
+        throw this._createHttpError(
+          'Acesso temporariamente bloqueado. Tente novamente mais tarde.',
+          423
+        );
+      }
+
+      throw this._createHttpError(
+        'Nao foi possivel validar o PIN da conta existente.',
+        401
+      );
+    }
+
+    const relationshipSnapshot =
+      challenge.candidateGuardians.find(
+        (item) => String(item.tutorId) === String(tutor._id)
+      )?.relationship || 'Responsavel';
+    const link = await this._upsertGuardianStudentLink({
+      schoolId: challenge.school_id,
+      accountId: account._id,
+      studentId: challenge.studentId,
+      tutorId: tutor._id,
+      relationshipSnapshot,
+      source: 'first_access',
+    });
+
+    challenge.stage = 'completed';
+    challenge.completedAt = this._getNow();
+    challenge.verificationTokenHash = null;
+    await challenge.save();
+
+    await this._registerEventBestEffort(
+      'first-access.link-existing-account.event-failed',
+      {
+      schoolId: challenge.school_id,
+      accountId: account._id,
+      linkId: link?._id || null,
+      challengeId: challenge._id,
+      studentId: challenge.studentId,
+      tutorId: tutor._id,
+      actorType: 'public',
+      eventType:
+        GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_LINKED_WITH_EXISTING_PIN,
+      metadata: { identifierType: 'cpf' },
+      }
+    );
+
+    return {
+      status: 'student_linked',
+      identifierType: 'cpf',
+      identifierMasked: account.identifierMasked,
+      message: 'Aluno vinculado com sucesso a conta existente.',
     };
   }
 
@@ -2129,7 +2445,9 @@ class GuardianAuthService {
       accountId: account._id,
       tutorId: account.tutorId,
       actorType: 'public',
-      eventType: blocked ? 'ACCOUNT_BLOCKED' : 'LOGIN_FAILED',
+      eventType: blocked
+        ? GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_BLOCKED
+        : GUARDIAN_ACCESS_EVENT_TYPES.LOGIN_FAILED,
       metadata: {
         attempts: account.failedLoginCount,
         blockedUntil: account.blockedUntil,
@@ -2171,12 +2489,9 @@ class GuardianAuthService {
     account.blockedUntil = null;
     account.lastLoginAt = this._getNow();
     await account.save();
-
-    const syncedLinks = await this._syncAccountLinksForTutor({
+    const loginContext = await this._buildGuardianLoginContext({
       schoolId: account.school_id,
-      tutorId: account.tutorId,
       accountId: account._id,
-      source: 'sync',
     });
 
     await this._registerEvent({
@@ -2184,9 +2499,9 @@ class GuardianAuthService {
       accountId: account._id,
       tutorId: account.tutorId,
       actorType: 'public',
-      eventType: 'LOGIN_SUCCESS',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.LOGIN_SUCCESS,
       metadata: {
-        linkedStudentsCount: syncedLinks.length,
+        linkedStudentsCount: loginContext.linkedStudentsCount,
       },
     });
 
@@ -2198,8 +2513,12 @@ class GuardianAuthService {
         identifierType: account.identifierType,
         identifierMasked: account.identifierMasked,
         status: this._getAccountStatus(account),
-        linkedStudentsCount: syncedLinks.length,
+        linkedStudentsCount: loginContext.linkedStudentsCount,
       },
+      linkedStudents: loginContext.linkedStudents,
+      defaultStudent: this._buildGuardianStudentPayload(
+        loginContext.defaultStudent
+      ),
       school: this._buildSchoolResponse(school),
     };
   }
@@ -2233,7 +2552,7 @@ class GuardianAuthService {
           accountId: account._id,
           tutorId: account.tutorId,
           actorType: 'public',
-          eventType: 'ACCOUNT_BLOCKED',
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_BLOCKED,
           metadata: {
             blockedUntil: account.blockedUntil,
             reason: 'login_while_blocked',
@@ -2292,7 +2611,7 @@ class GuardianAuthService {
           accountId: account._id,
           tutorId: account.tutorId,
           actorType: 'public',
-          eventType: 'ACCOUNT_BLOCKED',
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_BLOCKED,
           metadata: {
             blockedUntil: account.blockedUntil,
             reason: 'login_while_blocked',
@@ -2368,12 +2687,17 @@ class GuardianAuthService {
       throw this._createHttpError('Aluno nao encontrado.', 404);
     }
 
-    const eligibleGuardians = await this.resolveEligibleGuardiansByStudent(
-      student,
-      schoolId
-    );
+    const links = await this.GuardianAccessLinkModel.find({
+      school_id: schoolId,
+      studentId,
+      status: 'active',
+    })
+      .select(
+        'guardianAccessAccountId tutorId relationshipSnapshot linkedAt status'
+      )
+      .lean();
 
-    if (!eligibleGuardians.length) {
+    if (!links.length) {
       return {
         student: {
           id: String(student._id),
@@ -2383,59 +2707,54 @@ class GuardianAuthService {
       };
     }
 
-    const tutorIds = eligibleGuardians.map((guardian) => guardian.tutorId);
+    const accountIds = [
+      ...new Set(
+        links
+          .map((link) => this._extractId(link.guardianAccessAccountId))
+          .filter(Boolean)
+      ),
+    ];
+    const tutorIds = [
+      ...new Set(links.map((link) => this._extractId(link.tutorId)).filter(Boolean)),
+    ];
+
     const accounts = await this.GuardianAccessAccountModel.find({
-      school_id: schoolId,
-      tutorId: { $in: tutorIds },
+      _id: { $in: accountIds },
     });
-
-    const accountByTutorId = new Map(
-      accounts.map((account) => [String(account.tutorId), account])
-    );
-
-    for (const guardian of eligibleGuardians) {
-      const account = accountByTutorId.get(String(guardian.tutorId));
-      if (!account) continue;
-
-      await this.GuardianAccessLinkModel.findOneAndUpdate(
-        {
+    const tutors = tutorIds.length
+      ? await this.TutorModel.find({
+          _id: { $in: tutorIds },
           school_id: schoolId,
-          studentId,
-          tutorId: guardian.tutorId,
-        },
-        {
-          $set: {
-            guardianAccessAccountId: account._id,
-            relationshipSnapshot: guardian.relationship,
-          },
-          $setOnInsert: {
-            source: 'sync',
-            status: 'active',
-            linkedAt: this._getNow(),
-          },
-        },
-        {
-          new: true,
-          upsert: true,
-          runValidators: true,
-        }
-      );
-    }
+        })
+          .select('_id fullName cpf cpfNormalized')
+          .lean()
+      : [];
+
+    const accountById = new Map(
+      accounts.map((account) => [String(account._id), account])
+    );
+    const tutorById = new Map(tutors.map((tutor) => [String(tutor._id), tutor]));
 
     return {
       student: {
         id: String(student._id),
         fullName: student.fullName,
       },
-      accesses: eligibleGuardians
-        .filter((guardian) => accountByTutorId.has(String(guardian.tutorId)))
-        .map((guardian) =>
-          this._buildAccountSummary(
-            accountByTutorId.get(String(guardian.tutorId)),
-            guardian,
-            guardian.relationship
-          )
-        )
+      accesses: links
+        .map((link) => {
+          const account = accountById.get(
+            this._extractId(link.guardianAccessAccountId)
+          );
+          if (!account) return null;
+
+          const tutor = tutorById.get(this._extractId(link.tutorId)) || null;
+          return this._buildAccountSummary(
+            account,
+            tutor,
+            link.relationshipSnapshot || 'Responsavel'
+          );
+        })
+        .filter(Boolean)
         .sort((left, right) =>
           String(left.guardianName || '').localeCompare(
             String(right.guardianName || ''),
@@ -2445,25 +2764,58 @@ class GuardianAuthService {
     };
   }
 
-  async _getGuardianLinkedStudentIds({ schoolId, accountId }) {
-    if (!schoolId || !accountId) return [];
+  async _resolveGuardianInvoiceScope({ schoolId, accountId, studentId = null }) {
+    if (!schoolId || !accountId) {
+      return {
+        links: [],
+        studentIds: [],
+        tutorIds: [],
+      };
+    }
 
-    const links = await this.GuardianAccessLinkModel.find({
+    const filter = {
       school_id: schoolId,
       guardianAccessAccountId: accountId,
       status: 'active',
-    })
-      .select('studentId')
+    };
+
+    if (studentId) {
+      filter.studentId = studentId;
+    }
+
+    const links = await this.GuardianAccessLinkModel.find(filter)
+      .select('studentId tutorId relationshipSnapshot')
       .lean();
 
-    return [...new Set(links.map((link) => String(link.studentId || '')).filter(Boolean))];
+    return {
+      links,
+      studentIds: [
+        ...new Set(
+          links.map((link) => this._extractId(link.studentId)).filter(Boolean)
+        ),
+      ],
+      tutorIds: [
+        ...new Set(
+          links.map((link) => this._extractId(link.tutorId)).filter(Boolean)
+        ),
+      ],
+    };
   }
 
-  _buildGuardianInvoiceAccessFilter({ schoolId, tutorId, studentIds, invoiceIds }) {
+  _buildGuardianInvoiceAccessFilter({
+    schoolId,
+    tutorIds,
+    studentIds,
+    invoiceIds,
+  }) {
     const filter = {
       school_id: schoolId,
       student: { $in: studentIds },
-      $or: [{ tutor: tutorId }, { tutor: null }, { tutor: { $exists: false } }],
+      $or: [
+        { tutor: { $in: tutorIds } },
+        { tutor: null },
+        { tutor: { $exists: false } },
+      ],
     };
 
     if (Array.isArray(invoiceIds) && invoiceIds.length) {
@@ -2473,31 +2825,37 @@ class GuardianAuthService {
     return filter;
   }
 
-  async listGuardianInvoices({ schoolId, accountId, tutorId }) {
-    if (!schoolId || !accountId || !tutorId) {
+  async listGuardianInvoices({ schoolId, accountId, studentId = null }) {
+    if (!schoolId || !accountId) {
       throw this._createHttpError(
         'Contexto de responsavel invalido para listar boletos.',
         401
       );
     }
 
-    const studentIds = await this._getGuardianLinkedStudentIds({
+    const scope = await this._resolveGuardianInvoiceScope({
       schoolId,
       accountId,
+      studentId,
     });
 
-    if (!studentIds.length) {
+    if (studentId && !scope.studentIds.length) {
+      throw this._createHttpError('Aluno vinculado nao encontrado.', 404);
+    }
+
+    if (!scope.studentIds.length) {
       return {
         invoices: [],
         linkedStudentsCount: 0,
+        scopedStudentId: studentId || null,
       };
     }
 
     const invoices = await this.InvoiceModel.find(
       this._buildGuardianInvoiceAccessFilter({
         schoolId,
-        tutorId,
-        studentIds,
+        tutorIds: scope.tutorIds,
+        studentIds: scope.studentIds,
       })
     )
       .sort({ dueDate: 1, createdAt: -1 })
@@ -2507,21 +2865,32 @@ class GuardianAuthService {
 
     return {
       invoices,
-      linkedStudentsCount: studentIds.length,
+      linkedStudentsCount: scope.studentIds.length,
+      scopedStudentId: studentId || null,
     };
   }
 
-  async downloadGuardianBatchPdf({ schoolId, accountId, tutorId, invoiceIds }) {
+  async downloadGuardianBatchPdf({
+    schoolId,
+    accountId,
+    invoiceIds,
+    studentId = null,
+  }) {
     if (!Array.isArray(invoiceIds) || !invoiceIds.length) {
       throw this._createHttpError('Lista de boletos invalida.', 400);
     }
 
-    const studentIds = await this._getGuardianLinkedStudentIds({
+    const scope = await this._resolveGuardianInvoiceScope({
       schoolId,
       accountId,
+      studentId,
     });
 
-    if (!studentIds.length) {
+    if (studentId && !scope.studentIds.length) {
+      throw this._createHttpError('Aluno vinculado nao encontrado.', 404);
+    }
+
+    if (!scope.studentIds.length) {
       throw this._createHttpError(
         'Nenhum aluno vinculado a este responsavel foi encontrado.',
         404
@@ -2535,8 +2904,8 @@ class GuardianAuthService {
     const accessibleInvoices = await this.InvoiceModel.find(
       this._buildGuardianInvoiceAccessFilter({
         schoolId,
-        tutorId,
-        studentIds,
+        tutorIds: scope.tutorIds,
+        studentIds: scope.studentIds,
         invoiceIds: normalizedInvoiceIds,
       })
     )
@@ -2702,7 +3071,7 @@ class GuardianAuthService {
       tutorId: account.tutorId,
       actorType: 'staff',
       actorUserId: actor.id || actor._id || null,
-      eventType: 'PIN_RESET',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RESET,
       metadata: { newStatus: 'pending' },
     });
 
@@ -2729,7 +3098,7 @@ class GuardianAuthService {
       tutorId: account.tutorId,
       actorType: 'staff',
       actorUserId: actor.id || actor._id || null,
-      eventType: 'ACCOUNT_UNLOCKED',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_UNLOCKED,
       metadata: {},
     });
 
@@ -2755,7 +3124,7 @@ class GuardianAuthService {
       tutorId: account.tutorId,
       actorType: 'staff',
       actorUserId: actor.id || actor._id || null,
-      eventType: 'ACCOUNT_DEACTIVATED',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_DEACTIVATED,
       metadata: {},
     });
 
@@ -2781,7 +3150,7 @@ class GuardianAuthService {
       tutorId: account.tutorId,
       actorType: 'staff',
       actorUserId: actor.id || actor._id || null,
-      eventType: 'ACCOUNT_REACTIVATED',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_REACTIVATED,
       metadata: {
         restoredStatus: account.status,
       },

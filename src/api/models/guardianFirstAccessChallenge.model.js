@@ -51,10 +51,20 @@ const guardianFirstAccessChallengeSchema = new Schema(
       ref: 'Tutor',
       default: null,
     },
+    existingAccountId: {
+      type: Schema.Types.ObjectId,
+      ref: 'GuardianAccessAccount',
+      default: null,
+    },
     verificationTokenHash: {
       type: String,
       default: null,
       select: false,
+    },
+    pinMode: {
+      type: String,
+      enum: ['create', 'link_existing'],
+      default: 'create',
     },
     stage: {
       type: String,

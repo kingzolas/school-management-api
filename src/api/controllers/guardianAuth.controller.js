@@ -87,6 +87,24 @@ class GuardianAuthController {
     }
   }
 
+  async linkExistingAccount(req, res) {
+    try {
+      const result = await guardianAuthService.linkExistingAccount({
+        challengeId: req.body?.challengeId,
+        verificationToken: req.body?.verificationToken,
+        pin: req.body?.pin,
+      });
+
+      return res.status(200).json(result);
+    } catch (error) {
+      return sendError(
+        res,
+        error,
+        'Nao foi possivel vincular o aluno a conta existente.'
+      );
+    }
+  }
+
   async login(req, res) {
     try {
       const result = await guardianAuthService.login({
@@ -126,7 +144,7 @@ class GuardianAuthController {
       const result = await guardianAuthService.listGuardianInvoices({
         schoolId: guardian.schoolId,
         accountId: guardian.accountId,
-        tutorId: guardian.tutorId,
+        studentId: req.query?.studentId || null,
       });
 
       return res.status(200).json(result);
@@ -221,8 +239,8 @@ class GuardianAuthController {
       const pdfBytes = await guardianAuthService.downloadGuardianBatchPdf({
         schoolId: guardian.schoolId,
         accountId: guardian.accountId,
-        tutorId: guardian.tutorId,
         invoiceIds: req.body?.invoiceIds,
+        studentId: req.body?.studentId || null,
       });
 
       res.setHeader('Content-Type', 'application/pdf');

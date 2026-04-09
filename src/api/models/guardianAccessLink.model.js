@@ -59,6 +59,14 @@ const guardianAccessLinkSchema = new Schema(
 );
 
 guardianAccessLinkSchema.index(
+  { school_id: 1, guardianAccessAccountId: 1, studentId: 1 },
+  {
+    unique: true,
+    name: 'uniq_guardian_access_link_school_account_student',
+  }
+);
+
+guardianAccessLinkSchema.index(
   { school_id: 1, studentId: 1, tutorId: 1 },
   { unique: true, name: 'uniq_guardian_access_link_school_student_tutor' }
 );

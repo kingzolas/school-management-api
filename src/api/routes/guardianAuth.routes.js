@@ -18,6 +18,10 @@ router.post(
   '/guardian-auth/first-access/set-pin',
   guardianAuthController.setPin
 );
+router.post(
+  '/guardian-auth/first-access/link-existing-account',
+  guardianAuthController.linkExistingAccount
+);
 router.post('/guardian-auth/login', guardianAuthController.login);
 router.get(
   '/guardian-auth/portal/home',

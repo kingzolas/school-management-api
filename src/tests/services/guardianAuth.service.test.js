@@ -3,6 +3,11 @@ const assert = require('node:assert/strict');
 const bcrypt = require('bcryptjs');
 
 const { GuardianAuthService } = require('../../api/services/guardianAuth.service');
+const GuardianAccessEvent = require('../../api/models/guardianAccessEvent.model');
+const {
+  GUARDIAN_ACCESS_EVENT_TYPES,
+  GUARDIAN_ACCESS_EVENT_TYPE_VALUES,
+} = require('../../api/constants/guardianAccessEventTypes');
 
 function createQuery(value) {
   return {
@@ -83,6 +88,8 @@ function createHarness(seed = {}) {
   const state = {
     schools: (seed.schools || []).map((item) => ({ ...item })),
     students: (seed.students || []).map((item) => ({ ...item })),
+    classes: (seed.classes || []).map((item) => ({ ...item })),
+    enrollments: (seed.enrollments || []).map((item) => ({ ...item })),
     tutors: (seed.tutors || []).map((item) => ({ ...item })),
     accounts: (seed.accounts || []).map((item) => ({ ...item })),
     links: (seed.links || []).map((item) => ({ ...item })),
@@ -114,6 +121,16 @@ function createHarness(seed = {}) {
       },
       findOne(filter = {}) {
         return createQuery(state.students.find((item) => matchesFilter(item, filter)) || null);
+      },
+    },
+    ClassModel: {
+      find(filter = {}) {
+        return createQuery(state.classes.filter((item) => matchesFilter(item, filter)));
+      },
+    },
+    EnrollmentModel: {
+      find(filter = {}) {
+        return createQuery(state.enrollments.filter((item) => matchesFilter(item, filter)));
       },
     },
     TutorModel: {
@@ -177,6 +194,12 @@ function createHarness(seed = {}) {
       },
     },
     GuardianAccessLinkModel: {
+      find(filter = {}) {
+        return createQuery(state.links.filter((item) => matchesFilter(item, filter)));
+      },
+      findOne(filter = {}) {
+        return createQuery(state.links.find((item) => matchesFilter(item, filter)) || null);
+      },
       async findOneAndUpdate(filter = {}, update = {}, options = {}) {
         let record = state.links.find((item) => matchesFilter(item, filter)) || null;
 
@@ -274,6 +297,30 @@ function createBaseSeed() {
   };
 }
 
+function createMultiChildSeed() {
+  const seed = createBaseSeed();
+  seed.students.push({
+    _id: 'student-2',
+    school_id: 'school-1',
+    fullName: 'Gabriel Souza',
+    fullNameNormalized: 'gabriel souza',
+    birthDateKey: '2014-08-20',
+    birthDate: '2014-08-20T00:00:00.000Z',
+    isActive: true,
+    financialTutorId: 'tutor-2',
+    tutors: [{ tutorId: 'tutor-2', relationship: 'Mae' }],
+  });
+  seed.tutors.push({
+    _id: 'tutor-2',
+    school_id: 'school-1',
+    fullName: 'Maria Souza',
+    cpf: '123.456.789-09',
+    cpfNormalized: '12345678909',
+    students: ['student-2'],
+  });
+  return seed;
+}
+
 test('guardian auth first access succeeds end-to-end with PIN creation and recurring login', async () => {
   const harness = createHarness(createBaseSeed());
 
@@ -293,7 +340,7 @@ test('guardian auth first access succeeds end-to-end with PIN creation and recur
     cpf: '123.456.789-09',
   });
 
-  assert.equal(verified.status, 'responsible_verified');
+  assert.equal(verified.status, 'new_account_requires_pin');
   assert.ok(verified.verificationToken);
 
   const configured = await harness.service.setPin({
@@ -315,9 +362,270 @@ test('guardian auth first access succeeds end-to-end with PIN creation and recur
   assert.ok(login.token);
   assert.equal(login.guardian.identifierMasked, '***.***.***-09');
   assert.equal(login.guardian.linkedStudentsCount, 1);
+  assert.equal(login.linkedStudents.length, 1);
+  assert.equal(login.defaultStudent.id, 'student-1');
   assert.equal(login.school.publicIdentifier, 'escola-a');
   assert.equal(harness.state.accounts.length, 1);
   assert.equal(harness.state.links.length, 1);
+});
+
+test('guardian auth links a second child with the existing PIN instead of creating a new account', async () => {
+  const harness = createHarness(createMultiChildSeed());
+
+  const startedFirst = await harness.service.startFirstAccess({
+    studentFullName: 'Ana Souza',
+    birthDate: '2012-03-10',
+  });
+  const verifiedFirst = await harness.service.verifyResponsible({
+    challengeId: startedFirst.challengeId,
+    optionId: startedFirst.guardians[0].optionId,
+    cpf: '123.456.789-09',
+  });
+
+  await harness.service.setPin({
+    challengeId: startedFirst.challengeId,
+    verificationToken: verifiedFirst.verificationToken,
+    pin: '246810',
+  });
+  const existingAccountId = harness.state.accounts[0]._id;
+
+  const startedSecond = await harness.service.startFirstAccess({
+    studentFullName: 'Gabriel Souza',
+    birthDate: '2014-08-20',
+  });
+  const verifiedSecond = await harness.service.verifyResponsible({
+    challengeId: startedSecond.challengeId,
+    optionId: startedSecond.guardians[0].optionId,
+    cpf: '123.456.789-09',
+  });
+
+  assert.equal(verifiedSecond.status, 'existing_account_requires_pin');
+  assert.ok(verifiedSecond.verificationToken);
+
+  const linked = await harness.service.linkExistingAccount({
+    challengeId: startedSecond.challengeId,
+    verificationToken: verifiedSecond.verificationToken,
+    pin: '246810',
+  });
+
+  assert.equal(linked.status, 'student_linked');
+  assert.equal(harness.state.accounts.length, 1);
+  assert.equal(harness.state.links.length, 2);
+  assert.equal(
+    harness.state.links.filter((link) => link.guardianAccessAccountId === existingAccountId)
+      .length,
+    2
+  );
+  assert.ok(
+    harness.state.events.some(
+      (event) =>
+        event.eventType === GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_LINKED_WITH_EXISTING_PIN
+    )
+  );
+});
+
+test('guardian auth treats student_already_linked as an idempotent success', async () => {
+  const seed = createBaseSeed();
+  seed.accounts.push({
+    _id: 'account-1',
+    school_id: 'school-1',
+    tutorId: 'tutor-1',
+    identifierType: 'cpf',
+    identifierNormalized: '12345678909',
+    identifierMasked: '***.***.***-09',
+    pinHash: await bcrypt.hash('246810', 4),
+    status: 'active',
+    tokenVersion: 0,
+    failedLoginCount: 0,
+    blockedUntil: null,
+  });
+  seed.links.push({
+    _id: 'link-1',
+    school_id: 'school-1',
+    guardianAccessAccountId: 'account-1',
+    studentId: 'student-1',
+    tutorId: 'tutor-1',
+    relationshipSnapshot: 'Mae',
+    source: 'first_access',
+    status: 'active',
+  });
+
+  const harness = createHarness(seed);
+  const started = await harness.service.startFirstAccess({
+    studentFullName: 'Ana Souza',
+    birthDate: '2012-03-10',
+  });
+
+  const verified = await harness.service.verifyResponsible({
+    challengeId: started.challengeId,
+    optionId: started.guardians[0].optionId,
+    cpf: '123.456.789-09',
+  });
+
+  assert.equal(verified.status, 'student_already_linked');
+  assert.equal(verified.identifierMasked, '***.***.***-09');
+  assert.equal(harness.state.links.length, 1);
+  assert.ok(
+    harness.state.events.some(
+      (event) => event.eventType === GUARDIAN_ACCESS_EVENT_TYPES.STUDENT_ALREADY_LINKED
+    )
+  );
+});
+
+test('guardian access event model enum stays aligned with guardian auth event constants', () => {
+  const eventEnumValues = GuardianAccessEvent.schema.path('eventType').enumValues;
+
+  assert.deepEqual(
+    [...eventEnumValues].sort(),
+    [...GUARDIAN_ACCESS_EVENT_TYPE_VALUES].sort()
+  );
+  assert.ok(
+    eventEnumValues.includes(
+      GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_LINKED_WITH_EXISTING_PIN
+    )
+  );
+  assert.ok(
+    eventEnumValues.includes(GUARDIAN_ACCESS_EVENT_TYPES.STUDENT_ALREADY_LINKED)
+  );
+  assert.ok(
+    eventEnumValues.includes(GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_LINK_FAILED)
+  );
+});
+
+test('guardian auth keeps the existing-account link flow successful even if audit event persistence fails', async () => {
+  const harness = createHarness(createMultiChildSeed());
+
+  const startedFirst = await harness.service.startFirstAccess({
+    studentFullName: 'Ana Souza',
+    birthDate: '2012-03-10',
+  });
+  const verifiedFirst = await harness.service.verifyResponsible({
+    challengeId: startedFirst.challengeId,
+    optionId: startedFirst.guardians[0].optionId,
+    cpf: '123.456.789-09',
+  });
+
+  await harness.service.setPin({
+    challengeId: startedFirst.challengeId,
+    verificationToken: verifiedFirst.verificationToken,
+    pin: '246810',
+  });
+
+  const startedSecond = await harness.service.startFirstAccess({
+    studentFullName: 'Gabriel Souza',
+    birthDate: '2014-08-20',
+  });
+  const verifiedSecond = await harness.service.verifyResponsible({
+    challengeId: startedSecond.challengeId,
+    optionId: startedSecond.guardians[0].optionId,
+    cpf: '123.456.789-09',
+  });
+
+  harness.service.GuardianAccessEventModel.create = async (data) => {
+    if (
+      data.eventType ===
+      GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_LINKED_WITH_EXISTING_PIN
+    ) {
+      throw new Error('event insert failed');
+    }
+
+    const record = {
+      _id: `event_fallback_${harness.state.events.length + 1}`,
+      createdAt: new Date().toISOString(),
+      ...data,
+    };
+    harness.state.events.push(record);
+    return record;
+  };
+
+  const linked = await harness.service.linkExistingAccount({
+    challengeId: startedSecond.challengeId,
+    verificationToken: verifiedSecond.verificationToken,
+    pin: '246810',
+  });
+
+  assert.equal(linked.status, 'student_linked');
+  assert.equal(
+    harness.state.links.filter((link) => link.studentId === 'student-2').length,
+    1
+  );
+  assert.equal(
+    harness.state.challenges.find((challenge) => challenge._id === startedSecond.challengeId)
+      ?.stage,
+    'completed'
+  );
+});
+
+test('guardian auth login returns linked students and default student for multi-child accounts', async () => {
+  const seed = createMultiChildSeed();
+  seed.accounts.push({
+    _id: 'account-1',
+    school_id: 'school-1',
+    tutorId: 'tutor-1',
+    identifierType: 'cpf',
+    identifierNormalized: '12345678909',
+    identifierMasked: '***.***.***-09',
+    pinHash: await bcrypt.hash('246810', 4),
+    status: 'active',
+    tokenVersion: 0,
+    failedLoginCount: 0,
+    blockedUntil: null,
+  });
+  seed.links.push({
+    _id: 'link-1',
+    school_id: 'school-1',
+    guardianAccessAccountId: 'account-1',
+    studentId: 'student-1',
+    tutorId: 'tutor-1',
+    relationshipSnapshot: 'Mae',
+    source: 'first_access',
+    status: 'active',
+  });
+  seed.links.push({
+    _id: 'link-2',
+    school_id: 'school-1',
+    guardianAccessAccountId: 'account-1',
+    studentId: 'student-2',
+    tutorId: 'tutor-2',
+    relationshipSnapshot: 'Mae',
+    source: 'first_access',
+    status: 'active',
+  });
+
+  const harness = createHarness(seed);
+  const login = await harness.service.login({
+    identifier: '12345678909',
+    pin: '246810',
+  });
+
+  assert.equal(login.guardian.linkedStudentsCount, 2);
+  assert.equal(login.linkedStudents.length, 2);
+  assert.ok(login.defaultStudent);
+  assert.ok(
+    ['student-1', 'student-2'].includes(login.defaultStudent.id)
+  );
+});
+
+test('guardian auth deduplicates duplicate tutor documents with the same CPF for the same student', async () => {
+  const seed = createBaseSeed();
+  seed.students[0].tutors.push({ tutorId: 'tutor-2', relationship: 'Mae' });
+  seed.tutors.push({
+    _id: 'tutor-2',
+    school_id: 'school-1',
+    fullName: 'Maria Souza',
+    cpf: '123.456.789-09',
+    cpfNormalized: '12345678909',
+    students: ['student-1'],
+  });
+
+  const harness = createHarness(seed);
+  const started = await harness.service.startFirstAccess({
+    studentFullName: 'Ana Souza',
+    birthDate: '2012-03-10',
+  });
+
+  assert.equal(started.guardians.length, 1);
+  assert.equal(started.guardians[0].displayName, 'Maria Souza');
 });
 
 test('guardian auth rejects when student is not found', async () => {
@@ -461,7 +769,7 @@ test('guardian auth verifies responsible with legacy tutor CPF when cpfNormalize
     cpf: '123.456.789-09',
   });
 
-  assert.equal(verified.status, 'responsible_verified');
+  assert.equal(verified.status, 'new_account_requires_pin');
   assert.equal(harness.state.tutors[0].cpfNormalized, '12345678909');
 });
 
