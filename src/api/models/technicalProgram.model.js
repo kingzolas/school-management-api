@@ -7,9 +7,38 @@ const technicalProgramSchema = new Schema({
         required: [true, 'O nome do programa técnico é obrigatório.'],
         trim: true
     },
+    code: {
+        type: String,
+        trim: true,
+        default: null
+    },
+    apprenticeshipProgramName: {
+        type: String,
+        trim: true,
+        default: null
+    },
+    occupationalArc: {
+        type: String,
+        trim: true,
+        default: null
+    },
+    cboCodes: {
+        type: [String],
+        default: []
+    },
     description: {
         type: String,
         trim: true
+    },
+    theoreticalWorkloadHours: {
+        type: Number,
+        min: 0,
+        default: null
+    },
+    practicalWorkloadHours: {
+        type: Number,
+        min: 0,
+        default: null
     },
     totalWorkloadHours: {
         type: Number,
@@ -33,5 +62,6 @@ const technicalProgramSchema = new Schema({
 });
 
 technicalProgramSchema.index({ name: 1, school_id: 1 }, { unique: true });
+technicalProgramSchema.index({ code: 1, school_id: 1 });
 
 module.exports = mongoose.model('TechnicalProgram', technicalProgramSchema);

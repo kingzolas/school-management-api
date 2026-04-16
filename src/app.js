@@ -22,6 +22,7 @@ const negotiationRoutes = require('./api/routes/negotiation.routes.js');
 const whatsappRoutes = require('./api/routes/whatsapp.routes');
 const schoolRoutes = require('./api/routes/school.routes.js');
 const companyRoutes = require('./api/routes/company.routes.js');
+const contractRoutes = require('./api/routes/contract.routes.js');
 const technicalProgramRoutes = require('./api/routes/technicalProgram.routes.js');
 const technicalProgramModuleRoutes = require('./api/routes/technicalProgramModule.routes.js');
 const technicalProgramOfferingRoutes = require('./api/routes/technicalProgramOffering.routes.js');
@@ -86,6 +87,7 @@ app.use('/api', guardianAuthRoutes);
 // Funcionalidades Principais
 app.use('/api/schools', schoolRoutes);
 app.use('/api/companies', companyRoutes);
+app.use('/api', contractRoutes);
 app.use('/api/technical-programs', technicalProgramRoutes);
 app.use('/api/technical-program-modules', technicalProgramModuleRoutes);
 app.use('/api/technical-program-offerings', technicalProgramOfferingRoutes);
