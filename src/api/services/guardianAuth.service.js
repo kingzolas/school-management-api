@@ -289,6 +289,8 @@ class GuardianAuthService {
     if (!school?._id) return null;
 
     return {
+      id: String(school._id),
+      schoolId: String(school._id),
       publicIdentifier: school.publicIdentifier || null,
       name: school.name || null,
     };

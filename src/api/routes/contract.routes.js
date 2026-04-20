@@ -4,7 +4,9 @@ const router = express.Router();
 const contractController = require('../controllers/contract.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
 
-router.use(authMiddleware.verifyToken);
+// Limita a autenticacao apenas ao namespace de contratos para nao bloquear
+// rotas publicas montadas no mesmo prefixo "/api" (ex.: /api/releases/*).
+router.use(['/contracts', '/companies/:companyId/contracts'], authMiddleware.verifyToken);
 
 router.post('/contracts/templates', contractController.createTemplate);
 router.get('/contracts/templates', contractController.listTemplates);

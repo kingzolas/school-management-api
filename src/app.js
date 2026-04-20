@@ -35,6 +35,8 @@ const technicalClassMovementRoutes = require('./api/routes/technicalClassMovemen
 const resourceOccupancyRoutes = require('./api/routes/resourceOccupancy.routes.js');
 const dashboardRoutes = require('./api/routes/dashboard.routes');
 const expenseRoutes = require('./api/routes/expense.routes.js');
+const officialDocumentRequestRoutes = require('./api/routes/officialDocumentRequest.routes.js');
+const officialDocumentRoutes = require('./api/routes/officialDocument.routes.js');
 
 // ===================================================================
 // [NOVAS IMPORTAÇÕES]
@@ -97,6 +99,8 @@ app.use('/api/technical-enrollments', technicalEnrollmentRoutes);
 app.use('/api/technical-enrollment-offering-movements', technicalEnrollmentOfferingMovementRoutes);
 app.use('/api/technical-module-records', technicalModuleRecordRoutes);
 app.use('/api/technical-class-movements', technicalClassMovementRoutes);
+app.use('/api/official-document-requests', officialDocumentRequestRoutes);
+app.use('/api/official-documents', officialDocumentRoutes);
 app.use('/api/resource-occupancy', resourceOccupancyRoutes);
 app.use('/api/students', studentRoutes);
 app.use('/api/users', userRoutes);

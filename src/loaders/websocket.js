@@ -1,6 +1,9 @@
 const { WebSocketServer } = require('ws');
 const url = require('url'); // [NOVO] Necessário para ler parâmetros da URL
 const appEmitter = require('./eventEmitter');
+const {
+    OFFICIAL_DOCUMENT_REALTIME_EVENTS,
+} = require('../api/services/officialDocumentRealtime.service');
 
 let wss; // Instância do servidor WebSocket
 
@@ -180,6 +183,13 @@ function registerAppListeners() {
     appEmitter.on('notification:updated', (log) => {
         // Quando muda status (Enviado/Falha/Processando)
         broadcast({ type: 'UPDATED_NOTIFICATION', payload: log }, log.school_id);
+    });
+
+    Object.values(OFFICIAL_DOCUMENT_REALTIME_EVENTS).forEach((eventName) => {
+        appEmitter.on(eventName, (payload) => {
+            console.log(`Evento: ${eventName}`);
+            broadcast({ type: eventName, payload }, payload.schoolId || payload.school_id);
+        });
     });
 }
 
