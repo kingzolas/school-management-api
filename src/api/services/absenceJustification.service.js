@@ -6,6 +6,7 @@ const Enrollment = require('../models/enrollment.model');
 const GuardianAccessLink = require('../models/guardianAccessLink.model');
 const Student = require('../models/student.model');
 const appEmitter = require('../../loaders/eventEmitter');
+const AppNotificationService = require('./appNotification.service');
 
 const DEFAULT_JUSTIFICATION_DEADLINE_DAYS = Number(
   process.env.ATTENDANCE_JUSTIFICATION_DEADLINE_DAYS || 3
@@ -459,10 +460,22 @@ function emitRequestEvent(eventName, request, extra = {}) {
   const payload = buildRequestPayload(request, extra);
   if (!eventName || !payload?.schoolId) return;
 
-  appEmitter.emit(eventName, {
+  const eventPayload = {
     ...payload,
     eventName,
     emittedAt: new Date(),
+  };
+
+  appEmitter.emit(eventName, eventPayload);
+  setImmediate(() => {
+    AppNotificationService.createFromRealtimeEvent(eventName, eventPayload).catch((error) => {
+      console.warn('[AppNotification] Falha ao persistir evento de abono', {
+        eventName,
+        requestId: eventPayload.requestId,
+        schoolId: eventPayload.schoolId,
+        error: error.message,
+      });
+    });
   });
 }
 

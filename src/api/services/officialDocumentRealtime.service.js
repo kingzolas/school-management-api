@@ -1,3 +1,5 @@
+const AppNotificationService = require('./appNotification.service');
+
 const OFFICIAL_DOCUMENT_REALTIME_EVENTS = {
   requestCreated: 'official_document_request_created',
   requestUpdated: 'official_document_request_updated',
@@ -12,6 +14,8 @@ const OFFICIAL_DOCUMENT_REALTIME_EVENTS = {
   replaced: 'official_document_replaced',
   cancelled: 'official_document_cancelled',
 };
+
+const STAFF_TARGET_ROLES = ['Admin', 'Coordenador', 'Gestor', 'Secretaria'];
 
 const toPlainRecord = (record) => {
   if (!record) return null;
@@ -45,6 +49,8 @@ const buildRequestPayload = (request, extra = {}) => {
     requesterType: snapshot.requesterType || null,
     requesterId: extractId(snapshot.requesterId),
     targetGuardianIds: extractIdList(snapshot.targetGuardianIds),
+    audience: extra.audience || ['staff', 'guardian'],
+    targetRoles: extra.targetRoles || STAFF_TARGET_ROLES,
     lastStatusChangedAt: snapshot.lastStatusChangedAt || snapshot.updatedAt || null,
     request: snapshot,
     ...extra,
@@ -67,6 +73,9 @@ const buildDocumentPayload = (document, extra = {}) => {
     status: snapshot.status || null,
     version: snapshot.version || null,
     guardianIds: extractIdList(snapshot.guardianIds),
+    targetGuardianIds: extractIdList(snapshot.guardianIds),
+    audience: extra.audience || ['staff', 'guardian'],
+    targetRoles: extra.targetRoles || STAFF_TARGET_ROLES,
     isVisibleToGuardian: snapshot.isVisibleToGuardian === true,
     isVisibleToStudent: snapshot.isVisibleToStudent === true,
     lastStatusChangedAt: snapshot.lastStatusChangedAt || snapshot.updatedAt || null,
@@ -78,10 +87,23 @@ const buildDocumentPayload = (document, extra = {}) => {
 const emitOfficialDocumentEvent = (eventEmitter, eventName, payload) => {
   if (!eventEmitter || !eventName || !payload?.schoolId) return;
 
-  eventEmitter.emit(eventName, {
+  const eventPayload = {
     ...payload,
     eventName,
     emittedAt: new Date(),
+  };
+
+  eventEmitter.emit(eventName, eventPayload);
+  setImmediate(() => {
+    AppNotificationService.createFromRealtimeEvent(eventName, eventPayload).catch((error) => {
+      console.warn('[AppNotification] Falha ao persistir evento de documentação', {
+        eventName,
+        requestId: eventPayload.requestId,
+        documentId: eventPayload.documentId,
+        schoolId: eventPayload.schoolId,
+        error: error.message,
+      });
+    });
   });
 };
 

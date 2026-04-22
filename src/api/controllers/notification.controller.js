@@ -1,4 +1,5 @@
 const NotificationService = require('../services/notification.service');
+const AppNotificationService = require('../services/appNotification.service');
 const Invoice = require('../models/invoice.model');
 const {
   buildOutcomePayload,
@@ -56,6 +57,50 @@ function buildBackgroundBatchResponse({
 }
 
 class NotificationController {
+  async listAppNotifications(req, res) {
+    try {
+      const result = await AppNotificationService.listForViewer(
+        req.notificationViewer,
+        req.query
+      );
+      res.status(200).json(result);
+    } catch (error) {
+      const status = error.statusCode || 500;
+      res.status(status).json({ message: error.message || 'Falha ao buscar notificações.' });
+    }
+  }
+
+  async markAppNotificationRead(req, res) {
+    try {
+      const item = await AppNotificationService.markAsRead(
+        req.params.id,
+        req.notificationViewer
+      );
+
+      if (!item) {
+        return res.status(404).json({ message: 'Notificação não encontrada.' });
+      }
+
+      res.status(200).json(item);
+    } catch (error) {
+      const status = error.statusCode || 500;
+      res.status(status).json({ message: error.message || 'Falha ao marcar notificação como lida.' });
+    }
+  }
+
+  async markAllAppNotificationsRead(req, res) {
+    try {
+      const result = await AppNotificationService.markAllAsRead(
+        req.notificationViewer,
+        req.body || {}
+      );
+      res.status(200).json(result);
+    } catch (error) {
+      const status = error.statusCode || 500;
+      res.status(status).json({ message: error.message || 'Falha ao marcar notificações como lidas.' });
+    }
+  }
+
   async getLogs(req, res) {
     try {
       const schoolId = req.user.schoolId || req.user.school_id;

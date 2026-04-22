@@ -113,6 +113,7 @@ function initWebSocket(httpServer) {
             role: ws.role,
             schoolId: ws.schoolId,
             schoolName: ws.schoolName,
+            authMode: decodedToken ? 'token' : 'school_query',
             timestamp: connectedAt,
         });
 
@@ -314,13 +315,30 @@ function broadcast(data, targetSchoolId) {
 
     const message = JSON.stringify(data);
     const targetIdString = String(targetSchoolId); // Garante comparação String vs String
+    let delivered = 0;
 
     wss.clients.forEach((client) => {
         // Verifica conexão aberta E se pertence à mesma escola
         if (client.readyState === client.OPEN && client.schoolId === targetIdString) {
             client.send(message);
+            delivered += 1;
         }
     });
+
+    if (
+        String(data.type || '').startsWith('official_document_') ||
+        String(data.type || '').startsWith('absence_justification_')
+    ) {
+        console.log('[WebSocket] Broadcast notificacao desktop', {
+            type: data.type,
+            schoolId: targetIdString,
+            delivered,
+            requestId: data.payload?.requestId || data.payload?.request?._id || null,
+            audience: data.payload?.audience || null,
+            targetRoles: data.payload?.targetRoles || null,
+            timestamp: new Date().toISOString(),
+        });
+    }
 }
 
 module.exports = { initWebSocket, broadcast };
