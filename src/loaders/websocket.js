@@ -1,6 +1,9 @@
 ﻿const { WebSocketServer } = require('ws');
 const url = require('url'); // [NOVO] Necessário para ler parâmetros da URL
+const jwt = require('jsonwebtoken');
+const { randomUUID } = require('crypto');
 const appEmitter = require('./eventEmitter');
+const School = require('../api/models/school.model');
 const {
     OFFICIAL_DOCUMENT_REALTIME_EVENTS,
 } = require('../api/services/officialDocumentRealtime.service');
@@ -9,29 +12,123 @@ const {
 } = require('../api/services/absenceJustification.service');
 
 let wss; // InstÃ¢ncia do servidor WebSocket
+const JWT_SECRET = process.env.JWT_SECRET;
+
+function normalizeRole(decodedPayload) {
+    if (!decodedPayload) return null;
+    if (decodedPayload.role) return decodedPayload.role;
+    if (Array.isArray(decodedPayload.roles)) return decodedPayload.roles.join(',');
+    return null;
+}
+
+function verifySocketToken(token) {
+    if (!token || !JWT_SECRET) return null;
+
+    try {
+        return jwt.verify(token, JWT_SECRET);
+    } catch (error) {
+        return { invalid: true, error: error.message };
+    }
+}
+
+async function getSchoolName(schoolId) {
+    if (!schoolId) return null;
+
+    try {
+        const school = await School.findById(schoolId).select('name').lean();
+        return school?.name || null;
+    } catch (_) {
+        return null;
+    }
+}
 
 function initWebSocket(httpServer) {
     // Liga o servidor WebSocket ao servidor HTTP existente
     wss = new WebSocketServer({ server: httpServer });
 
-    wss.on('connection', (ws, req) => {
-        // [NOVO] 1. Extrair o ID da Escola da URL de conexão
-        // O Front deve conectar assim: new WebSocket('ws://api.com?schoolId=10')
+    wss.on('connection', async (ws, req) => {
+        const socketId = randomUUID();
+        const connectedAt = new Date().toISOString();
         const parameters = url.parse(req.url, true);
-        const schoolId = parameters.query.schoolId || parameters.query.school_id;
+        const authHeader = req.headers.authorization || req.headers.Authorization || '';
+        const headerToken = String(authHeader).startsWith('Bearer ')
+            ? String(authHeader).slice('Bearer '.length).trim()
+            : null;
+        const token = headerToken || parameters.query.token;
+        const decodedToken = verifySocketToken(token);
 
-        if (!schoolId) {
-            console.log('⚠️ Cliente WebSocket rejeitado: schoolId não informado.');
-            ws.close(); 
+        if (decodedToken?.invalid) {
+            console.warn('[WebSocket] Conexao rejeitada: token invalido', {
+                socketId,
+                reason: decodedToken.error,
+                timestamp: connectedAt,
+            });
+            ws.close(1008, 'invalid_token');
             return;
         }
 
-        // [NOVO] 2. "Etiquetamos" a conexão com o ID da escola
-        ws.schoolId = String(schoolId); // Forçamos string para evitar erros de comparação
+        const tokenSchoolId = decodedToken?.school_id || decodedToken?.schoolId;
+        const querySchoolId = parameters.query.schoolId || parameters.query.school_id;
+        const schoolId = tokenSchoolId || querySchoolId;
 
-        console.log(`âœ… Cliente WebSocket conectado na escola: ${schoolId}`);
+        if (!schoolId) {
+            console.warn('[WebSocket] Conexao rejeitada: schoolId nao informado', {
+                socketId,
+                userId: decodedToken?.id || decodedToken?._id || null,
+                userName: decodedToken?.fullName || decodedToken?.name || null,
+                role: normalizeRole(decodedToken),
+                timestamp: connectedAt,
+            });
+            ws.close(1008, 'missing_school_id');
+            return;
+        }
 
-        ws.on('close', () => console.log(`âŒ Cliente WebSocket desconectado da escola: ${schoolId}`));
+        if (tokenSchoolId && querySchoolId && String(tokenSchoolId) !== String(querySchoolId)) {
+            console.warn('[WebSocket] Conexao rejeitada: schoolId divergente do token', {
+                socketId,
+                userId: decodedToken?.id || decodedToken?._id || null,
+                userName: decodedToken?.fullName || decodedToken?.name || null,
+                role: normalizeRole(decodedToken),
+                tokenSchoolId: String(tokenSchoolId),
+                querySchoolId: String(querySchoolId),
+                timestamp: connectedAt,
+            });
+            ws.close(1008, 'school_mismatch');
+            return;
+        }
+
+        const schoolName = await getSchoolName(schoolId);
+
+        ws.socketId = socketId;
+        ws.schoolId = String(schoolId);
+        ws.userId = decodedToken?.id || decodedToken?._id || null;
+        ws.userName = decodedToken?.fullName || decodedToken?.name || null;
+        ws.role = normalizeRole(decodedToken);
+        ws.schoolName = schoolName;
+
+        console.log('[WebSocket] Connect', {
+            socketId,
+            userId: ws.userId,
+            userName: ws.userName,
+            role: ws.role,
+            schoolId: ws.schoolId,
+            schoolName: ws.schoolName,
+            timestamp: connectedAt,
+        });
+
+        ws.on('close', (code, reasonBuffer) => {
+            const reason = reasonBuffer?.toString() || null;
+            console.log('[WebSocket] Disconnect', {
+                socketId: ws.socketId,
+                userId: ws.userId,
+                userName: ws.userName,
+                role: ws.role,
+                schoolId: ws.schoolId,
+                reason: reason || `code_${code}`,
+                code,
+                timestamp: new Date().toISOString(),
+            });
+        });
     });
 
     // --- A MÃGICA ACONTECE AQUI ---

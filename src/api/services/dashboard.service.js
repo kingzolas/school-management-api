@@ -7,6 +7,13 @@ const Subject = require('../models/subject.model');
 const Expense = require('../models/expense.model');
 const financeRuntime = require('./school-finance.runtime.js');
 
+const FINANCE_VERBOSE_LOGS = process.env.FINANCE_VERBOSE_LOGS === 'true';
+const financeDebugLog = (...args) => {
+  if (FINANCE_VERBOSE_LOGS) {
+    console.log(...args);
+  }
+};
+
 const MONTH_NAMES_PT_BR = [
   '',
   'Janeiro',
@@ -37,13 +44,13 @@ class DashboardService {
     );
 
     if (cached && !cached.stale) {
-      console.log(
+      financeDebugLog(
         `📊 [DashboardService] Cache hit da inteligência financeira | schoolId=${schoolId} | referenceDate=${period.referenceDateKey}`,
       );
       return cached.value;
     }
 
-    console.log(
+    financeDebugLog(
       `📊 [DashboardService] Gerando inteligência financeira para schoolId=${schoolId} | referenceDate=${period.referenceDateKey}`,
     );
 

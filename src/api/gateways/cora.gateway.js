@@ -4,6 +4,15 @@ const https = require('https');
 const { v4: uuidv4 } = require('uuid');
 const { extractCoraBankSlipFields } = require('../utils/boleto.util');
 
+const CORA_VERBOSE_LOGS =
+  process.env.CORA_VERBOSE_LOGS === 'true' ||
+  process.env.FINANCE_VERBOSE_LOGS === 'true';
+const coraDebugLog = (...args) => {
+  if (CORA_VERBOSE_LOGS) {
+    console.log(...args);
+  }
+};
+
 class CoraGateway {
   constructor(config) {
     this.fullConfig = config;
@@ -24,11 +33,11 @@ class CoraGateway {
 
     // 4) Define URLs (mTLS)
     if (this.isSandbox) {
-      console.log('🧪 [CoraGateway] Inicializando em modo SANDBOX (mTLS).');
+      coraDebugLog('🧪 [CoraGateway] Inicializando em modo SANDBOX (mTLS).');
       this.authUrl = 'https://matls-clients.api.stage.cora.com.br/token';
       this.baseUrl = 'https://matls-clients.api.stage.cora.com.br';
     } else {
-      console.log('🚀 [CoraGateway] Inicializando em modo PRODUÇÃO (mTLS).');
+      coraDebugLog('🚀 [CoraGateway] Inicializando em modo PRODUÇÃO (mTLS).');
       this.authUrl = 'https://matls-clients.api.cora.com.br/token';
       this.baseUrl = 'https://matls-clients.api.cora.com.br';
     }
@@ -328,7 +337,7 @@ class CoraGateway {
 
     const paidIdsSet = new Set();
 
-    console.log(`🔵 [CoraGateway] Bulk paid sync (by dueDate/occurrence_date) de ${fmtStart} até ${fmtEnd} | states=${states.join(',')}`);
+    coraDebugLog(`🔵 [CoraGateway] Bulk paid sync (by dueDate/occurrence_date) de ${fmtStart} até ${fmtEnd} | states=${states.join(',')}`);
 
     for (const state of states) {
       let page = 1;
@@ -380,7 +389,7 @@ class CoraGateway {
         }
         pageFingerprints.add(fingerprint);
 
-        console.log(`📄 [CoraGateway] state=${state} page=${page} items=${items.length} ${usedFallback ? '(fallback perPage)' : ''}`, {
+        coraDebugLog(`📄 [CoraGateway] state=${state} page=${page} items=${items.length} ${usedFallback ? '(fallback perPage)' : ''}`, {
           totalPages: totalPages || null,
           respPerPage: respPerPage || null
         });
@@ -406,7 +415,7 @@ class CoraGateway {
     }
 
     const allPaidIds = Array.from(paidIdsSet);
-    console.log(`✅ [CoraGateway] Bulk paid sync finalizado. totalPaidIds=${allPaidIds.length} sample=${allPaidIds.slice(0, 10).join(', ')}`);
+    coraDebugLog(`✅ [CoraGateway] Bulk paid sync finalizado. totalPaidIds=${allPaidIds.length} sample=${allPaidIds.slice(0, 10).join(', ')}`);
     return allPaidIds;
   }
 
@@ -414,7 +423,7 @@ class CoraGateway {
     const token = await this.authenticate();
     const data = await this._get(`/v2/invoices/${externalId}`, token);
 
-    console.log('📦 [CoraGateway] getInvoice (raw keys)', {
+    coraDebugLog('📦 [CoraGateway] getInvoice (raw keys)', {
       externalId: String(externalId),
       keys: data ? Object.keys(data).slice(0, 20) : null
     });
@@ -435,7 +444,7 @@ class CoraGateway {
 
     const paidAt = this._extractPaidAtFromInvoice(data);
 
-    console.log('🔎 [CoraGateway] getInvoicePaymentInfo', {
+    coraDebugLog('🔎 [CoraGateway] getInvoicePaymentInfo', {
       externalId: String(externalId),
       status,
       paidAt,
@@ -464,7 +473,7 @@ class CoraGateway {
       data?.invoiceStatus ||
       null;
 
-    console.log('🔎 [CoraGateway] getInvoiceStatus', {
+    coraDebugLog('🔎 [CoraGateway] getInvoiceStatus', {
       externalId: String(externalId),
       status,
       keys: data ? Object.keys(data).slice(0, 20) : null

@@ -17,6 +17,13 @@ const {
   normalizeDigitableLine,
 } = require('../utils/boleto.util');
 
+const FINANCE_VERBOSE_LOGS = process.env.FINANCE_VERBOSE_LOGS === 'true';
+const financeDebugLog = (...args) => {
+  if (FINANCE_VERBOSE_LOGS) {
+    console.log(...args);
+  }
+};
+
 class InvoiceService {
 
   async createInvoice(invoiceData, schoolId) {
@@ -300,7 +307,7 @@ class InvoiceService {
     const gate = financeRuntime.shouldAllowSync(schoolId, { force });
 
     if (!gate.allowed) {
-      console.log(`🟡 [InvoiceService] Sync não agendada para escola ${schoolId}`, {
+      financeDebugLog(`🟡 [InvoiceService] Sync não agendada para escola ${schoolId}`, {
         reason: gate.reason,
         force,
       });
@@ -312,7 +319,7 @@ class InvoiceService {
       };
     }
 
-    console.log(`🕒 [InvoiceService] Sync em background agendada`, {
+    financeDebugLog(`🕒 [InvoiceService] Sync em background agendada`, {
       schoolId,
       reason,
       force,
@@ -517,7 +524,7 @@ class InvoiceService {
   async handlePaymentWebhook(externalId, providerName, statusRaw, paidAtRaw = null) {
     const hookRunId = `${providerName || 'PROVIDER'}-${Date.now()}`;
 
-    console.log(`\n🔔 [handlePaymentWebhook ${hookRunId}] chamado`, {
+    financeDebugLog(`\n🔔 [handlePaymentWebhook ${hookRunId}] chamado`, {
       externalId: String(externalId),
       providerName,
       statusRaw: statusRaw ?? null,
@@ -610,7 +617,7 @@ class InvoiceService {
         }
       }
     } else {
-      console.log(`🟡 [handlePaymentWebhook ${hookRunId}] Nenhuma alteração necessária`, {
+      financeDebugLog(`🟡 [handlePaymentWebhook ${hookRunId}] Nenhuma alteração necessária`, {
         invoiceId: String(invoice._id),
         status: invoice.status,
         paidAt: invoice.paidAt || null
@@ -670,7 +677,7 @@ class InvoiceService {
     });
 
     if (!syncStart.started) {
-      console.log(`\n🟡 [sync-${schoolId}-${Date.now()}] Sync ignorado`, {
+      financeDebugLog(`\n🟡 [sync-${schoolId}-${Date.now()}] Sync ignorado`, {
         schoolId,
         studentId: studentId || null,
         singleInvoiceId: singleInvoiceId || null,
@@ -700,7 +707,7 @@ class InvoiceService {
     if (studentId) filter.student = studentId;
     if (singleInvoiceId) filter._id = singleInvoiceId;
 
-    console.log(`\n🔄 [${syncRunId}] Iniciando syncPendingInvoices`, {
+    financeDebugLog(`\n🔄 [${syncRunId}] Iniciando syncPendingInvoices`, {
       schoolId,
       studentId: studentId || null,
       singleInvoiceId: singleInvoiceId || null
@@ -716,7 +723,7 @@ class InvoiceService {
     const coraPendings = pendingInvoices.filter(i => i.gateway === 'cora');
     const mpPendings = pendingInvoices.filter(i => i.gateway === 'mercadopago');
 
-    console.log(`📌 [${syncRunId}] Pendentes no DB`, {
+    financeDebugLog(`📌 [${syncRunId}] Pendentes no DB`, {
       total: pendingInvoices.length,
       cora: coraPendings.length,
       mercadopago: mpPendings.length
@@ -760,7 +767,7 @@ class InvoiceService {
           const startDate = minDue ? (minDue.getTime() < floor.getTime() ? floor : minDue) : floor;
           const endDate = new Date();
 
-          console.log(`🧭 [${syncRunId}] CORA bulk range (by dueDate)`, {
+          financeDebugLog(`🧭 [${syncRunId}] CORA bulk range (by dueDate)`, {
             startDate: startDate.toISOString().split('T')[0],
             endDate: endDate.toISOString().split('T')[0],
             pendingCoraCount: coraPendings.length
@@ -776,7 +783,7 @@ class InvoiceService {
 
           bulkPaidIdsStr = Array.isArray(paidIds) ? paidIds.map(x => String(x)) : [];
 
-          console.log(`📦 [${syncRunId}] CORA BULK candidates`, {
+          financeDebugLog(`📦 [${syncRunId}] CORA BULK candidates`, {
             paidIdsCount: bulkPaidIdsStr.length
           });
 
@@ -800,7 +807,7 @@ class InvoiceService {
               }
             );
 
-            console.log(`📦 [${syncRunId}] CORA BULK updateMany`, {
+            financeDebugLog(`📦 [${syncRunId}] CORA BULK updateMany`, {
               matchedCount: result.matchedCount,
               modifiedCount: result.modifiedCount
             });
@@ -858,7 +865,7 @@ class InvoiceService {
           const info = await coraGateway.getInvoicePaymentInfo(inv.external_id);
           const boletoPatch = this._buildGatewayBankSlipPatch(inv, info);
 
-          console.log(`🔎 [${syncRunId}] CORA status check`, {
+          financeDebugLog(`🔎 [${syncRunId}] CORA status check`, {
             invoiceId: String(inv._id),
             external_id: String(inv.external_id),
             statusFromCora: info?.status,
@@ -920,7 +927,7 @@ class InvoiceService {
           .select('_id tutor external_id paidAt')
           .lean();
 
-        console.log(`🧩 [${syncRunId}] CORA paidAt backfill iniciado`, {
+        financeDebugLog(`🧩 [${syncRunId}] CORA paidAt backfill iniciado`, {
           candidateCount: backfillCandidates.length,
           bulkCandidateCount: bulkPaidIdsStr.length,
           concurrencyLimit: 5
@@ -974,7 +981,7 @@ class InvoiceService {
 
         const backfillRemainingCount = await Invoice.countDocuments(backfillMissingFilter);
 
-        console.log(`📦 [${syncRunId}] CORA paidAt backfill finalizado`, {
+        financeDebugLog(`📦 [${syncRunId}] CORA paidAt backfill finalizado`, {
           enteredCount: backfillCandidates.length,
           filledCount: backfillFilledCount,
           remainingWithoutPaidAt: backfillRemainingCount,
@@ -1002,11 +1009,16 @@ class InvoiceService {
         NotificationService.invalidateForecastCache({ schoolId });
       }
 
-      console.log(`✅ [${syncRunId}] Sync finalizado`, {
-        totalChecked: stats.totalChecked,
-        updatedCount: stats.updatedCount,
-        durationMs: Date.now() - startedAt
-      });
+      if (options.reason !== 'cron_sweep' || stats.updatedCount > 0 || FINANCE_VERBOSE_LOGS) {
+        console.log('[FinanceSync] Sync finalizado', {
+          runId: syncRunId,
+          schoolId: String(schoolId),
+          reason: options.reason || 'finance_sync',
+          totalChecked: stats.totalChecked,
+          updatedCount: stats.updatedCount,
+          durationMs: Date.now() - startedAt
+        });
+      }
 
       return stats;
     } catch (error) {
