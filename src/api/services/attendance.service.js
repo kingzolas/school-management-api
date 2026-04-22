@@ -7,6 +7,7 @@ const {
   ensureClassAccess,
   extractId,
 } = require('./classAccess.service');
+const absenceJustificationService = require('./absenceJustification.service');
 
 const DEFAULT_JUSTIFICATION_DEADLINE_DAYS = Number(
   process.env.ATTENDANCE_JUSTIFICATION_DEADLINE_DAYS || 3
@@ -297,6 +298,7 @@ async function createOrUpdate(data, actor) {
     }
   );
 
+  await absenceJustificationService.applyApprovedRequestCoverageToAttendance(result, actor);
   await expireOverdueAbsencesForClass(data.schoolId, data.classId);
 
   return buildAttendanceResponse(await populateAttendance(result._id));

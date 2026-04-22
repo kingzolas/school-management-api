@@ -1,11 +1,14 @@
-const { WebSocketServer } = require('ws');
+﻿const { WebSocketServer } = require('ws');
 const url = require('url'); // [NOVO] Necessário para ler parâmetros da URL
 const appEmitter = require('./eventEmitter');
 const {
     OFFICIAL_DOCUMENT_REALTIME_EVENTS,
 } = require('../api/services/officialDocumentRealtime.service');
+const {
+    ABSENCE_JUSTIFICATION_REQUEST_EVENTS,
+} = require('../api/services/absenceJustification.service');
 
-let wss; // Instância do servidor WebSocket
+let wss; // InstÃ¢ncia do servidor WebSocket
 
 function initWebSocket(httpServer) {
     // Liga o servidor WebSocket ao servidor HTTP existente
@@ -26,12 +29,12 @@ function initWebSocket(httpServer) {
         // [NOVO] 2. "Etiquetamos" a conexão com o ID da escola
         ws.schoolId = String(schoolId); // Forçamos string para evitar erros de comparação
 
-        console.log(`✅ Cliente WebSocket conectado na escola: ${schoolId}`);
+        console.log(`âœ… Cliente WebSocket conectado na escola: ${schoolId}`);
 
-        ws.on('close', () => console.log(`❌ Cliente WebSocket desconectado da escola: ${schoolId}`));
+        ws.on('close', () => console.log(`âŒ Cliente WebSocket desconectado da escola: ${schoolId}`));
     });
 
-    // --- A MÁGICA ACONTECE AQUI ---
+    // --- A MÃGICA ACONTECE AQUI ---
     registerAppListeners();
 
     console.log('🚀 Servidor WebSocket inicializado com isolamento por escola (Multitenancy).');
@@ -186,6 +189,13 @@ function registerAppListeners() {
     });
 
     Object.values(OFFICIAL_DOCUMENT_REALTIME_EVENTS).forEach((eventName) => {
+        appEmitter.on(eventName, (payload) => {
+            console.log(`Evento: ${eventName}`);
+            broadcast({ type: eventName, payload }, payload.schoolId || payload.school_id);
+        });
+    });
+
+    Object.values(ABSENCE_JUSTIFICATION_REQUEST_EVENTS).forEach((eventName) => {
         appEmitter.on(eventName, (payload) => {
             console.log(`Evento: ${eventName}`);
             broadcast({ type: eventName, payload }, payload.schoolId || payload.school_id);

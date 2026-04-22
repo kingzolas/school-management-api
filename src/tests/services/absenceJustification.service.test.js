@@ -268,3 +268,48 @@ test('justification is rejected when neither document nor notes are provided', a
     /Informe um documento anexo ou uma observacao/
   );
 });
+
+test('approvedDates are normalized, sorted and constrained to requested range', () => {
+  const approvedDates = absenceJustificationService.normalizeApprovedDatesForRequest(
+    ['2026-04-25', '2026-04-23', '2026-04-23'],
+    '2026-04-23',
+    '2026-04-28',
+    { requireAtLeastOne: true }
+  );
+
+  assert.deepEqual(
+    approvedDates.map((date) => date.toISOString().slice(0, 10)),
+    ['2026-04-23', '2026-04-25']
+  );
+
+  assert.throws(
+    () => absenceJustificationService.normalizeApprovedDatesForRequest(
+      ['2026-04-29'],
+      '2026-04-23',
+      '2026-04-28',
+      { requireAtLeastOne: true }
+    ),
+    /approvedDates deve conter apenas datas dentro do periodo solicitado/
+  );
+});
+
+test('medical certificate absence request requires attachment even with notes', async () => {
+  await assert.rejects(
+    absenceJustificationService.createGuardianRequest(
+      {
+        studentId: 'student-5',
+        requestedStartDate: '2026-04-23',
+        requestedEndDate: '2026-04-23',
+        documentType: 'MEDICAL_CERTIFICATE',
+        notes: 'Aluno possui atestado, mas o arquivo nao foi anexado.',
+      },
+      null,
+      {
+        schoolId: 'school-1',
+        tutorId: 'guardian-1',
+        accountId: 'account-1',
+      }
+    ),
+    /tipo de documento informado exige anexo/
+  );
+});

@@ -144,6 +144,7 @@ class GuardianAuthController {
       const result = await guardianAuthService.listGuardianInvoices({
         schoolId: guardian.schoolId,
         accountId: guardian.accountId,
+        accountTutorId: guardian.tutorId,
         studentId: req.query?.studentId || null,
       });
 

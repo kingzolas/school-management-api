@@ -20,6 +20,7 @@ const GuardianAccessLink = require('../models/guardianAccessLink.model');
 const GuardianAccessEvent = require('../models/guardianAccessEvent.model');
 const GuardianFirstAccessChallenge = require('../models/guardianFirstAccessChallenge.model');
 const invoiceService = require('./invoice.service');
+const tutorFinancialScoreService = require('./tutorFinancialScore.service');
 const {
   GUARDIAN_ACCESS_EVENT_TYPES,
 } = require('../constants/guardianAccessEventTypes');
@@ -73,6 +74,8 @@ class GuardianAuthService {
     this.GuardianFirstAccessChallengeModel =
       options.GuardianFirstAccessChallengeModel || GuardianFirstAccessChallenge;
     this.invoiceService = options.invoiceService || invoiceService;
+    this.tutorFinancialScoreService =
+      options.tutorFinancialScoreService || tutorFinancialScoreService;
     this.bcrypt = options.bcrypt || bcrypt;
     this.jwt = options.jwt || jwt;
     this.crypto = options.crypto || crypto;
@@ -2827,7 +2830,67 @@ class GuardianAuthService {
     return filter;
   }
 
-  async listGuardianInvoices({ schoolId, accountId, studentId = null }) {
+  async _buildGuardianFinancialScoreContext({
+    schoolId,
+    accountTutorId,
+    scope,
+  }) {
+    const normalizedOwnerId = this._extractId(accountTutorId);
+    const scopedTutorIds = new Set(
+      (scope?.tutorIds || []).map((tutorId) => String(tutorId))
+    );
+
+    if (!normalizedOwnerId || !scopedTutorIds.has(String(normalizedOwnerId))) {
+      return {
+        available: false,
+        ownerStatus: normalizedOwnerId ? 'not_in_scope' : 'missing_owner',
+        owner: null,
+        score: null,
+      };
+    }
+
+    const tutor = await this.TutorModel.findOne({
+      _id: normalizedOwnerId,
+      school_id: schoolId,
+    })
+      .select('_id fullName financialScore')
+      .lean();
+
+    if (!tutor) {
+      return {
+        available: false,
+        ownerStatus: 'owner_not_found',
+        owner: null,
+        score: null,
+      };
+    }
+
+    const ownerLink = (scope?.links || []).find(
+      (link) => this._extractId(link.tutorId) === String(normalizedOwnerId)
+    );
+    const financialScore =
+      tutor.financialScore && typeof tutor.financialScore.value === 'number'
+        ? tutor.financialScore
+        : this.tutorFinancialScoreService.buildDefaultFinancialScore();
+
+    return {
+      available: true,
+      ownerStatus: 'authenticated_guardian',
+      owner: {
+        tutorId: String(tutor._id),
+        fullName: tutor.fullName || null,
+        relationship: ownerLink?.relationshipSnapshot || null,
+      },
+      score: financialScore,
+    };
+  }
+
+  async listGuardianInvoices({
+    schoolId,
+    accountId,
+    accountTutorId = null,
+    studentId = null,
+  }) {
     if (!schoolId || !accountId) {
       throw this._createHttpError(
         'Contexto de responsavel invalido para listar boletos.',
@@ -2850,6 +2913,12 @@ class GuardianAuthService {
         invoices: [],
         linkedStudentsCount: 0,
         scopedStudentId: studentId || null,
+        financialScoreContext: {
+          available: false,
+          ownerStatus: 'empty_scope',
+          owner: null,
+          score: null,
+        },
       };
     }
 
@@ -2865,10 +2934,17 @@ class GuardianAuthService {
       .populate('tutor', 'fullName')
       .lean();
 
+    const financialScoreContext = await this._buildGuardianFinancialScoreContext({
+      schoolId,
+      accountTutorId,
+      scope,
+    });
+
     return {
       invoices,
       linkedStudentsCount: scope.studentIds.length,
       scopedStudentId: studentId || null,
+      financialScoreContext,
     };
   }
 

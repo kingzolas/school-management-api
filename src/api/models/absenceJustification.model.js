@@ -39,6 +39,12 @@ const AbsenceJustificationSchema = new Schema({
     required: true,
     index: true
   },
+  requestId: {
+    type: Schema.Types.ObjectId,
+    ref: 'AbsenceJustificationRequest',
+    default: null,
+    index: true
+  },
   documentType: {
     type: String,
     enum: ['MEDICAL_CERTIFICATE', 'DECLARATION', 'COURT_ORDER', 'OTHER'],
