@@ -4,6 +4,8 @@ const controller = require('../controllers/registration-request.controller');
 const { verifyToken } = require('../middlewares/auth.middleware');
 
 // --- ROTA PÚBLICA (Link do WhatsApp/Site) ---
+router.get('/public/:schoolId/context', controller.getPublicContext);
+router.get('/public/:schoolId/classes', controller.listPublicClasses);
 router.post('/public/submit', controller.createRequest);
 
 // --- ROTAS PRIVADAS (Dashboard do Gestor) ---

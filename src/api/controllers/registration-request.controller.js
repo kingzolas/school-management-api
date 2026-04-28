@@ -1,6 +1,12 @@
 const service = require('../services/registration-request.service');
 const appEmitter = require('../../loaders/eventEmitter');
 
+const getStatusFromError = (error, fallback = 400) => {
+    if (error && error.statusCode) return error.statusCode;
+    if (error && error.name === 'ValidationError') return 400;
+    return fallback;
+};
+
 // --- [NOVO] Função Auxiliar para Normalizar Parentesco ---
 const normalizeRelationship = (tutors) => {
     if (!tutors || !Array.isArray(tutors)) return tutors;
@@ -29,6 +35,32 @@ const normalizeRelationship = (tutors) => {
 };
 // ---------------------------------------------------------
 
+exports.listPublicClasses = async (req, res) => {
+    try {
+        const { schoolId } = req.params;
+        const classes = await service.listPublicClasses(schoolId);
+        return res.json(classes);
+    } catch (error) {
+        console.error('Erro listPublicClasses:', error);
+        return res
+            .status(getStatusFromError(error, 500))
+            .json({ message: error.message || 'Erro ao buscar turmas disponiveis.' });
+    }
+};
+
+exports.getPublicContext = async (req, res) => {
+    try {
+        const { schoolId } = req.params;
+        const context = await service.getPublicContext(schoolId);
+        return res.json(context);
+    } catch (error) {
+        console.error('Erro getPublicContext:', error);
+        return res
+            .status(getStatusFromError(error, 500))
+            .json({ message: error.message || 'Erro ao buscar dados da escola.' });
+    }
+};
+
 exports.createRequest = async (req, res) => {
     try {
         const result = await service.createPublicRequest(req.body);
@@ -39,7 +71,9 @@ exports.createRequest = async (req, res) => {
         });
     } catch (error) {
         console.error('Erro createRequest:', error);
-        return res.status(500).json({ message: error.message || 'Erro ao processar solicitação.' });
+        return res
+            .status(getStatusFromError(error, 500))
+            .json({ message: error.message || 'Erro ao processar solicitacao.' });
     }
 };
 
@@ -72,18 +106,27 @@ exports.approveRequest = async (req, res) => {
     try {
         const { requestId } = req.params;
         const { schoolId, id: userId } = req.user;
-        let { finalStudentData, finalTutorData } = req.body;
+        let { finalStudentData, finalTutorData, finalSelectedClassId } = req.body;
 
         // [CORREÇÃO] Sanitização preventiva no Controller
         if (finalStudentData && finalStudentData.tutors) {
             finalStudentData.tutors = normalizeRelationship(finalStudentData.tutors);
         }
 
-        const result = await service.approveRequest(requestId, schoolId, userId, finalStudentData, finalTutorData);
+        const result = await service.approveRequest(
+            requestId,
+            schoolId,
+            userId,
+            finalStudentData,
+            finalTutorData,
+            { finalSelectedClassId }
+        );
         return res.json(result);
     } catch (error) {
         console.error('Erro approveRequest:', error);
-        return res.status(400).json({ message: error.message || 'Erro ao aprovar matrícula.' });
+        return res
+            .status(getStatusFromError(error, 400))
+            .json({ message: error.message || 'Erro ao aprovar matricula.' });
     }
 };
 

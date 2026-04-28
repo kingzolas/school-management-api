@@ -16,18 +16,58 @@ const studentAuthSchema = new Schema({
 const healthInfoSchema = new Schema({
     hasHealthProblem: { type: Boolean, default: false },
     healthProblemDetails: { type: String, default: '' },
+    hasHealthCondition: { type: Boolean, default: false },
+    healthConditionDetails: { type: String, default: '' },
     takesMedication: { type: Boolean, default: false },
     medicationDetails: { type: String, default: '' },
+    usesContinuousMedication: { type: Boolean, default: false },
+    continuousMedicationName: { type: String, default: '' },
+    continuousMedicationGuidance: { type: String, default: '' },
     hasDisability: { type: Boolean, default: false },
     disabilityDetails: { type: String, default: '' },
+    disabilities: { type: [String], default: [] },
+    accessibilityNeeds: { type: String, default: '' },
     hasAllergy: { type: Boolean, default: false },
     allergyDetails: { type: String, default: '' },
+    hasAllergies: { type: Boolean, default: false },
+    allergies: { type: [String], default: [] },
     hasMedicationAllergy: { type: Boolean, default: false },
     medicationAllergyDetails: { type: String, default: '' },
     hasVisionProblem: { type: Boolean, default: false },
     visionProblemDetails: { type: String, default: '' },
+    wearsGlasses: { type: Boolean, default: false },
+    usesGlassesDaily: { type: Boolean, default: false },
+    needsFrontSeat: { type: Boolean, default: false },
+    glassesUseDetails: { type: String, default: '' },
+    hasNeurodevelopmentalCondition: { type: Boolean, default: false },
+    neurodevelopmentalConditions: { type: [String], default: [] },
+    neurodevelopmentalDetails: { type: String, default: '' },
+    hasFoodRestriction: { type: Boolean, default: false },
+    foodRestrictions: { type: [String], default: [] },
+    foodRestrictionDetails: { type: String, default: '' },
+    emergencyContact: {
+        name: { type: String, default: '' },
+        phoneNumber: { type: String, default: '' },
+        relationship: { type: String, default: '' }
+    },
     feverMedication: { type: String, default: '' },
     foodObservations: { type: String, default: '' },
+    generalNotes: { type: String, default: '' },
+}, { _id: false });
+
+const parentContactSchema = new Schema({
+    fullName: { type: String, trim: true, default: '' },
+    cpf: { type: String, trim: true, default: '' },
+    rg: { type: String, trim: true, default: '' },
+    birthDate: { type: Date, default: null },
+    phoneNumber: { type: String, trim: true, default: '' },
+    email: { type: String, lowercase: true, trim: true, default: '' },
+    profession: { type: String, trim: true, default: '' },
+    relationship: { type: String, trim: true, default: '' },
+    isPrimaryResponsible: { type: Boolean, default: false },
+    notInRegistry: { type: Boolean, default: false },
+    authorizedPickup: { type: Boolean, default: false },
+    address: { type: addressSchema, default: undefined },
 }, { _id: false });
 
 const authorizedPickupSchema = new Schema({
@@ -79,6 +119,17 @@ const studentSchema = new Schema({
     
     rg: { type: String, sparse: true },
     cpf: { type: String, sparse: true }, 
+    mother_name: { type: String, trim: true, default: '' },
+    father_name: { type: String, trim: true, default: '' },
+    parents: {
+        mother: { type: parentContactSchema, default: undefined },
+        father: { type: parentContactSchema, default: undefined },
+    },
+    primaryResponsibleType: {
+        type: String,
+        enum: ['mother', 'father', 'other', null],
+        default: null,
+    },
     
     birthCertificateUrl: { type: String },
     address: { type: addressSchema, required: true },
