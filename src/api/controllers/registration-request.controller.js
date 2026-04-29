@@ -1,5 +1,6 @@
 const service = require('../services/registration-request.service');
 const appEmitter = require('../../loaders/eventEmitter');
+const AppNotificationService = require('../services/appNotification.service');
 
 const getStatusFromError = (error, fallback = 400) => {
     if (error && error.statusCode) return error.statusCode;
@@ -65,6 +66,13 @@ exports.createRequest = async (req, res) => {
     try {
         const result = await service.createPublicRequest(req.body);
         appEmitter.emit('registration:created', result);
+        AppNotificationService.createFromRealtimeEvent('registration:created', result).catch((error) => {
+            console.warn('[AppNotification] Falha ao persistir solicitação de matrícula', {
+                requestId: result?._id,
+                schoolId: result?.school_id,
+                error: error?.message || error,
+            });
+        });
         return res.status(201).json({ 
             message: 'Solicitação enviada com sucesso! Aguarde a aprovação.',
             requestId: result._id 

@@ -308,6 +308,52 @@ function buildDocumentGuardianNotification(eventName, payload) {
   };
 }
 
+function buildRegistrationStaffNotification(eventName, payload) {
+  if (eventName !== 'registration:created') return null;
+
+  const request = payload && typeof payload === 'object' ? payload : {};
+  const requestId = textValue(payload.requestId, request._id, request.id);
+  const studentData = request.studentData || {};
+  const tutorData = request.tutorData || {};
+  const selectedClass = request.selectedClassSnapshot || {};
+  const candidateName = textValue(studentData.fullName, payload.studentName, 'Aluno');
+  const className = textValue(
+    selectedClass.name,
+    studentData.intendedGrade,
+    payload.className
+  );
+  const responsibleName = textValue(tutorData.fullName, payload.responsibleName);
+  const summary = [
+    candidateName,
+    className,
+    responsibleName && `Responsavel: ${responsibleName}`,
+  ]
+    .filter(Boolean)
+    .join(' • ');
+
+  return {
+    audience: 'staff',
+    targetRoles: staffTargetsFrom(payload),
+    type: 'registration_request_created',
+    domain: 'academic',
+    priority: 'info',
+    title: 'Nova solicitação de matrícula',
+    summary: summary || 'Uma nova solicitação foi enviada pelo formulário público.',
+    routeKey: 'staff.registrationRequests',
+    entity: 'registration_request',
+    entityId: requestId,
+    threadKey: `registration:${requestId}`,
+    metadata: {
+      requestId,
+      studentName: candidateName,
+      className,
+      responsibleName,
+      sourceEvent: eventName,
+      action: 'open_registration_request_review',
+    },
+  };
+}
+
 function removeEmptyMetadata(metadata = {}) {
   return Object.fromEntries(
     Object.entries(metadata).filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== '')
@@ -320,6 +366,7 @@ function buildNotifications(eventName, payload) {
     buildAbsenceGuardianNotification(eventName, payload),
     buildDocumentStaffNotification(eventName, payload),
     buildDocumentGuardianNotification(eventName, payload),
+    buildRegistrationStaffNotification(eventName, payload),
   ].filter(Boolean);
 }
 
