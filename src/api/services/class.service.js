@@ -3,24 +3,133 @@ const Class = require('../models/class.model');
 const Enrollment = require('../models/enrollment.model'); 
 const mongoose = require('mongoose'); 
 
+const ACTIVE_CLASS_STATUSES = ['Planejada', 'Ativa'];
+const UNIQUE_CLASS_INDEX_NAME = 'unique_active_class_by_school_year_shift_name';
+let classUniquenessIndexPromise = null;
+
+function normalizeClassNameForComparison(value = '') {
+    return String(value)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[º°]/g, 'o')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase()
+        .replace(/\b(\d+)\s*o?\s*ano\b/g, '$1o ano');
+}
+
+function buildDuplicateClassError(classData, conflict) {
+    const conflictName = conflict?.name || classData.name;
+    const conflictShift = conflict?.shift || classData.shift;
+    const conflictYear = conflict?.schoolYear || classData.schoolYear;
+    const shiftText = conflictShift ? ` no turno ${conflictShift}` : '';
+    const error = new Error(`Já existe uma turma ${conflictName}${shiftText} para ${conflictYear}.`);
+    error.statusCode = 409;
+    return error;
+}
+
+async function ensureClassUniquenessIndex() {
+    if (!classUniquenessIndexPromise) {
+        classUniquenessIndexPromise = (async () => {
+            const indexes = await Class.collection.indexes();
+
+            for (const index of indexes) {
+                const key = index.key || {};
+                const isLegacyUniqueIndex =
+                    index.unique === true &&
+                    key.name === 1 &&
+                    key.schoolYear === 1 &&
+                    key.school_id === 1 &&
+                    !Object.prototype.hasOwnProperty.call(key, 'shift') &&
+                    index.name !== UNIQUE_CLASS_INDEX_NAME;
+
+                if (isLegacyUniqueIndex) {
+                    await Class.collection.dropIndex(index.name);
+                    console.log(`[ClassService] Índice legado de unicidade removido: ${index.name}`);
+                }
+            }
+
+            await Class.collection.createIndex(
+                { school_id: 1, schoolYear: 1, shift: 1, name: 1 },
+                {
+                    unique: true,
+                    collation: { locale: 'pt', strength: 2 },
+                    partialFilterExpression: {
+                        status: { $in: ACTIVE_CLASS_STATUSES }
+                    },
+                    name: UNIQUE_CLASS_INDEX_NAME
+                }
+            );
+        })().catch((error) => {
+            classUniquenessIndexPromise = null;
+            throw error;
+        });
+    }
+
+    return classUniquenessIndexPromise;
+}
+
 class ClassService {
+
+    async findClassConflict({ schoolId, classData, excludeId = null }) {
+        const status = classData.status || 'Ativa';
+        if (!ACTIVE_CLASS_STATUSES.includes(status)) {
+            return null;
+        }
+
+        const query = {
+            school_id: schoolId,
+            schoolYear: Number(classData.schoolYear),
+            shift: classData.shift,
+            status: { $in: ACTIVE_CLASS_STATUSES }
+        };
+
+        if (excludeId) {
+            query._id = { $ne: excludeId };
+        }
+
+        const sameContextClasses = await Class.find(query)
+            .select('name schoolYear shift status')
+            .collation({ locale: 'pt', strength: 2 });
+
+        const normalizedName = normalizeClassNameForComparison(classData.name);
+        return sameContextClasses.find((classDoc) =>
+            normalizeClassNameForComparison(classDoc.name) === normalizedName
+        ) || null;
+    }
 
     /**
      * [MODIFICADO] Cria uma nova turma, vinculada à escola.
      */
     async createClass(classData, schoolId) {
         try {
+            await ensureClassUniquenessIndex();
+
+            const normalizedClassData = {
+                ...classData,
+                name: classData.name?.trim(),
+                grade: classData.grade?.trim(),
+                room: classData.room?.trim()
+            };
+
+            const conflict = await this.findClassConflict({
+                schoolId,
+                classData: normalizedClassData
+            });
+            if (conflict) {
+                throw buildDuplicateClassError(normalizedClassData, conflict);
+            }
+
             // [MODIFICADO] Adiciona o school_id aos dados
             const newClass = new Class({
-                ...classData,
+                ...normalizedClassData,
                 school_id: schoolId
             });
             await newClass.save();
             return newClass;
         } catch (error) {
             if (error.code === 11000) {
-                // [MODIFICADO] Mensagem de erro mais específica
-                throw new Error(`Turma '${classData.name}' já existe para o ano letivo ${classData.schoolYear} nesta escola.`);
+                throw buildDuplicateClassError(classData);
             }
             throw error;
         }
@@ -121,29 +230,48 @@ class ClassService {
      * [MODIFICADO] Atualiza os dados de uma turma, garantindo que pertença à escola.
      */
     async updateClass(id, updateData, schoolId) {
-        // [MODIFICADO] Checagem de unicidade agora inclui school_id
-        if (updateData.name || updateData.schoolYear) {
-             const classDoc = await Class.findOne({ _id: id, school_id: schoolId }); 
-             if (!classDoc) {
-                 throw new Error(`Turma com ID ${id} não encontrada nesta escola.`);
-             }
-             const existing = await Class.findOne({
-                 _id: { $ne: id },
-                 name: updateData.name || classDoc.name,
-                 schoolYear: updateData.schoolYear || classDoc.schoolYear,
-                 school_id: schoolId // Checa na mesma escola
-              });
-             if (existing) {
-                 throw new Error(`Já existe outra turma '${existing.name}' para o ano letivo ${existing.schoolYear} nesta escola.`);
-             }
+        await ensureClassUniquenessIndex();
+
+        const classDoc = await Class.findOne({ _id: id, school_id: schoolId });
+        if (!classDoc) {
+            throw new Error(`Turma com ID ${id} não encontrada nesta escola.`);
+        }
+
+        const normalizedUpdateData = {
+            ...updateData,
+            ...(updateData.name !== undefined ? { name: updateData.name?.trim() } : {}),
+            ...(updateData.grade !== undefined ? { grade: updateData.grade?.trim() } : {}),
+            ...(updateData.room !== undefined ? { room: updateData.room?.trim() } : {})
+        };
+
+        const nextClassData = {
+            ...classDoc.toObject(),
+            ...normalizedUpdateData
+        };
+
+        const conflict = await this.findClassConflict({
+            schoolId,
+            classData: nextClassData,
+            excludeId: id
+        });
+        if (conflict) {
+            throw buildDuplicateClassError(nextClassData, conflict);
         }
 
         // [MODIFICADO] Atualiza usando findOneAndUpdate com school_id
-        const updatedClass = await Class.findOneAndUpdate(
-            { _id: id, school_id: schoolId }, // Condição
-            updateData, // Dados
-            { new: true, runValidators: true } // Opções
-        );
+        let updatedClass;
+        try {
+            updatedClass = await Class.findOneAndUpdate(
+                { _id: id, school_id: schoolId }, // Condição
+                normalizedUpdateData, // Dados
+                { new: true, runValidators: true } // Opções
+            );
+        } catch (error) {
+            if (error.code === 11000) {
+                throw buildDuplicateClassError(nextClassData);
+            }
+            throw error;
+        }
 
         if (!updatedClass) {
             throw new Error(`Turma com ID ${id} não encontrada nesta escola.`);

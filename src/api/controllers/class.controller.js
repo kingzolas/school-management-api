@@ -22,6 +22,9 @@ class ClassController {
             console.log(`📡 EVENTO EMITIDO: class:created para a turma ${newClass.name} (${newClass.schoolYear})`);
             res.status(201).json(newClass);
         } catch (error) {
+            if (error.statusCode) {
+                 return res.status(error.statusCode).json({ message: error.message });
+            }
             console.error('❌ ERRO [ClassController.create]:', error.message);
             if (error.message.includes('não autenticado')) {
                  return res.status(403).json({ message: error.message });
@@ -76,6 +79,9 @@ class ClassController {
             console.log(`📡 EVENTO EMITIDO: class:updated para a turma ${updatedClass.name} (${updatedClass.schoolYear})`);
             res.status(200).json(updatedClass);
         } catch (error) {
+            if (error.statusCode) {
+                 return res.status(error.statusCode).json({ message: error.message });
+            }
             console.error(`❌ ERRO [ClassController.update ${req.params.id}]:`, error.message);
              if (error.message.includes('não autenticado')) {
                  return res.status(403).json({ message: error.message });

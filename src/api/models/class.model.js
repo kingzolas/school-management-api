@@ -74,10 +74,17 @@ const classSchema = new Schema({
     },
 }, { timestamps: true });
 
-// [MODIFICADO] Índice de unicidade agora inclui a escola
+// Unicidade para turmas ativas/validas: mesma escola, ano, turno e nome.
 classSchema.index(
-    { name: 1, schoolYear: 1, school_id: 1 }, 
-    { unique: true, collation: { locale: 'pt', strength: 2 } }
+    { school_id: 1, schoolYear: 1, shift: 1, name: 1 },
+    {
+        unique: true,
+        collation: { locale: 'pt', strength: 2 },
+        partialFilterExpression: {
+            status: { $in: ['Planejada', 'Ativa'] }
+        },
+        name: 'unique_active_class_by_school_year_shift_name'
+    }
 );
 
 const Class = mongoose.model('Class', classSchema);
