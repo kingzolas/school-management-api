@@ -774,6 +774,28 @@ class RegistrationRequestService {
         options.finalPermanenceClassId || request.requestedPermanenceClassId || null;
       let permanenceClass = null;
       let permanenceClassSnapshot = undefined;
+      const permanenceClassMode = selectedOffer?.offer?.permanenceClassMode || 'none';
+
+      if (requestedPermanenceClassId && !selectedOffer) {
+        throw createHttpError(
+          'Turma de permanencia so pode ser informada quando houver oferta de permanencia.',
+          400
+        );
+      }
+
+      if (selectedOffer && permanenceClassMode === 'required' && !requestedPermanenceClassId) {
+        throw createHttpError(
+          'Selecione uma turma de permanencia para aprovar esta matricula.',
+          400
+        );
+      }
+
+      if (selectedOffer && permanenceClassMode === 'none' && requestedPermanenceClassId) {
+        throw createHttpError(
+          'Esta oferta nao usa turma de permanencia no contraturno.',
+          400
+        );
+      }
 
       if (requestedPermanenceClassId) {
         permanenceClass = await enrollmentOfferService.getPermanenceClassOrThrow(

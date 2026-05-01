@@ -70,6 +70,7 @@ function buildOfferSnapshot(offer) {
     endTime: offer.endTime || null,
     monthlyFee: offer.monthlyFee,
     pricingMode: offer.pricingMode,
+    permanenceClassMode: offer.permanenceClassMode || 'none',
   };
 }
 
@@ -405,7 +406,12 @@ class EnrollmentOfferService {
 
   async getPermanenceClassOrThrow(classId, schoolId) {
     if (!classId) return null;
-    return this._getClassOrThrow(classId, schoolId, 'Turma de permanencia nao encontrada nesta escola.');
+    const classDoc = await this._getClassOrThrow(classId, schoolId, 'Turma de permanencia nao encontrada nesta escola.');
+    const status = String(classDoc.status || '').trim().toLowerCase();
+    if (status && status !== 'ativa' && status !== 'active') {
+      throw createHttpError('A turma de permanencia selecionada nao esta ativa.', 400);
+    }
+    return classDoc;
   }
 }
 
