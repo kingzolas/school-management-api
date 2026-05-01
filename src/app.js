@@ -8,6 +8,7 @@ const tutorRoutes = require('./api/routes/tutor.routes');
 const studentRoutes = require('./api/routes/student.routes');
 const classRoutes = require('./api/routes/class.routes');
 const enrollmentRoutes = require('./api/routes/enrollment.routes');
+const enrollmentOfferRoutes = require('./api/routes/enrollmentOffer.routes');
 const subjectRoutes = require('./api/routes/subject.routes');
 const horarioRoutes = require('./api/routes/horario.routes');
 const eventoRoutes = require('./api/routes/evento.routes');
@@ -109,6 +110,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/tutors', tutorRoutes);
 app.use('/api/classes', classRoutes);
 app.use('/api/enrollments', enrollmentRoutes);
+app.use('/api/enrollment-offers', enrollmentOfferRoutes);
 app.use('/api/subjects', subjectRoutes);
 app.use('/api/registration-requests', registrationRequestRoutes);
 app.use('/api/attendance', attendanceRoutes); // [ADICIONADO - Rota de Frequência]

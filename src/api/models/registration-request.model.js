@@ -33,6 +33,22 @@ const emergencyContactSchema = new Schema({
     relationship: String
 }, { _id: false });
 
+const enrollmentOfferSnapshotSchema = new Schema({
+    name: String,
+    type: String,
+    startTime: String,
+    endTime: String,
+    monthlyFee: Number,
+    pricingMode: String
+}, { _id: false });
+
+const permanenceClassSnapshotSchema = new Schema({
+    name: String,
+    shift: String,
+    startTime: String,
+    endTime: String
+}, { _id: false });
+
 const registrationRequestSchema = new Schema({
     // ... campos padrão (school_id, status, type) ...
     school_id: { type: Schema.Types.ObjectId, ref: 'School', required: true, index: true },
@@ -48,6 +64,42 @@ const registrationRequestSchema = new Schema({
         startTime: String,
         endTime: String,
         monthlyFee: Number
+    },
+    selectedEnrollmentOfferId: {
+        type: Schema.Types.ObjectId,
+        ref: 'EnrollmentOffer',
+        required: false,
+        index: true
+    },
+    selectedEnrollmentOfferSnapshot: {
+        type: enrollmentOfferSnapshotSchema,
+        default: undefined
+    },
+    requestedRegime: {
+        type: String,
+        enum: [
+            'regular',
+            'full_time',
+            'extended_stay',
+            'complementary_activity',
+            'reinforcement',
+            'other',
+            null
+        ],
+        default: null
+    },
+    requestedPermanenceClassId: {
+        type: Schema.Types.ObjectId,
+        ref: 'Class',
+        required: false
+    },
+    requestedPermanenceClassSnapshot: {
+        type: permanenceClassSnapshotSchema,
+        default: undefined
+    },
+    permanenceNotes: {
+        type: String,
+        trim: true
     },
     origin: { type: String, trim: true },
     onlyMinors: { type: Boolean },

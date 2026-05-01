@@ -49,6 +49,20 @@ exports.listPublicClasses = async (req, res) => {
     }
 };
 
+exports.listPublicOffers = async (req, res) => {
+    try {
+        const { schoolId } = req.params;
+        const { classId } = req.query;
+        const offers = await service.listPublicOffers(schoolId, classId);
+        return res.json(offers);
+    } catch (error) {
+        console.error('Erro listPublicOffers:', error);
+        return res
+            .status(getStatusFromError(error, 500))
+            .json({ message: error.message || 'Erro ao buscar ofertas disponiveis.' });
+    }
+};
+
 exports.getPublicContext = async (req, res) => {
     try {
         const { schoolId } = req.params;
@@ -114,7 +128,14 @@ exports.approveRequest = async (req, res) => {
     try {
         const { requestId } = req.params;
         const { schoolId, id: userId } = req.user;
-        let { finalStudentData, finalTutorData, finalSelectedClassId } = req.body;
+        let {
+            finalStudentData,
+            finalTutorData,
+            finalSelectedClassId,
+            finalSelectedEnrollmentOfferId,
+            finalPermanenceClassId,
+            permanenceNotes,
+        } = req.body;
 
         // [CORREÇÃO] Sanitização preventiva no Controller
         if (finalStudentData && finalStudentData.tutors) {
@@ -127,7 +148,12 @@ exports.approveRequest = async (req, res) => {
             userId,
             finalStudentData,
             finalTutorData,
-            { finalSelectedClassId }
+            {
+                finalSelectedClassId,
+                finalSelectedEnrollmentOfferId,
+                finalPermanenceClassId,
+                permanenceNotes,
+            }
         );
         return res.json(result);
     } catch (error) {

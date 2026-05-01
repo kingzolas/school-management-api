@@ -2,6 +2,22 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
+const enrollmentOfferSnapshotSchema = new Schema({
+    name: String,
+    type: String,
+    startTime: String,
+    endTime: String,
+    monthlyFee: Number,
+    pricingMode: String,
+}, { _id: false });
+
+const permanenceClassSnapshotSchema = new Schema({
+    name: String,
+    shift: String,
+    startTime: String,
+    endTime: String,
+}, { _id: false });
+
 const enrollmentSchema = new Schema({
     student: { 
         type: Schema.Types.ObjectId,
@@ -35,6 +51,44 @@ const enrollmentSchema = new Schema({
     agreedFee: { 
         type: Number,
         required: true
+    },
+    enrollmentRegime: {
+        type: String,
+        enum: [
+            'regular',
+            'full_time',
+            'extended_stay',
+            'complementary_activity',
+            'reinforcement',
+            'other'
+        ],
+        default: 'regular',
+        index: true
+    },
+    enrollmentOfferId: {
+        type: Schema.Types.ObjectId,
+        ref: 'EnrollmentOffer',
+        default: null,
+        index: true
+    },
+    enrollmentOfferSnapshot: {
+        type: enrollmentOfferSnapshotSchema,
+        default: undefined
+    },
+    permanenceClassId: {
+        type: Schema.Types.ObjectId,
+        ref: 'Class',
+        default: null,
+        index: true
+    },
+    permanenceClassSnapshot: {
+        type: permanenceClassSnapshotSchema,
+        default: undefined
+    },
+    permanenceNotes: {
+        type: String,
+        trim: true,
+        default: ''
     },
     status: { 
         type: String,

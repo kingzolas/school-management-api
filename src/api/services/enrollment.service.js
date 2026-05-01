@@ -1,6 +1,7 @@
 const Enrollment = require('../models/enrollment.model');
 const Student = require('../models/student.model');
 const Class = require('../models/class.model');
+const enrollmentOfferService = require('./enrollmentOffer.service');
 const {
   ensureClassAccess,
   getAccessibleClassIds,
@@ -14,6 +15,14 @@ const defaultPopulation = [
   },
   {
     path: 'class',
+    select: 'name schoolYear grade shift',
+  },
+  {
+    path: 'enrollmentOfferId',
+    select: 'name type monthlyFee pricingMode startTime endTime permanenceClassMode',
+  },
+  {
+    path: 'permanenceClassId',
     select: 'name schoolYear grade shift',
   },
 ];
@@ -32,7 +41,14 @@ function normalizeFilter(filter = {}) {
 
 class EnrollmentService {
   async createEnrollment(enrollmentData, schoolId) {
-    const { studentId, classId, agreedFee } = enrollmentData;
+    const {
+      studentId,
+      classId,
+      agreedFee,
+      enrollmentOfferId,
+      permanenceClassId,
+      permanenceNotes,
+    } = enrollmentData;
 
     const student = await Student.findOne({ _id: studentId, school_id: schoolId });
     if (!student) {
@@ -74,8 +90,32 @@ class EnrollmentService {
       }
     }
 
-    const fee =
-      agreedFee !== undefined && agreedFee !== null ? agreedFee : classDoc.monthlyFee;
+    let selectedOffer = null;
+    if (enrollmentOfferId) {
+      selectedOffer = await enrollmentOfferService.getApplicableOfferOrThrow({
+        offerId: enrollmentOfferId,
+        schoolId,
+        classId,
+        publicOnly: false,
+      });
+    }
+
+    let permanenceClass = null;
+    let permanenceClassSnapshot = undefined;
+    if (permanenceClassId) {
+      permanenceClass = await enrollmentOfferService.getPermanenceClassOrThrow(
+        permanenceClassId,
+        schoolId
+      );
+      permanenceClassSnapshot = enrollmentOfferService.buildPermanenceClassSnapshot(
+        permanenceClass
+      );
+    }
+
+    const fee = selectedOffer
+      ? enrollmentOfferService.calculateAgreedFee(classDoc, selectedOffer.offer)
+      : (agreedFee !== undefined && agreedFee !== null ? agreedFee : classDoc.monthlyFee);
+
     if (fee < 0) {
       throw new Error('A mensalidade acordada nao pode ser negativa.');
     }
@@ -86,6 +126,12 @@ class EnrollmentService {
       academicYear: classDoc.schoolYear,
       agreedFee: fee,
       school_id: schoolId,
+      enrollmentRegime: selectedOffer?.requestedRegime || 'regular',
+      enrollmentOfferId: selectedOffer?.offer?._id || undefined,
+      enrollmentOfferSnapshot: selectedOffer?.snapshot || undefined,
+      permanenceClassId: permanenceClass?._id || undefined,
+      permanenceClassSnapshot,
+      permanenceNotes: permanenceNotes ? String(permanenceNotes).trim() : '',
     });
 
     await newEnrollment.save();

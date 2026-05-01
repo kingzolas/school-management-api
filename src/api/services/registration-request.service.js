@@ -5,6 +5,7 @@ const Tutor = require('../models/tutor.model');
 const Class = require('../models/class.model');
 const Enrollment = require('../models/enrollment.model');
 const School = require('../models/school.model');
+const enrollmentOfferService = require('./enrollmentOffer.service');
 const {
   isValidCpf,
   normalizeCpf,
@@ -503,6 +504,10 @@ class RegistrationRequestService {
     return publicClasses;
   }
 
+  async listPublicOffers(schoolId, classId = null) {
+    return enrollmentOfferService.listPublicOffers(schoolId, classId);
+  }
+
   async getPublicContext(schoolId) {
     if (!schoolId || !isObjectId(schoolId)) {
       throw createHttpError('Escola nao encontrada.', 404);
@@ -529,6 +534,9 @@ class RegistrationRequestService {
       studentData,
       tutorData,
       selectedClassId,
+      selectedEnrollmentOfferId,
+      requestedPermanenceClassId,
+      permanenceNotes,
       origin,
       onlyMinors,
     } = data;
@@ -552,6 +560,28 @@ class RegistrationRequestService {
       selectedClass = await this._getSelectableClassOrThrow(selectedClassId, school_id);
     }
 
+    if (selectedEnrollmentOfferId && !selectedClass) {
+      throw createHttpError('Selecione uma turma antes de escolher a oferta.', 400);
+    }
+
+    let selectedOffer = null;
+    if (selectedEnrollmentOfferId) {
+      selectedOffer = await enrollmentOfferService.getApplicableOfferOrThrow({
+        offerId: selectedEnrollmentOfferId,
+        schoolId: school_id,
+        classId: selectedClass.classDoc._id,
+        publicOnly: true,
+      });
+    }
+
+    let requestedPermanenceClass = null;
+    if (requestedPermanenceClassId) {
+      requestedPermanenceClass = await enrollmentOfferService.getPermanenceClassOrThrow(
+        requestedPermanenceClassId,
+        school_id
+      );
+    }
+
     const newRequest = new RegistrationRequest({
       school_id,
       registrationType,
@@ -559,6 +589,14 @@ class RegistrationRequestService {
       tutorData: normalizedTutorData,
       selectedClassId: selectedClass?.classDoc?._id || undefined,
       selectedClassSnapshot: selectedClass?.snapshot || undefined,
+      selectedEnrollmentOfferId: selectedOffer?.offer?._id || undefined,
+      selectedEnrollmentOfferSnapshot: selectedOffer?.snapshot || undefined,
+      requestedRegime: selectedOffer?.requestedRegime || 'regular',
+      requestedPermanenceClassId: requestedPermanenceClass?._id || undefined,
+      requestedPermanenceClassSnapshot: requestedPermanenceClass
+        ? enrollmentOfferService.buildPermanenceClassSnapshot(requestedPermanenceClass)
+        : undefined,
+      permanenceNotes: normalizeOptionalString(permanenceNotes),
       origin,
       onlyMinors,
       status: 'PENDING',
@@ -612,7 +650,7 @@ class RegistrationRequestService {
     });
   }
 
-  async _createEnrollmentForApprovedRequest(student, classDoc, schoolId) {
+  async _createEnrollmentForApprovedRequest(student, classDoc, schoolId, options = {}) {
     const existingEnrollment = await Enrollment.findOne({
       student: student._id,
       academicYear: classDoc.schoolYear,
@@ -638,12 +676,23 @@ class RegistrationRequestService {
       throw createHttpError('Turma indisponivel para novas matriculas.', 409);
     }
 
+    const enrollmentOffer = options.enrollmentOffer || null;
+    const permanenceClass = options.permanenceClass || null;
+    const enrollmentRegime = options.enrollmentRegime || 'regular';
+    const agreedFee = enrollmentOfferService.calculateAgreedFee(classDoc, enrollmentOffer);
+
     const enrollment = new Enrollment({
       student: student._id,
       class: classDoc._id,
       academicYear: classDoc.schoolYear,
-      agreedFee: classDoc.monthlyFee,
+      agreedFee,
       school_id: schoolId,
+      enrollmentRegime,
+      enrollmentOfferId: enrollmentOffer?._id || undefined,
+      enrollmentOfferSnapshot: options.enrollmentOfferSnapshot || undefined,
+      permanenceClassId: permanenceClass?._id || undefined,
+      permanenceClassSnapshot: options.permanenceClassSnapshot || undefined,
+      permanenceNotes: normalizeOptionalString(options.permanenceNotes) || '',
       status: 'Ativa',
     });
 
@@ -702,6 +751,38 @@ class RegistrationRequestService {
 
       if (selectedClassId) {
         selectedClass = await this._getSelectableClassOrThrow(selectedClassId, schoolId);
+      }
+
+      const selectedOfferId =
+        options.finalSelectedEnrollmentOfferId || request.selectedEnrollmentOfferId || null;
+      let selectedOffer = null;
+
+      if (selectedOfferId) {
+        if (!selectedClass) {
+          throw createHttpError('Selecione uma turma antes de aprovar a oferta.', 400);
+        }
+
+        selectedOffer = await enrollmentOfferService.getApplicableOfferOrThrow({
+          offerId: selectedOfferId,
+          schoolId,
+          classId: selectedClass.classDoc._id,
+          publicOnly: false,
+        });
+      }
+
+      const requestedPermanenceClassId =
+        options.finalPermanenceClassId || request.requestedPermanenceClassId || null;
+      let permanenceClass = null;
+      let permanenceClassSnapshot = undefined;
+
+      if (requestedPermanenceClassId) {
+        permanenceClass = await enrollmentOfferService.getPermanenceClassOrThrow(
+          requestedPermanenceClassId,
+          schoolId
+        );
+        permanenceClassSnapshot = enrollmentOfferService.buildPermanenceClassSnapshot(
+          permanenceClass
+        );
       }
 
       const currentYear = new Date().getFullYear();
@@ -763,7 +844,18 @@ class RegistrationRequestService {
           createdEnrollment = await this._createEnrollmentForApprovedRequest(
             createdStudent,
             selectedClass.classDoc,
-            schoolId
+            schoolId,
+            {
+              enrollmentOffer: selectedOffer?.offer || null,
+              enrollmentOfferSnapshot: selectedOffer?.snapshot || undefined,
+              enrollmentRegime: selectedOffer?.requestedRegime || 'regular',
+              permanenceClass,
+              permanenceClassSnapshot,
+              permanenceNotes:
+                options.permanenceNotes !== undefined
+                  ? options.permanenceNotes
+                  : request.permanenceNotes,
+            }
           );
         } catch (error) {
           throw createHttpError(
@@ -775,6 +867,23 @@ class RegistrationRequestService {
         request.selectedClassId = selectedClass.classDoc._id;
         request.selectedClassSnapshot = selectedClass.snapshot;
         request.markModified('selectedClassSnapshot');
+
+        if (selectedOffer) {
+          request.selectedEnrollmentOfferId = selectedOffer.offer._id;
+          request.selectedEnrollmentOfferSnapshot = selectedOffer.snapshot;
+          request.requestedRegime = selectedOffer.requestedRegime;
+          request.markModified('selectedEnrollmentOfferSnapshot');
+        }
+
+        if (permanenceClass) {
+          request.requestedPermanenceClassId = permanenceClass._id;
+          request.requestedPermanenceClassSnapshot = permanenceClassSnapshot;
+          request.markModified('requestedPermanenceClassSnapshot');
+        }
+
+        if (options.permanenceNotes !== undefined) {
+          request.permanenceNotes = normalizeOptionalString(options.permanenceNotes);
+        }
       }
 
       request.status = 'APPROVED';
