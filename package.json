@@ -10,6 +10,7 @@
     "seed": "node src/seed.js",
     "test": "node --test src/tests",
     "guardian:eligibility-report": "node src/scripts/reportGuardianAccessEligibility.js",
+    "classes:fix-indexes": "node src/scripts/fixClassIndexes.js",
     "gmail:bootstrap": "node src/scripts/bootstrapGmailOAuth.js",
     "gmail:validate": "node src/scripts/validateGmailProvider.js",
     "gmail:test-send": "node src/scripts/sendControlledGmailTest.js",

@@ -5,7 +5,116 @@ const mongoose = require('mongoose');
 
 const ACTIVE_CLASS_STATUSES = ['Planejada', 'Ativa'];
 const UNIQUE_CLASS_INDEX_NAME = 'unique_active_class_by_school_year_shift_name';
+const UNIQUE_CLASS_INDEX_KEY = { school_id: 1, schoolYear: 1, shift: 1, name: 1 };
+const UNIQUE_CLASS_INDEX_PARTIAL_FILTER = { status: { $in: ACTIVE_CLASS_STATUSES } };
+const UNIQUE_CLASS_INDEX_COLLATION = { locale: 'pt', strength: 2 };
 let classUniquenessIndexPromise = null;
+
+function resetClassUniquenessIndexCache() {
+    classUniquenessIndexPromise = null;
+}
+
+function stableStringify(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(stableStringify).join(',')}]`;
+    }
+
+    if (value && typeof value === 'object') {
+        return `{${Object.keys(value)
+            .sort()
+            .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+            .join(',')}}`;
+    }
+
+    return JSON.stringify(value);
+}
+
+function sameObject(left = {}, right = {}) {
+    return stableStringify(left) === stableStringify(right);
+}
+
+function indexHasCorrectKey(index) {
+    return sameObject(index?.key || {}, UNIQUE_CLASS_INDEX_KEY);
+}
+
+function indexHasCorrectPartialFilter(index) {
+    return sameObject(index?.partialFilterExpression || {}, UNIQUE_CLASS_INDEX_PARTIAL_FILTER);
+}
+
+function indexHasCorrectCollation(index) {
+    const collation = index?.collation || {};
+    return collation.locale === UNIQUE_CLASS_INDEX_COLLATION.locale &&
+        collation.strength === UNIQUE_CLASS_INDEX_COLLATION.strength;
+}
+
+function isCorrectClassUniquenessIndex(index) {
+    return index?.unique === true &&
+        indexHasCorrectKey(index) &&
+        indexHasCorrectPartialFilter(index) &&
+        indexHasCorrectCollation(index);
+}
+
+function isClassUniquenessCandidate(index) {
+    const key = index?.key || {};
+    return index?.unique === true && key.name === 1 && key.schoolYear === 1;
+}
+
+function isLegacyOrIncorrectClassUniquenessIndex(index) {
+    return isClassUniquenessCandidate(index) && !isCorrectClassUniquenessIndex(index);
+}
+
+function getDuplicateIndexName(error) {
+    if (error?.index) return error.index;
+
+    const message = error?.message || error?.errmsg || '';
+    const match = message.match(/index:\s+([^\s]+)/i);
+    return match ? match[1] : null;
+}
+
+function classifyClassDuplicateKeyError(error) {
+    const keyPattern = error?.keyPattern || {};
+    const indexName = getDuplicateIndexName(error);
+
+    if (sameObject(keyPattern, UNIQUE_CLASS_INDEX_KEY) || indexName === UNIQUE_CLASS_INDEX_NAME) {
+        return 'correct';
+    }
+
+    if (keyPattern.name === 1 && keyPattern.schoolYear === 1) {
+        return 'legacy';
+    }
+
+    return 'unknown';
+}
+
+function logDuplicateClassIndexError({ error, classData, schoolId, operation }) {
+    console.error('[ClassService] Duplicate key while saving class', {
+        operation,
+        indexName: getDuplicateIndexName(error),
+        indexKind: classifyClassDuplicateKeyError(error),
+        keyPattern: error?.keyPattern || null,
+        keyValue: error?.keyValue || null,
+        schoolId: schoolId ? String(schoolId) : null,
+        className: classData?.name,
+        classShift: classData?.shift,
+        schoolYear: classData?.schoolYear
+    });
+}
+
+function buildUnsafeIndexConflictError() {
+    const error = new Error('Não foi possível salvar a turma por conflito de índice no banco de dados. Verifique os índices da collection de turmas.');
+    error.statusCode = 409;
+    return error;
+}
+
+function buildDuplicateKeyClassError({ error, classData, schoolId, operation }) {
+    logDuplicateClassIndexError({ error, classData, schoolId, operation });
+
+    if (classifyClassDuplicateKeyError(error) === 'correct') {
+        return buildDuplicateClassError(classData);
+    }
+
+    return buildUnsafeIndexConflictError();
+}
 
 function normalizeClassNameForComparison(value = '') {
     return String(value)
@@ -32,34 +141,43 @@ async function ensureClassUniquenessIndex() {
     if (!classUniquenessIndexPromise) {
         classUniquenessIndexPromise = (async () => {
             const indexes = await Class.collection.indexes();
+            const legacyIndexes = indexes.filter(isLegacyOrIncorrectClassUniquenessIndex);
 
-            for (const index of indexes) {
-                const key = index.key || {};
-                const isLegacyUniqueIndex =
-                    index.unique === true &&
-                    key.name === 1 &&
-                    key.schoolYear === 1 &&
-                    key.school_id === 1 &&
-                    !Object.prototype.hasOwnProperty.call(key, 'shift') &&
-                    index.name !== UNIQUE_CLASS_INDEX_NAME;
-
-                if (isLegacyUniqueIndex) {
-                    await Class.collection.dropIndex(index.name);
-                    console.log(`[ClassService] Índice legado de unicidade removido: ${index.name}`);
-                }
+            if (legacyIndexes.length > 0) {
+                console.warn('[ClassService] Indices legados/incorretos de unicidade de turmas detectados. Rode o script controlado: npm run classes:fix-indexes -- --apply', {
+                    indexes: legacyIndexes.map((index) => ({
+                        name: index.name,
+                        key: index.key,
+                        unique: index.unique,
+                        partialFilterExpression: index.partialFilterExpression || null
+                    }))
+                });
             }
 
-            await Class.collection.createIndex(
-                { school_id: 1, schoolYear: 1, shift: 1, name: 1 },
-                {
-                    unique: true,
-                    collation: { locale: 'pt', strength: 2 },
-                    partialFilterExpression: {
-                        status: { $in: ACTIVE_CLASS_STATUSES }
-                    },
-                    name: UNIQUE_CLASS_INDEX_NAME
-                }
+            const correctIndex = indexes.find(isCorrectClassUniquenessIndex);
+            if (correctIndex) {
+                return;
+            }
+
+            const sameKeyWrongIndex = indexes.find((index) =>
+                indexHasCorrectKey(index) && !isCorrectClassUniquenessIndex(index)
             );
+            if (sameKeyWrongIndex) {
+                console.warn('[ClassService] Indice de turmas com chave correta, mas opcoes incorretas. Rode o script controlado para revisao.', {
+                    name: sameKeyWrongIndex.name,
+                    key: sameKeyWrongIndex.key,
+                    unique: sameKeyWrongIndex.unique,
+                    partialFilterExpression: sameKeyWrongIndex.partialFilterExpression || null
+                });
+                return;
+            }
+
+            await Class.collection.createIndex(UNIQUE_CLASS_INDEX_KEY, {
+                unique: true,
+                collation: UNIQUE_CLASS_INDEX_COLLATION,
+                partialFilterExpression: UNIQUE_CLASS_INDEX_PARTIAL_FILTER,
+                name: UNIQUE_CLASS_INDEX_NAME
+            });
         })().catch((error) => {
             classUniquenessIndexPromise = null;
             throw error;
@@ -72,6 +190,10 @@ async function ensureClassUniquenessIndex() {
 class ClassService {
 
     async findClassConflict({ schoolId, classData, excludeId = null }) {
+        if (!schoolId) {
+            throw new Error('Usuário não autenticado ou não associado a uma escola.');
+        }
+
         const status = classData.status || 'Ativa';
         if (!ACTIVE_CLASS_STATUSES.includes(status)) {
             return null;
@@ -102,10 +224,11 @@ class ClassService {
      * [MODIFICADO] Cria uma nova turma, vinculada à escola.
      */
     async createClass(classData, schoolId) {
+        let normalizedClassData;
         try {
             await ensureClassUniquenessIndex();
 
-            const normalizedClassData = {
+            normalizedClassData = {
                 ...classData,
                 name: classData.name?.trim(),
                 grade: classData.grade?.trim(),
@@ -129,7 +252,12 @@ class ClassService {
             return newClass;
         } catch (error) {
             if (error.code === 11000) {
-                throw buildDuplicateClassError(classData);
+                throw buildDuplicateKeyClassError({
+                    error,
+                    classData: normalizedClassData || classData,
+                    schoolId,
+                    operation: 'create'
+                });
             }
             throw error;
         }
@@ -268,7 +396,12 @@ class ClassService {
             );
         } catch (error) {
             if (error.code === 11000) {
-                throw buildDuplicateClassError(nextClassData);
+                throw buildDuplicateKeyClassError({
+                    error,
+                    classData: nextClassData,
+                    schoolId,
+                    operation: 'update'
+                });
             }
             throw error;
         }
@@ -304,4 +437,15 @@ class ClassService {
     }
 }
 
-module.exports = new ClassService();
+const classService = new ClassService();
+
+module.exports = classService;
+module.exports.ClassService = ClassService;
+module.exports.ACTIVE_CLASS_STATUSES = ACTIVE_CLASS_STATUSES;
+module.exports.UNIQUE_CLASS_INDEX_NAME = UNIQUE_CLASS_INDEX_NAME;
+module.exports.UNIQUE_CLASS_INDEX_KEY = UNIQUE_CLASS_INDEX_KEY;
+module.exports.normalizeClassNameForComparison = normalizeClassNameForComparison;
+module.exports.classifyClassDuplicateKeyError = classifyClassDuplicateKeyError;
+module.exports.isCorrectClassUniquenessIndex = isCorrectClassUniquenessIndex;
+module.exports.isLegacyOrIncorrectClassUniquenessIndex = isLegacyOrIncorrectClassUniquenessIndex;
+module.exports.resetClassUniquenessIndexCache = resetClassUniquenessIndexCache;
