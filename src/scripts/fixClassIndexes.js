@@ -183,11 +183,15 @@ async function runFixClassIndexes({ dryRun = true } = {}) {
 
   await mongoose.connect(process.env.MONGO_URI);
   const collection = mongoose.connection.collection(CLASSES_COLLECTION);
+  const databaseName = mongoose.connection.name;
 
   try {
     const indexes = await collection.indexes();
     const legacyIndexes = indexes.filter(isLegacyOrIncorrectClassUniqueIndex);
+    const documentCountBefore = await collection.countDocuments();
 
+    console.log('[ClassIndexes] Connected database', { databaseName });
+    console.log('[ClassIndexes] Class document count before index changes', { documentCountBefore });
     console.log('[ClassIndexes] Current indexes', indexes.map(serializeIndex));
 
     const conflicts = await findActiveClassConflicts(collection);
@@ -227,10 +231,14 @@ async function runFixClassIndexes({ dryRun = true } = {}) {
     }
 
     const correctIndexResult = await ensureCorrectIndex(collection, { dryRun });
+    const documentCountAfter = await collection.countDocuments();
     const finalIndexes = await collection.indexes();
 
     console.log('[ClassIndexes] Finished', {
       dryRun,
+      databaseName,
+      documentCountBefore,
+      documentCountAfter,
       droppedIndexes: dryRun ? [] : legacyIndexes.map((index) => index.name),
       legacyIndexesDetected: legacyIndexes.map((index) => index.name),
       correctIndexResult,
@@ -239,6 +247,9 @@ async function runFixClassIndexes({ dryRun = true } = {}) {
 
     return {
       dryRun,
+      databaseName,
+      documentCountBefore,
+      documentCountAfter,
       conflicts,
       legacyIndexes: legacyIndexes.map(serializeIndex),
       correctIndexResult,
