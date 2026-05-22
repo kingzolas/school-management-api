@@ -40,6 +40,8 @@ const manualPaymentSchema = new Schema(
     receiptUrl: { type: String },
     receiptFileName: { type: String },
     receiptMimeType: { type: String },
+    receiptSize: { type: Number },
+    receiptData: { type: Buffer, select: false },
     registeredBy: { type: Schema.Types.ObjectId, ref: 'User' },
     registeredAt: { type: Date },
   },

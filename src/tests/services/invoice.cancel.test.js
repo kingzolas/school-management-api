@@ -225,9 +225,14 @@ test('InvoiceService.registerManualPayment marks invoice paid and cancels Cora b
           paidAt: '2026-05-22',
           amount: 50000,
           note: 'Pago por Pix direto para a escola.',
-          receiptUrl: 'https://example.com/receipt.pdf',
         },
-        { id: '507f1f77bcf86cd799439011' }
+        { id: '507f1f77bcf86cd799439011' },
+        {
+          originalname: 'comprovante.pdf',
+          mimetype: 'application/pdf',
+          size: 12,
+          buffer: Buffer.from('receipt-file'),
+        }
       );
 
       assert.equal(result.invoice.status, 'paid');
@@ -236,7 +241,11 @@ test('InvoiceService.registerManualPayment marks invoice paid and cancels Cora b
       assert.equal(result.invoice.manualPayment.enabled, true);
       assert.equal(result.invoice.manualPayment.method, 'pix');
       assert.equal(result.invoice.manualPayment.amount, 50000);
-      assert.equal(result.invoice.manualPayment.receiptUrl, 'https://example.com/receipt.pdf');
+      assert.equal(result.invoice.manualPayment.receiptUrl, '/api/invoices/invoice_1/manual-payment/receipt');
+      assert.equal(result.invoice.manualPayment.receiptFileName, 'comprovante.pdf');
+      assert.equal(result.invoice.manualPayment.receiptMimeType, 'application/pdf');
+      assert.equal(result.invoice.manualPayment.receiptSize, 12);
+      assert.deepEqual(result.invoice.manualPayment.receiptData, Buffer.from('receipt-file'));
       assert.equal(result.invoice.gatewaySync.cancelStatus, 'success');
       assert.equal(result.invoice.gatewaySync.cancelReason, 'paid_outside_gateway');
       assert.equal(result.gatewayWarning, null);

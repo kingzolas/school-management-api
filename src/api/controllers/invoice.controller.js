@@ -244,7 +244,7 @@ class InvoiceController {
       const schoolId = req.user.school_id;
       const { id } = req.params;
 
-      const result = await InvoiceService.registerManualPayment(id, schoolId, req.body, req.user);
+      const result = await InvoiceService.registerManualPayment(id, schoolId, req.body, req.user, req.file);
       const message = result.gatewayWarning ||
         (result.gatewayCancelStatus === 'success'
           ? 'Pagamento registrado manualmente e boleto Cora cancelado com sucesso.'
@@ -265,6 +265,32 @@ class InvoiceController {
         success: false,
         code: error.code || 'MANUAL_PAYMENT_FAILED',
         message: error.message,
+      });
+    }
+  }
+
+  /**
+   * Baixa o comprovante anexado em uma baixa manual.
+   */
+  async downloadManualPaymentReceipt(req, res, next) {
+    try {
+      const schoolId = req.user.school_id;
+      const { id } = req.params;
+      const receipt = await InvoiceService.getManualPaymentReceipt(id, schoolId);
+
+      res.setHeader('Content-Type', receipt.mimeType || 'application/octet-stream');
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="${encodeURIComponent(receipt.fileName || 'comprovante')}"`
+      );
+
+      return res.send(receipt.data);
+    } catch (error) {
+      console.error('❌ ERRO no InvoiceController.downloadManualPaymentReceipt:', error.message);
+      return res.status(error.status || 404).json({
+        success: false,
+        code: error.code || 'MANUAL_PAYMENT_RECEIPT_NOT_FOUND',
+        message: error.message || 'Comprovante nao encontrado.',
       });
     }
   }

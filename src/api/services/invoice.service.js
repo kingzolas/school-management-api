@@ -41,6 +41,13 @@ const MANUAL_PAYMENT_METHODS = new Set([
   'other',
 ]);
 
+const MANUAL_PAYMENT_RECEIPT_MIME_TYPES = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
 function createServiceError(message, code = 'INVOICE_ERROR', status = 400, details = null) {
   const error = new Error(message);
   error.code = code;
@@ -653,7 +660,37 @@ class InvoiceService {
     return await this.getInvoiceById(invoice._id, schoolId) || invoice;
   }
 
-  _normalizeManualPaymentData(payload = {}) {
+  _normalizeManualPaymentReceipt(file) {
+    if (!file) return null;
+
+    const mimeType = String(file.mimetype || '').toLowerCase();
+    if (!MANUAL_PAYMENT_RECEIPT_MIME_TYPES.has(mimeType)) {
+      throw createServiceError(
+        'Formato de comprovante invalido. Use PDF, JPG, JPEG, PNG ou WEBP.',
+        'MANUAL_PAYMENT_RECEIPT_INVALID_TYPE',
+        400
+      );
+    }
+
+    const data = Buffer.isBuffer(file.buffer) ? file.buffer : null;
+    const size = Number(file.size || data?.length || 0);
+    if (!data || size <= 0) {
+      throw createServiceError(
+        'O comprovante selecionado esta vazio ou invalido.',
+        'MANUAL_PAYMENT_RECEIPT_INVALID_FILE',
+        400
+      );
+    }
+
+    return {
+      fileName: file.originalname || 'comprovante',
+      mimeType,
+      size,
+      data,
+    };
+  }
+
+  _normalizeManualPaymentData(payload = {}, receiptFile = null) {
     const method = String(payload?.method || '').trim();
     if (!MANUAL_PAYMENT_METHODS.has(method)) {
       throw createServiceError(
@@ -682,24 +719,28 @@ class InvoiceService {
     }
 
     const note = String(payload?.note || payload?.notes || '').trim();
+    const receipt = this._normalizeManualPaymentReceipt(receiptFile);
     const receiptUrl = String(payload?.receiptUrl || '').trim();
     const receiptFileName = String(payload?.receiptFileName || '').trim();
     const receiptMimeType = String(payload?.receiptMimeType || '').trim();
+    const receiptSize = Math.round(Number(payload?.receiptSize || 0));
 
     return {
       method,
       paidAt,
       amount,
       note: note || null,
-      receiptUrl: receiptUrl || null,
-      receiptFileName: receiptFileName || null,
-      receiptMimeType: receiptMimeType || null,
+      receipt,
+      receiptUrl: receipt ? null : (receiptUrl || null),
+      receiptFileName: receipt ? receipt.fileName : (receiptFileName || null),
+      receiptMimeType: receipt ? receipt.mimeType : (receiptMimeType || null),
+      receiptSize: receipt ? receipt.size : (Number.isFinite(receiptSize) && receiptSize > 0 ? receiptSize : null),
       cancelGatewayInvoice: payload?.cancelGatewayInvoice !== false,
     };
   }
 
-  async registerManualPayment(invoiceId, schoolId, payload = {}, actor = {}) {
-    const paymentData = this._normalizeManualPaymentData(payload);
+  async registerManualPayment(invoiceId, schoolId, payload = {}, actor = {}, receiptFile = null) {
+    const paymentData = this._normalizeManualPaymentData(payload, receiptFile);
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId });
 
     if (!invoice) throw createServiceError('Fatura não encontrada', 'INVOICE_NOT_FOUND', 404);
@@ -755,9 +796,13 @@ class InvoiceService {
       paidAt: paymentData.paidAt,
       amount: paymentData.amount,
       note: paymentData.note,
-      receiptUrl: paymentData.receiptUrl,
+      receiptUrl: paymentData.receipt
+        ? `/api/invoices/${invoice._id}/manual-payment/receipt`
+        : paymentData.receiptUrl,
       receiptFileName: paymentData.receiptFileName,
       receiptMimeType: paymentData.receiptMimeType,
+      receiptSize: paymentData.receiptSize,
+      receiptData: paymentData.receipt?.data || undefined,
       registeredBy: this._getActorId(actor),
       registeredAt: new Date(),
     };
@@ -788,6 +833,28 @@ class InvoiceService {
       invoice: updatedInvoice,
       gatewayWarning,
       gatewayCancelStatus,
+    };
+  }
+
+  async getManualPaymentReceipt(invoiceId, schoolId) {
+    const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId })
+      .select('+manualPayment.receiptData manualPayment')
+      .lean();
+
+    const receipt = invoice?.manualPayment;
+    if (!receipt?.receiptData) {
+      throw createServiceError(
+        'Comprovante da baixa manual nao encontrado.',
+        'MANUAL_PAYMENT_RECEIPT_NOT_FOUND',
+        404
+      );
+    }
+
+    return {
+      data: receipt.receiptData,
+      fileName: receipt.receiptFileName || 'comprovante',
+      mimeType: receipt.receiptMimeType || 'application/octet-stream',
+      size: receipt.receiptSize || receipt.receiptData.length,
     };
   }
 

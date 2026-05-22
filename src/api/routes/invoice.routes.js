@@ -1,7 +1,15 @@
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const invoiceController = require('../controllers/invoice.controller');
 const { verifyToken } = require('../middlewares/auth.middleware');
+
+const manualPaymentReceiptUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 8 * 1024 * 1024,
+  },
+});
 
 router.use(verifyToken);
 
@@ -38,7 +46,12 @@ router.get('/debug/cora/:externalId', invoiceController.debugCora);
 
 // Rotas Específicas
 router.get('/student/:studentId', invoiceController.getByStudent);
-router.post('/:id/manual-payment', invoiceController.registerManualPayment);
+router.post(
+  '/:id/manual-payment',
+  manualPaymentReceiptUpload.single('receipt'),
+  invoiceController.registerManualPayment
+);
+router.get('/:id/manual-payment/receipt', invoiceController.downloadManualPaymentReceipt);
 router.put('/:id/cancel', invoiceController.cancel);
 
 // Rota por ID (DEVE FICAR POR ÚLTIMO ENTRE OS GETs)
