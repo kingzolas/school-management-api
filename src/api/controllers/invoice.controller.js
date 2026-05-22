@@ -221,14 +221,51 @@ class InvoiceController {
       const schoolId = req.user.school_id;
       const { id } = req.params;
 
-      const canceledInvoice = await InvoiceService.cancelInvoice(id, schoolId);
+      const canceledInvoice = await InvoiceService.cancelInvoice(id, schoolId, req.body, req.user);
 
       appEmitter.emit('invoice:updated', canceledInvoice);
 
       res.status(200).json(canceledInvoice);
     } catch (error) {
       console.error('❌ ERRO no InvoiceController.cancel:', error.message);
-      res.status(400).json({ message: error.message });
+      res.status(error.status || 400).json({
+        success: false,
+        code: error.code || 'INVOICE_CANCEL_FAILED',
+        message: error.message,
+      });
+    }
+  }
+
+  /**
+   * Registra pagamento feito fora do gateway e, quando aplicável, cancela o boleto Cora aberto.
+   */
+  async registerManualPayment(req, res, next) {
+    try {
+      const schoolId = req.user.school_id;
+      const { id } = req.params;
+
+      const result = await InvoiceService.registerManualPayment(id, schoolId, req.body, req.user);
+      const message = result.gatewayWarning ||
+        (result.gatewayCancelStatus === 'success'
+          ? 'Pagamento registrado manualmente e boleto Cora cancelado com sucesso.'
+          : 'Pagamento registrado manualmente com sucesso.');
+
+      appEmitter.emit('invoice:updated', result.invoice);
+
+      res.status(200).json({
+        success: true,
+        invoice: result.invoice,
+        gatewayWarning: result.gatewayWarning,
+        gatewayCancelStatus: result.gatewayCancelStatus,
+        message,
+      });
+    } catch (error) {
+      console.error('❌ ERRO no InvoiceController.registerManualPayment:', error.message);
+      res.status(error.status || 400).json({
+        success: false,
+        code: error.code || 'MANUAL_PAYMENT_FAILED',
+        message: error.message,
+      });
     }
   }
 

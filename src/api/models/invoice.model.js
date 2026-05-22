@@ -1,6 +1,51 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
+const cancellationSchema = new Schema(
+  {
+    reason: { type: String },
+    note: { type: String },
+    requestedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    requestedAt: { type: Date },
+  },
+  { _id: false }
+);
+
+const gatewaySyncSchema = new Schema(
+  {
+    provider: { type: String },
+    externalId: { type: String },
+    status: { type: String },
+    cancelStatus: {
+      type: String,
+      enum: ['not_needed', 'pending', 'success', 'failed'],
+    },
+    cancelReason: { type: String },
+    lastSyncAt: { type: Date },
+    lastError: { type: String },
+  },
+  { _id: false }
+);
+
+const manualPaymentSchema = new Schema(
+  {
+    enabled: { type: Boolean, default: false },
+    method: {
+      type: String,
+      enum: ['pix', 'bank_transfer', 'cash', 'card_machine', 'other'],
+    },
+    paidAt: { type: Date },
+    amount: { type: Number },
+    note: { type: String },
+    receiptUrl: { type: String },
+    receiptFileName: { type: String },
+    receiptMimeType: { type: String },
+    registeredBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    registeredAt: { type: Date },
+  },
+  { _id: false }
+);
+
 const invoiceSchema = new Schema(
   {
     student: {
@@ -34,9 +79,10 @@ const invoiceSchema = new Schema(
       index: true,
     },
     paidAt: { type: Date },
+    paidAmount: { type: Number },
     paymentMethod: {
       type: String,
-      enum: ['pix', 'boleto', 'credit_card', 'manual'],
+      enum: ['pix', 'boleto', 'credit_card', 'manual', 'bank_transfer', 'cash', 'card_machine', 'other'],
     },
 
     gateway: {
@@ -47,6 +93,10 @@ const invoiceSchema = new Schema(
 
     // ID da transacao no gateway (Mercado Pago ou Cora)
     external_id: { type: String, index: true, sparse: true },
+
+    cancellation: cancellationSchema,
+    gatewaySync: gatewaySyncSchema,
+    manualPayment: manualPaymentSchema,
 
     // Boleto
     boleto_url: { type: String },                  // Link do PDF do boleto

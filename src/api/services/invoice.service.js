@@ -24,6 +24,31 @@ const financeDebugLog = (...args) => {
   }
 };
 
+const CANCELLATION_REASONS = new Set([
+  'duplicate',
+  'wrong_amount',
+  'enrollment_cancelled',
+  'renegotiated',
+  'paid_outside_gateway',
+  'other',
+]);
+
+const MANUAL_PAYMENT_METHODS = new Set([
+  'pix',
+  'bank_transfer',
+  'cash',
+  'card_machine',
+  'other',
+]);
+
+function createServiceError(message, code = 'INVOICE_ERROR', status = 400, details = null) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  if (details) error.details = details;
+  return error;
+}
+
 class InvoiceService {
 
   async createInvoice(invoiceData, schoolId) {
@@ -489,22 +514,129 @@ class InvoiceService {
     return error.message.replace('Erro Cora Create:', '').trim() || 'Erro desconhecido ao comunicar com o banco.';
   }
 
-  async cancelInvoice(invoiceId, schoolId) {
+  _getActorId(actor = {}) {
+    return actor?.id || actor?._id || actor?.userId || null;
+  }
+
+  _normalizeCancellationData(payload = {}) {
+    const reason = String(payload?.reason || '').trim();
+    const note = String(payload?.note || payload?.notes || '').trim();
+
+    if (!reason) {
+      throw createServiceError(
+        'Informe o motivo do cancelamento da cobrança.',
+        'INVOICE_CANCEL_REASON_REQUIRED',
+        400
+      );
+    }
+
+    if (!CANCELLATION_REASONS.has(reason)) {
+      throw createServiceError(
+        'Motivo de cancelamento inválido.',
+        'INVOICE_CANCEL_REASON_INVALID',
+        400
+      );
+    }
+
+    return {
+      reason,
+      note: note || null,
+    };
+  }
+
+  _buildGatewaySyncPatch({ provider, externalId, providerStatus = null, cancelStatus, cancelReason, lastError = null }) {
+    return {
+      provider: provider || null,
+      externalId: externalId || null,
+      status: providerStatus || null,
+      cancelStatus,
+      cancelReason: cancelReason || null,
+      lastSyncAt: new Date(),
+      lastError: lastError || null,
+    };
+  }
+
+  _normalizeGatewayCancelError(error, gatewayName, invoice) {
+    const gatewayKey = String(gatewayName || '').toUpperCase();
+    const details = {
+      invoiceId: invoice?._id ? String(invoice._id) : null,
+      externalId: invoice?.external_id ? String(invoice.external_id) : null,
+      gateway: gatewayKey,
+      providerStatus: error?.status || null,
+      providerResponse: error?.providerResponse || null,
+      originalMessage: error?.message || null,
+    };
+
+    if (gatewayKey === 'CORA') {
+      return createServiceError(
+        'Não foi possível cancelar esta cobrança na Cora. A cobrança não foi alterada no sistema.',
+        'CORA_CANCEL_FAILED',
+        error?.status && Number(error.status) >= 400 && Number(error.status) < 500 ? 409 : 502,
+        details
+      );
+    }
+
+    return createServiceError(
+      'Não foi possível cancelar esta cobrança no gateway. A cobrança não foi alterada no sistema.',
+      'GATEWAY_CANCEL_FAILED',
+      502,
+      details
+    );
+  }
+
+  async cancelInvoice(invoiceId, schoolId, payload = {}, actor = {}) {
+    const cancellationData = this._normalizeCancellationData(payload);
     const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId });
     if (!invoice) throw new Error('Fatura não encontrada');
     if (invoice.status === 'paid') throw new Error('Fatura já PAGA não pode ser cancelada.');
+    if (invoice.status === 'canceled') throw new Error('Fatura já está cancelada.');
 
-    const school = await School.findById(schoolId).lean();
-    const gatewayName = invoice.gateway === 'cora' ? 'CORA' : 'MERCADOPAGO';
+    const gateway = String(invoice.gateway || '').toLowerCase();
+    const externalId = invoice.external_id ? String(invoice.external_id) : null;
+    const shouldCancelCora = gateway === 'cora' && !!externalId;
+    const shouldTryMercadoPago = gateway === 'mercadopago' && !!externalId;
 
-    try {
-      const gateway = await GatewayFactory.create(school, gatewayName);
-      if (invoice.external_id) await gateway.cancelInvoice(invoice.external_id);
-    } catch (error) {
-      console.warn(`Erro ao cancelar no gateway (${gatewayName}):`, error.message);
+    let providerStatus = null;
+    let gatewayCancelStatus = shouldCancelCora || shouldTryMercadoPago ? 'success' : 'not_needed';
+
+    if (shouldCancelCora || shouldTryMercadoPago) {
+      const school = await School.findById(schoolId).lean();
+      const gatewayName = shouldCancelCora ? 'CORA' : 'MERCADOPAGO';
+
+      try {
+        const gatewayClient = await GatewayFactory.create(school, gatewayName);
+        const gatewayResult = await gatewayClient.cancelInvoice(externalId);
+        providerStatus = gatewayResult?.providerStatus || gatewayResult?.status || null;
+      } catch (error) {
+        console.error(`❌ [InvoiceService] Falha ao cancelar no gateway (${gatewayName})`, {
+          invoiceId: String(invoice._id),
+          externalId,
+          message: error.message,
+        });
+        if (gatewayName === 'MERCADOPAGO') {
+          gatewayCancelStatus = 'failed';
+          console.warn(`⚠️ [InvoiceService] Mantendo comportamento legado: cancelamento local continuará após falha no Mercado Pago.`);
+        } else {
+          throw this._normalizeGatewayCancelError(error, gatewayName, invoice);
+        }
+      }
     }
 
     invoice.status = 'canceled';
+    invoice.cancellation = {
+      reason: cancellationData.reason,
+      note: cancellationData.note,
+      requestedBy: this._getActorId(actor),
+      requestedAt: new Date(),
+    };
+    invoice.gatewaySync = this._buildGatewaySyncPatch({
+      provider: gateway || 'manual',
+      externalId,
+      providerStatus,
+      cancelStatus: gatewayCancelStatus,
+      cancelReason: cancellationData.reason,
+    });
+
     await invoice.save();
     NotificationService.invalidateForecastCache({ schoolId });
 
@@ -518,7 +650,145 @@ class InvoiceService {
 
     financeRuntime.invalidateSchool(schoolId);
 
-    return invoice;
+    return await this.getInvoiceById(invoice._id, schoolId) || invoice;
+  }
+
+  _normalizeManualPaymentData(payload = {}) {
+    const method = String(payload?.method || '').trim();
+    if (!MANUAL_PAYMENT_METHODS.has(method)) {
+      throw createServiceError(
+        'Informe uma forma de pagamento externo válida.',
+        'MANUAL_PAYMENT_METHOD_INVALID',
+        400
+      );
+    }
+
+    const paidAt = this._parseProviderDateValue(payload?.paidAt);
+    if (!paidAt) {
+      throw createServiceError(
+        'Informe a data do pagamento externo.',
+        'MANUAL_PAYMENT_PAID_AT_REQUIRED',
+        400
+      );
+    }
+
+    const amount = Math.round(Number(payload?.amount));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw createServiceError(
+        'Informe o valor pago em centavos.',
+        'MANUAL_PAYMENT_AMOUNT_INVALID',
+        400
+      );
+    }
+
+    const note = String(payload?.note || payload?.notes || '').trim();
+    const receiptUrl = String(payload?.receiptUrl || '').trim();
+    const receiptFileName = String(payload?.receiptFileName || '').trim();
+    const receiptMimeType = String(payload?.receiptMimeType || '').trim();
+
+    return {
+      method,
+      paidAt,
+      amount,
+      note: note || null,
+      receiptUrl: receiptUrl || null,
+      receiptFileName: receiptFileName || null,
+      receiptMimeType: receiptMimeType || null,
+      cancelGatewayInvoice: payload?.cancelGatewayInvoice !== false,
+    };
+  }
+
+  async registerManualPayment(invoiceId, schoolId, payload = {}, actor = {}) {
+    const paymentData = this._normalizeManualPaymentData(payload);
+    const invoice = await Invoice.findOne({ _id: invoiceId, school_id: schoolId });
+
+    if (!invoice) throw createServiceError('Fatura não encontrada', 'INVOICE_NOT_FOUND', 404);
+    if (invoice.status === 'paid') {
+      throw createServiceError('Fatura já está paga.', 'INVOICE_ALREADY_PAID', 409);
+    }
+    if (invoice.status === 'canceled') {
+      throw createServiceError(
+        'Fatura cancelada não pode receber baixa manual.',
+        'INVOICE_ALREADY_CANCELED',
+        409
+      );
+    }
+
+    const gateway = String(invoice.gateway || '').toLowerCase();
+    const externalId = invoice.external_id ? String(invoice.external_id) : null;
+    const shouldCancelCora =
+      paymentData.cancelGatewayInvoice && gateway === 'cora' && !!externalId;
+
+    let gatewayCancelStatus = shouldCancelCora ? 'pending' : 'not_needed';
+    let gatewayProviderStatus = null;
+    let gatewayLastError = null;
+    let gatewayWarning = null;
+
+    if (shouldCancelCora) {
+      try {
+        const school = await School.findById(schoolId).lean();
+        const gatewayClient = await GatewayFactory.create(school, 'CORA');
+        const gatewayResult = await gatewayClient.cancelInvoice(externalId);
+        gatewayCancelStatus = 'success';
+        gatewayProviderStatus = gatewayResult?.providerStatus || gatewayResult?.status || null;
+      } catch (error) {
+        gatewayCancelStatus = 'failed';
+        gatewayLastError = error?.message || 'Falha ao cancelar boleto Cora.';
+        gatewayWarning =
+          'Pagamento registrado, mas o boleto Cora ainda pode estar ativo. Verifique ou reprocesse o cancelamento no gateway.';
+
+        console.error('❌ [InvoiceService] Baixa manual registrada com falha ao cancelar Cora', {
+          invoiceId: String(invoice._id),
+          externalId,
+          message: gatewayLastError,
+        });
+      }
+    }
+
+    invoice.status = 'paid';
+    invoice.paidAt = paymentData.paidAt;
+    invoice.paidAmount = paymentData.amount;
+    invoice.paymentMethod = paymentData.method;
+    invoice.manualPayment = {
+      enabled: true,
+      method: paymentData.method,
+      paidAt: paymentData.paidAt,
+      amount: paymentData.amount,
+      note: paymentData.note,
+      receiptUrl: paymentData.receiptUrl,
+      receiptFileName: paymentData.receiptFileName,
+      receiptMimeType: paymentData.receiptMimeType,
+      registeredBy: this._getActorId(actor),
+      registeredAt: new Date(),
+    };
+    invoice.gatewaySync = this._buildGatewaySyncPatch({
+      provider: gateway || 'manual',
+      externalId,
+      providerStatus: gatewayProviderStatus,
+      cancelStatus: gatewayCancelStatus,
+      cancelReason: shouldCancelCora ? 'paid_outside_gateway' : null,
+      lastError: gatewayLastError,
+    });
+
+    await invoice.save();
+    financeRuntime.invalidateSchool(schoolId);
+    NotificationService.invalidateForecastCache({ schoolId });
+
+    if (invoice.tutor) {
+      try {
+        await tutorFinancialScoreService.calculateTutorScore(invoice.tutor, schoolId);
+      } catch (scoreError) {
+        console.error('⚠️ [InvoiceService] Erro ao recalcular score após baixa manual:', scoreError.message);
+      }
+    }
+
+    const updatedInvoice = await this.getInvoiceById(invoice._id, schoolId) || invoice;
+
+    return {
+      invoice: updatedInvoice,
+      gatewayWarning,
+      gatewayCancelStatus,
+    };
   }
 
   async handlePaymentWebhook(externalId, providerName, statusRaw, paidAtRaw = null) {

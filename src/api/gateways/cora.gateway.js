@@ -226,6 +226,29 @@ class CoraGateway {
     }
   }
 
+  async _delete(path, token, { headers } = {}) {
+    const url = `${this.baseUrl}${path}`;
+    try {
+      const response = await axios.delete(url, {
+        httpsAgent: this.httpsAgent,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(headers || {})
+        },
+        timeout: 25000
+      });
+      return response.data || null;
+    } catch (error) {
+      const status = error.response?.status;
+      const data = error.response?.data;
+      console.error(`⚠️ [CoraGateway] DELETE ${path} falhou`, {
+        status,
+        response: data ? this._safeJson(data) : error.message
+      });
+      throw error;
+    }
+  }
+
   _extractPaidAtFromInvoice(data) {
     if (!data) return null;
 
@@ -526,7 +549,47 @@ class CoraGateway {
   }
 
   async cancelInvoice(externalId) {
-    return null;
+    const normalizedExternalId = String(externalId || '').trim();
+    if (!normalizedExternalId) {
+      const error = new Error('externalId da Cora é obrigatório para cancelamento.');
+      error.code = 'CORA_CANCEL_MISSING_EXTERNAL_ID';
+      throw error;
+    }
+
+    const token = await this.authenticate();
+
+    try {
+      const raw = await this._delete(
+        `/v2/invoices/${encodeURIComponent(normalizedExternalId)}`,
+        token
+      );
+
+      const providerStatus =
+        raw?.status ||
+        raw?.state ||
+        raw?.invoice_state ||
+        raw?.invoiceStatus ||
+        'CANCELED';
+
+      coraDebugLog('✅ [CoraGateway] cancelInvoice concluído', {
+        externalId: normalizedExternalId,
+        providerStatus,
+      });
+
+      return {
+        success: true,
+        externalId: normalizedExternalId,
+        providerStatus,
+        raw,
+      };
+    } catch (error) {
+      const detail = error.response?.data || error.message;
+      const err = new Error(`Erro Cora Cancel: ${this._safeJson(detail)}`);
+      err.code = 'CORA_CANCEL_FAILED';
+      err.status = error.response?.status || 502;
+      err.providerResponse = detail;
+      throw err;
+    }
   }
 }
 

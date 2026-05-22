@@ -38,6 +38,7 @@ router.get('/debug/cora/:externalId', invoiceController.debugCora);
 
 // Rotas Específicas
 router.get('/student/:studentId', invoiceController.getByStudent);
+router.post('/:id/manual-payment', invoiceController.registerManualPayment);
 router.put('/:id/cancel', invoiceController.cancel);
 
 // Rota por ID (DEVE FICAR POR ÚLTIMO ENTRE OS GETs)
