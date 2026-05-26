@@ -6,12 +6,15 @@ const {
   createHttpError,
   ensureClassAccess,
   extractId,
+  isPrivilegedActor,
 } = require('./classAccess.service');
 const absenceJustificationService = require('./absenceJustification.service');
 
 const DEFAULT_JUSTIFICATION_DEADLINE_DAYS = Number(
   process.env.ATTENDANCE_JUSTIFICATION_DEADLINE_DAYS || 3
 );
+const ATTENDANCE_TIME_ZONE =
+  process.env.ATTENDANCE_TIME_ZONE || process.env.SCHOOL_TIME_ZONE || 'America/Sao_Paulo';
 
 const ABSENCE_STATES = {
   NONE: 'NONE',
@@ -42,6 +45,32 @@ function startOfDay(dateValue) {
   return date;
 }
 
+function formatDateKey(dateValue) {
+  const date = startOfDay(dateValue);
+  const year = String(date.getFullYear()).padStart(4, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateKeyInTimeZone(dateValue, timeZone = ATTENDANCE_TIME_ZONE) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date(dateValue));
+
+    const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${byType.year}-${byType.month}-${byType.day}`;
+  } catch (_) {
+    return timeZone === 'America/Sao_Paulo'
+      ? formatDateKey(dateValue)
+      : formatDateKeyInTimeZone(dateValue, 'America/Sao_Paulo');
+  }
+}
+
 function endOfDay(dateValue) {
   const date = parseLocalDate(dateValue);
   date.setHours(23, 59, 59, 999);
@@ -63,6 +92,40 @@ function normalizeStatus(status) {
 function normalizeAbsenceState(state) {
   const normalized = String(state || ABSENCE_STATES.NONE).toUpperCase();
   return ABSENCE_STATES[normalized] || ABSENCE_STATES.NONE;
+}
+
+function compareDateOnly(left, right) {
+  const leftKey = formatDateKey(left);
+  const rightKey = right ? formatDateKey(right) : formatDateKeyInTimeZone(new Date());
+
+  if (leftKey < rightKey) return -1;
+  if (leftKey > rightKey) return 1;
+  return 0;
+}
+
+function getAttendancePermissions(actor, targetDate) {
+  const comparison = compareDateOnly(targetDate, null);
+  const isRetroactive = comparison < 0;
+  const isFuture = comparison > 0;
+  const hasAdministrativePermission = isPrivilegedActor(actor);
+  const canUseDailyFlow = !isRetroactive && !isFuture;
+  const canModify = hasAdministrativePermission || canUseDailyFlow;
+
+  let permissionReason = null;
+  if (!canModify && isRetroactive) {
+    permissionReason = 'Você não tem permissão para alterar chamadas retroativas.';
+  } else if (!canModify && isFuture) {
+    permissionReason = 'Você não tem permissão para alterar chamadas fora do dia atual.';
+  }
+
+  return {
+    canCreate: canModify,
+    canEdit: canModify,
+    isRetroactive,
+    isFuture,
+    hasAdministrativePermission,
+    permissionReason,
+  };
 }
 
 function roundRate(value) {
@@ -244,6 +307,22 @@ async function createOrUpdate(data, actor) {
   };
 
   const existingAttendance = await Attendance.findOne(query);
+  const permissions = getAttendancePermissions(actor, targetStart);
+
+  if (existingAttendance && !permissions.canEdit) {
+    throw createHttpError(
+      permissions.permissionReason || 'Você não tem permissão para editar esta chamada.',
+      403
+    );
+  }
+
+  if (!existingAttendance && !permissions.canCreate) {
+    throw createHttpError(
+      permissions.permissionReason || 'Você não tem permissão para criar esta chamada.',
+      403
+    );
+  }
+
   const existingByStudentId = new Map(
     (existingAttendance?.records || []).map((record) => [String(record.studentId), record])
   );
@@ -287,16 +366,34 @@ async function createOrUpdate(data, actor) {
     },
   };
 
-  const result = await Attendance.findOneAndUpdate(
-    query,
-    { $set: update },
-    {
-      upsert: true,
-      new: true,
-      setDefaultsOnInsert: true,
-      runValidators: true,
+  let result;
+  try {
+    result = await Attendance.findOneAndUpdate(
+      query,
+      { $set: update },
+      {
+        upsert: true,
+        new: true,
+        setDefaultsOnInsert: true,
+        runValidators: true,
+      }
+    );
+  } catch (error) {
+    if (error?.code !== 11000) throw error;
+
+    result = await Attendance.findOneAndUpdate(
+      query,
+      { $set: update },
+      {
+        new: true,
+        runValidators: true,
+      }
+    );
+
+    if (!result) {
+      throw createHttpError('Ja existe uma chamada para esta turma nesta data.', 409);
     }
-  );
+  }
 
   await absenceJustificationService.applyApprovedRequestCoverageToAttendance(result, actor);
   await expireOverdueAbsencesForClass(data.schoolId, data.classId);
@@ -319,7 +416,14 @@ async function getDailyList(schoolId, classId, dateString, actor) {
   }).populate('records.studentId', 'fullName photoUrl profilePictureUrl');
 
   if (existingAttendance) {
-    return { type: 'saved', data: buildAttendanceResponse(existingAttendance) };
+    const permissions = getAttendancePermissions(actor, targetStart);
+    return {
+      type: 'saved',
+      date: formatDateKey(targetStart),
+      ...permissions,
+      canCreate: false,
+      data: buildAttendanceResponse(existingAttendance),
+    };
   }
 
   const enrollments = await Enrollment.find({
@@ -345,7 +449,14 @@ async function getDailyList(schoolId, classId, dateString, actor) {
       })),
   };
 
-  return { type: 'proposed', data: buildAttendanceSummary(proposedList) };
+  const permissions = getAttendancePermissions(actor, targetStart);
+  return {
+    type: 'proposed',
+    date: formatDateKey(targetStart),
+    ...permissions,
+    canEdit: false,
+    data: buildAttendanceSummary(proposedList),
+  };
 }
 
 async function getClassHistory(schoolId, classId, actor) {
@@ -487,6 +598,8 @@ module.exports = {
   buildAttendanceResponse,
   buildAttendanceSummary,
   createOrUpdate,
+  formatDateKey,
+  getAttendancePermissions,
   getDailyList,
   getClassHistory,
   getHistoryByStudent,

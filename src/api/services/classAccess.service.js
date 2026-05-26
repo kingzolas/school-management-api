@@ -10,6 +10,9 @@ const PRIVILEGED_ROLES = new Set([
   'COORDENADOR',
   'DIRETOR',
   'GESTOR',
+  'SECRETARIA',
+  'SECRETARIO',
+  'STAFF',
 ]);
 
 function createHttpError(message, statusCode = 400) {

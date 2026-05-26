@@ -6,7 +6,10 @@ const admin = require('../../config/firebase');
 function sendAttendanceError(res, error, fallbackMessage) {
   const statusCode = error.statusCode || (error.name === 'CastError' ? 400 : 500);
   const message = error.message || fallbackMessage;
-  return res.status(statusCode).json({ message });
+  return res.status(statusCode).json({
+    code: error.code || null,
+    message,
+  });
 }
 
 exports.saveAttendance = async (req, res) => {
@@ -25,7 +28,8 @@ exports.saveAttendance = async (req, res) => {
 
     appEmitter.emit('attendance_updated', {
       classId: req.body.classId,
-      school_id: schoolId
+      school_id: schoolId,
+      date: result?.date || req.body.date || null
     });
 
     try {
@@ -46,7 +50,8 @@ exports.saveAttendance = async (req, res) => {
           data: {
             type: 'ATTENDANCE_COMPLETED',
             classId: String(req.body.classId),
-            teacherId: String(teacherId)
+            teacherId: String(teacherId),
+            date: String(result?.date || req.body.date || '')
           },
           tokens
         };
