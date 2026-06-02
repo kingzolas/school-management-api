@@ -8,6 +8,7 @@
     "academy:local": "node scripts/run-academy-hub.js local",
     "academy:render": "node scripts/run-academy-hub.js render",
     "seed": "node src/seed.js",
+    "seed:platform-admin": "node scripts/seed_platform_admin.js",
     "test": "node --test src/tests",
     "guardian:eligibility-report": "node src/scripts/reportGuardianAccessEligibility.js",
     "classes:fix-indexes": "node src/scripts/fixClassIndexes.js",
@@ -21,6 +22,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1059.0",
+    "@aws-sdk/s3-request-presigner": "^3.1059.0",
     "@google-cloud/vertexai": "^1.10.0",
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.2",

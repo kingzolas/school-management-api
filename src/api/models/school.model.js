@@ -44,6 +44,34 @@ const SchoolSchema = new mongoose.Schema(
 
     logoUrl: { type: String },
 
+    platformContact: {
+      responsibleName: { type: String, trim: true },
+      responsibleEmail: { type: String, trim: true, lowercase: true },
+      responsiblePhone: { type: String, trim: true },
+    },
+
+    platformAccess: {
+      status: {
+        type: String,
+        enum: ['active', 'inactive', 'blocked', 'trial', 'cancelled'],
+        default: 'active',
+        index: true,
+      },
+      isBlocked: {
+        type: Boolean,
+        default: false,
+        index: true,
+      },
+      reason: { type: String, trim: true, default: '' },
+      notes: { type: String, trim: true, default: '' },
+      blockedAt: { type: Date, default: null },
+      blockedUntil: { type: Date, default: null },
+      blockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'PlatformAdmin', default: null },
+      unblockedAt: { type: Date, default: null },
+      unblockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'PlatformAdmin', default: null },
+      unblockNotes: { type: String, trim: true, default: '' },
+    },
+
     preferredGateway: {
       type: String,
       enum: ['MERCADOPAGO', 'CORA'],

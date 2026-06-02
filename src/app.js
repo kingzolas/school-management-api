@@ -64,6 +64,8 @@ const guardianAuthRoutes = require('./api/routes/guardianAuth.routes.js');
 const examRoutes = require('./api/routes/exam.routes.js');
 const reportCardRoutes = require('./api/routes/reportCard.routes.js');
 const classActivityRoutes = require('./api/routes/classActivity.routes.js');
+const platformRoutes = require('./api/routes/platform.routes.js');
+const schoolActivityLibraryRoutes = require('./api/routes/schoolActivityLibrary.routes.js');
 
 const app = express();
 
@@ -82,6 +84,9 @@ app.get('/', (req, res) => {
 });
 
 // --- Registro das Rotas ---
+
+// Painel Administrativo Global
+app.use('/api/platform', platformRoutes);
 
 // Autenticação
 app.use('/api/auth', authRoutes);                 // Login Staff/Admin
@@ -155,6 +160,8 @@ app.use('/api/gemini-exam', geminiExamRoutes);
 app.use('/api/report-cards', reportCardRoutes);
 
 app.use('/api/activities', classActivityRoutes);
+
+app.use('/api/school/activity-library', schoolActivityLibraryRoutes);
 
 app.use('/api/absence-justifications', require('./api/routes/absenceJustification.routes.js'));
 
