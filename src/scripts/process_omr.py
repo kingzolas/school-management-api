@@ -34,6 +34,13 @@ def extract_questions_count(layout_data):
     return None
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def build_error(message: str, correction_type: str = "BUBBLE_SHEET"):
     return {
         "success": False,
@@ -80,16 +87,20 @@ def main():
             )
             return
 
+        save_images = env_flag("OMR_DEBUG_SAVE_IMAGES", False)
         debug_root = os.getenv("OMR_DEBUG_DIR")
-        if debug_root:
+        if save_images and debug_root:
             outdir = str(Path(debug_root) / f"omr_{Path(image_path).stem}")
-        else:
+        elif save_images:
             outdir = str(Path(image_path).resolve().parent / f"debug_{Path(image_path).stem}")
+        else:
+            outdir = None
 
         result = AcademyHubOmrRunner.run(
             image_path=image_path,
             questions_count=questions_count,
             outdir=outdir,
+            layout_data=layout_data,
         )
 
         normalized_answers = []
@@ -101,6 +112,11 @@ def main():
                     "status": answer.get("status"),
                     "confidence": answer.get("confidence"),
                     "scores": answer.get("scores", []),
+                    "selected": answer.get("selected"),
+                    "debugStatus": answer.get("debugStatus"),
+                    "threshold": answer.get("threshold"),
+                    "reason": answer.get("reason"),
+                    "options": answer.get("options"),
                 }
             )
 
@@ -111,6 +127,7 @@ def main():
             "message": result.get("message"),
             "anchorsFound": result.get("anchorsFound"),
             "questionsCount": result.get("questionsCount"),
+            "captureHints": result.get("captureHints", []),
             "answers": normalized_answers,
             "debug": result.get("debug"),
         }

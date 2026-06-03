@@ -62,6 +62,7 @@ const invoiceCompensationRoutes = require('./api/routes/invoiceCompensation.rout
 const guardianAuthRoutes = require('./api/routes/guardianAuth.routes.js');
 
 const examRoutes = require('./api/routes/exam.routes.js');
+const omrRoutes = require('./api/routes/omr.routes.js');
 const reportCardRoutes = require('./api/routes/reportCard.routes.js');
 const classActivityRoutes = require('./api/routes/classActivity.routes.js');
 const platformRoutes = require('./api/routes/platform.routes.js');
@@ -154,6 +155,7 @@ app.use('/api/releases', releaseRoutes);
 app.use('/api/invoice-compensations', invoiceCompensationRoutes);
 
 app.use('/api/exams', examRoutes);
+app.use('/api/omr', omrRoutes);
 
 app.use('/api/gemini-exam', geminiExamRoutes);
 

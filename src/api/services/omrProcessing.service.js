@@ -6,7 +6,30 @@ const { spawn } = require('child_process');
 class OmrProcessingService {
     constructor() {
         this.pythonBin = process.env.OMR_PYTHON_BIN || process.env.PYTHON_BIN || 'python3';
-        this.keepDebugFiles = String(process.env.KEEP_OMR_DEBUG_FILES || 'true') === 'true';
+    }
+
+    _envFlag(name, defaultValue = false) {
+        const value = process.env[name];
+        if (value === undefined || value === null || value === '') {
+            return defaultValue;
+        }
+        return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+    }
+
+    isDebugEnabled() {
+        return this._envFlag('OMR_DEBUG_ENABLED', false);
+    }
+
+    shouldSaveDebugImages() {
+        return this._envFlag('OMR_DEBUG_SAVE_IMAGES', false);
+    }
+
+    shouldKeepDebugFiles() {
+        return this._envFlag('KEEP_OMR_DEBUG_FILES', false);
+    }
+
+    getDebugToken() {
+        return process.env.OMR_DEBUG_TOKEN || null;
     }
 
     _logInfo(message, meta = null) {
@@ -58,7 +81,7 @@ class OmrProcessingService {
         return layoutPath;
     }
 
-    runPythonOmr({ imagePath, correctionType, layoutPath, sessionDir }) {
+    runPythonOmr({ imagePath, correctionType, layoutPath, sessionDir, saveImages = false }) {
         return new Promise((resolve, reject) => {
             const scriptPath = path.join(process.cwd(), 'src', 'scripts', 'process_omr.py');
             const args = [scriptPath, imagePath, correctionType];
@@ -78,6 +101,7 @@ class OmrProcessingService {
                 env: {
                     ...process.env,
                     OMR_DEBUG_DIR: sessionDir,
+                    OMR_DEBUG_SAVE_IMAGES: saveImages ? 'true' : 'false',
                 },
                 shell: false,
             });
@@ -125,7 +149,7 @@ class OmrProcessingService {
     }
 
     cleanupSession(sessionDir) {
-        if (this.keepDebugFiles) {
+        if (this.shouldKeepDebugFiles()) {
             return;
         }
 
@@ -154,6 +178,55 @@ class OmrProcessingService {
         }
 
         return JSON.parse(jsonLine);
+    }
+
+    collectImageArtifacts(sessionDir, { includeBase64 = true } = {}) {
+        if (!sessionDir || !fs.existsSync(sessionDir)) {
+            return [];
+        }
+
+        const allowedExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+        const artifacts = [];
+
+        const walk = (dirPath) => {
+            for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+                const fullPath = path.join(dirPath, entry.name);
+                if (entry.isDirectory()) {
+                    walk(fullPath);
+                    continue;
+                }
+
+                const ext = path.extname(entry.name).toLowerCase();
+                if (!allowedExtensions.has(ext)) {
+                    continue;
+                }
+
+                const relativePath = path.relative(sessionDir, fullPath).replace(/\\/g, '/');
+                const stat = fs.statSync(fullPath);
+                const artifact = {
+                    name: entry.name,
+                    relativePath,
+                    size: stat.size,
+                    contentType: this._contentTypeForExtension(ext),
+                };
+
+                if (includeBase64) {
+                    artifact.base64 = fs.readFileSync(fullPath).toString('base64');
+                }
+
+                artifacts.push(artifact);
+            }
+        };
+
+        walk(sessionDir);
+        artifacts.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+        return artifacts;
+    }
+
+    _contentTypeForExtension(ext) {
+        if (ext === '.png') return 'image/png';
+        if (ext === '.webp') return 'image/webp';
+        return 'image/jpeg';
     }
 }
 

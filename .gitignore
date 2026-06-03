@@ -1,6 +1,14 @@
 node_modules/
 .env
+__pycache__/
+*.pyc
 
 # Firebase Service Key
 serviceAccountKey.json
 src/config/serviceAccountKey.json
+
+# OMR diagnostics contain student answer sheets and must stay local.
+omr_debug/
+samples/omr/*
+!samples/omr/.gitkeep
+!samples/omr/README.md
