@@ -55,7 +55,7 @@ class AcademyHubOmrRunner:
         if outdir:
             debug_root = Path(outdir)
             debug_root.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(debug_root / "00_original_received.jpg"), original_color)
+            cv2.imwrite(str(debug_root / "00_input.jpg"), original_color)
             cv2.imwrite(str(debug_root / "01_grayscale.jpg"), gray)
 
         attempts_summary = []
@@ -65,10 +65,11 @@ class AcademyHubOmrRunner:
             source = layout.debug.get("source", f"layout_{index}")
             attempt_dir = None
             if debug_root is not None:
-                attempt_dir = debug_root / f"attempt_{index}_{source}"
+                attempt_dir = debug_root
 
             result = AcademyHubOmrRunner._run_single_layout(
                 gray=gray,
+                original_color=original_color,
                 layout=layout,
                 debug_dir=attempt_dir,
                 image_width=image_width,
@@ -111,6 +112,7 @@ class AcademyHubOmrRunner:
     @staticmethod
     def _run_single_layout(
         gray,
+        original_color,
         layout,
         debug_dir,
         image_width: int,
@@ -120,10 +122,10 @@ class AcademyHubOmrRunner:
             debug_dir.mkdir(parents=True, exist_ok=True)
 
         detector = AcademyHubSheetDetector(layout)
-        detection = detector.detect_and_warp(gray)
+        detection = detector.detect_and_warp(gray, debug_base_image=original_color)
 
         if debug_dir is not None:
-            cv2.imwrite(str(debug_dir / "02_anchor_threshold.jpg"), detection.threshold_image)
+            cv2.imwrite(str(debug_dir / "02_threshold.jpg"), detection.threshold_image)
             cv2.imwrite(str(debug_dir / "03_anchors_detected.jpg"), detection.debug_image)
 
         if not detection.success or detection.warped_machine is None:
@@ -135,7 +137,7 @@ class AcademyHubOmrRunner:
                 "anchorsFound": detection.anchors_found,
                 "questionsCount": layout.questions_count,
                 "captureHints": detection.capture_hints,
-                "answers": [],
+                "answers": AcademyHubOmrRunner._build_anchor_failed_answers(layout, detection.message),
                 "debug": AcademyHubOmrRunner._build_debug_payload(
                     debug_dir=debug_dir,
                     layout=layout,
@@ -147,14 +149,14 @@ class AcademyHubOmrRunner:
             }
 
         if debug_dir is not None:
-            cv2.imwrite(str(debug_dir / "04_warped_machine.jpg"), detection.warped_machine)
+            cv2.imwrite(str(debug_dir / "04_warped.jpg"), detection.warped_machine)
 
         reader = AcademyHubBubbleReader(layout)
         read_result = reader.read(detection.warped_machine)
 
         if debug_dir is not None:
-            cv2.imwrite(str(debug_dir / "05_bubble_threshold.jpg"), read_result.threshold_image)
-            cv2.imwrite(str(debug_dir / "06_bubbles_debug.jpg"), read_result.debug_image)
+            cv2.imwrite(str(debug_dir / "05_bubbles_overlay.jpg"), read_result.bubbles_overlay_image)
+            cv2.imwrite(str(debug_dir / "06_result_overlay.jpg"), read_result.debug_image)
 
         return {
             "success": True,
@@ -186,6 +188,90 @@ class AcademyHubOmrRunner:
             "machineWidth": layout.machine_width,
             "machineHeight": layout.machine_height,
         }
+
+    @staticmethod
+    def _build_anchor_failed_questions(layout, reason: str):
+        threshold = AcademyHubBubbleReader.THRESHOLDS["blank"]
+        questions = []
+
+        for q_idx in range(layout.questions_count):
+            q_number = q_idx + 1
+            question_bubbles = layout.bubbles_for_question(q_number)
+            options = {}
+
+            for choice in layout.choices:
+                bubble = question_bubbles.get(choice)
+                if bubble is None:
+                    options[choice] = {
+                        "fillRatio": 0.0,
+                        "score": 0.0,
+                        "mean": None,
+                        "bbox": None,
+                        "center": None,
+                        "outOfBounds": True,
+                        "missing": True,
+                    }
+                    continue
+
+                options[choice] = {
+                    "fillRatio": 0.0,
+                    "score": 0.0,
+                    "mean": None,
+                    "bbox": [
+                        int(round(bubble.x - bubble.r)),
+                        int(round(bubble.y - bubble.r)),
+                        int(round(bubble.r * 2)),
+                        int(round(bubble.r * 2)),
+                    ],
+                    "center": [int(round(bubble.x)), int(round(bubble.y))],
+                    "outOfBounds": False,
+                }
+
+            questions.append(
+                {
+                    "question": q_number,
+                    "selected": None,
+                    "status": "anchor_failed",
+                    "threshold": threshold,
+                    "options": options,
+                    "reason": reason,
+                    "decision": {
+                        "topOption": None,
+                        "topScore": 0.0,
+                        "secondOption": None,
+                        "secondScore": 0.0,
+                        "diff": 0.0,
+                        "thresholds": AcademyHubBubbleReader.THRESHOLDS,
+                    },
+                    "topSecondDifference": 0.0,
+                }
+            )
+
+        return questions
+
+    @staticmethod
+    def _build_anchor_failed_answers(layout, reason: str):
+        questions = AcademyHubOmrRunner._build_anchor_failed_questions(layout, reason)
+        answers = []
+
+        for question in questions:
+            answers.append(
+                {
+                    "question": question["question"],
+                    "answer": None,
+                    "status": "blank",
+                    "confidence": 0.0,
+                    "scores": [0.0 for _ in layout.choices],
+                    "selected": None,
+                    "debugStatus": "anchor_failed",
+                    "threshold": question["threshold"],
+                    "reason": reason,
+                    "options": question["options"],
+                    "topSecondDifference": 0.0,
+                }
+            )
+
+        return answers
 
     @staticmethod
     def _build_debug_payload(
@@ -254,7 +340,9 @@ class AcademyHubOmrRunner:
             "machineHeight": layout.machine_height,
             "layoutDebug": layout.debug,
             "bubbleTemplate": bubble_template,
-            "questions": read_result.questions_debug if read_result else [],
+            "questions": read_result.questions_debug
+            if read_result
+            else AcademyHubOmrRunner._build_anchor_failed_questions(layout, detection.message),
             "captureHints": detection.capture_hints,
             "layoutAttempts": [],
         }

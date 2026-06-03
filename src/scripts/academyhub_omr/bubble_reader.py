@@ -10,6 +10,7 @@ class BubbleReadResult:
     answers: List[Dict]
     debug_image: np.ndarray
     threshold_image: np.ndarray
+    bubbles_overlay_image: np.ndarray
     questions_debug: List[Dict]
 
 
@@ -26,6 +27,7 @@ class AcademyHubBubbleReader:
 
     def read(self, warped_machine_gray: np.ndarray) -> BubbleReadResult:
         debug = cv2.cvtColor(warped_machine_gray, cv2.COLOR_GRAY2BGR)
+        bubbles_overlay = debug.copy()
         thresh = self._prepare_binary(warped_machine_gray)
 
         answers = []
@@ -67,6 +69,7 @@ class AcademyHubBubbleReader:
                 out_of_bounds=all_out_of_bounds,
             )
             answer = self.layout.choices[marked_idx] if marked_idx is not None else None
+            decision_debug = self._build_decision_debug(bubble_scores)
 
             answers.append(
                 {
@@ -80,6 +83,7 @@ class AcademyHubBubbleReader:
                     "threshold": self.THRESHOLDS["blank"],
                     "reason": reason,
                     "options": option_details,
+                    "topSecondDifference": decision_debug["diff"],
                 }
             )
 
@@ -91,8 +95,15 @@ class AcademyHubBubbleReader:
                     "threshold": self.THRESHOLDS["blank"],
                     "options": option_details,
                     "reason": reason,
-                    "decision": self._build_decision_debug(bubble_scores),
+                    "decision": decision_debug,
+                    "topSecondDifference": decision_debug["diff"],
                 }
+            )
+
+            self._draw_bubbles_overlay(
+                overlay=bubbles_overlay,
+                q_number=q_number,
+                option_details=option_details,
             )
 
             self._draw_debug_row(
@@ -108,6 +119,7 @@ class AcademyHubBubbleReader:
             answers=answers,
             debug_image=debug,
             threshold_image=thresh,
+            bubbles_overlay_image=bubbles_overlay,
             questions_debug=questions_debug,
         )
 
@@ -158,6 +170,7 @@ class AcademyHubBubbleReader:
         if roi.size == 0:
             return {
                 "fillRatio": 0.0,
+                "score": 0.0,
                 "mean": None,
                 "bbox": bbox,
                 "center": [int(cx), int(cy)],
@@ -183,6 +196,7 @@ class AcademyHubBubbleReader:
 
         return {
             "fillRatio": round(float(fill_ratio), 4),
+            "score": round(float(fill_ratio), 4),
             "mean": round(mean_value, 2) if mean_value is not None else None,
             "bbox": bbox,
             "center": [int(cx), int(cy)],
@@ -192,6 +206,7 @@ class AcademyHubBubbleReader:
     def _missing_bubble_detail(self, choice: str) -> Dict:
         return {
             "fillRatio": 0.0,
+            "score": 0.0,
             "mean": None,
             "bbox": None,
             "center": None,
@@ -322,6 +337,24 @@ class AcademyHubBubbleReader:
             cv2.LINE_AA,
         )
 
+        if marked_idx is not None and status in ("ok", "ambiguous"):
+            selected = self.layout.choices[marked_idx]
+            status_label = "marked" if status == "ok" else "low_confidence"
+            label = f"{selected} {status_label}"
+        else:
+            label = "multiple" if status == "multiple" else "blank"
+
+        cv2.putText(
+            debug,
+            label,
+            (70, cy + 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            row_color,
+            1,
+            cv2.LINE_AA,
+        )
+
         for idx, choice in enumerate(self.layout.choices):
             bubble = question_bubbles.get(choice)
             if bubble is None:
@@ -343,6 +376,38 @@ class AcademyHubBubbleReader:
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.34,
                 (255, 0, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
+    def _draw_bubbles_overlay(
+        self,
+        overlay: np.ndarray,
+        q_number: int,
+        option_details: Dict[str, Dict],
+    ):
+        for choice, detail in option_details.items():
+            bbox = detail.get("bbox")
+            center = detail.get("center")
+
+            if not bbox or not center:
+                continue
+
+            x, y, w, h = [int(value) for value in bbox]
+            cx, cy = [int(value) for value in center]
+            color = (0, 255, 255)
+            if detail.get("outOfBounds"):
+                color = (0, 0, 255)
+
+            cv2.rectangle(overlay, (x, y), (x + w, y + h), color, 1)
+            cv2.circle(overlay, (cx, cy), 2, (255, 0, 255), -1)
+            cv2.putText(
+                overlay,
+                f"{q_number}{choice}",
+                (x, max(10, y - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.32,
+                color,
                 1,
                 cv2.LINE_AA,
             )

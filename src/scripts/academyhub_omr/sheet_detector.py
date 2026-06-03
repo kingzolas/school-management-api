@@ -43,9 +43,16 @@ class AcademyHubSheetDetector:
     def __init__(self, layout):
         self.layout = layout
 
-    def detect_and_warp(self, gray_image: np.ndarray) -> DetectionResult:
+    def detect_and_warp(
+        self,
+        gray_image: np.ndarray,
+        debug_base_image: Optional[np.ndarray] = None,
+    ) -> DetectionResult:
         original = gray_image.copy()
-        debug = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
+        if debug_base_image is not None:
+            debug = debug_base_image.copy()
+        else:
+            debug = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
         orientation = self._detect_orientation(gray_image.shape)
 
         thresh = self._threshold_image(gray_image)

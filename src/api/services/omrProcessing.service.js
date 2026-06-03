@@ -3,6 +3,21 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
+const DEBUG_FILE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.json']);
+const DEBUG_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png']);
+const DEBUG_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const ZIP_CRC_TABLE = (() => {
+    const table = new Array(256);
+    for (let index = 0; index < 256; index += 1) {
+        let value = index;
+        for (let bit = 0; bit < 8; bit += 1) {
+            value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+        }
+        table[index] = value >>> 0;
+    }
+    return table;
+})();
+
 class OmrProcessingService {
     constructor() {
         this.pythonBin = process.env.OMR_PYTHON_BIN || process.env.PYTHON_BIN || 'python3';
@@ -32,6 +47,10 @@ class OmrProcessingService {
         return process.env.OMR_DEBUG_TOKEN || null;
     }
 
+    getDebugRoot() {
+        return path.join(process.cwd(), 'omr_debug');
+    }
+
     _logInfo(message, meta = null) {
         if (meta) {
             console.log(`[OMR SERVICE] ${message}`, meta);
@@ -55,7 +74,7 @@ class OmrProcessingService {
     }
 
     createDebugSession() {
-        const debugRoot = path.join(process.cwd(), 'omr_debug');
+        const debugRoot = this.getDebugRoot();
         this.ensureDir(debugRoot);
 
         const sessionId = crypto.randomUUID();
@@ -70,7 +89,7 @@ class OmrProcessingService {
 
     writeBase64ImageToDisk(imageBase64, sessionDir) {
         const base64Data = String(imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
-        const imagePath = path.join(sessionDir, 'input.jpg');
+        const imagePath = path.join(sessionDir, '00_input.jpg');
         fs.writeFileSync(imagePath, base64Data, { encoding: 'base64' });
         return imagePath;
     }
@@ -163,6 +182,174 @@ class OmrProcessingService {
         }
     }
 
+    writeDebugJson(sessionDir, debugPayload) {
+        const debugPath = path.join(sessionDir, 'debug.json');
+        fs.writeFileSync(debugPath, JSON.stringify(debugPayload, null, 2), 'utf8');
+        return debugPath;
+    }
+
+    writeManifest(sessionDir, debugId) {
+        const manifestPath = path.join(sessionDir, 'manifest.json');
+        const generatedAt = new Date().toISOString();
+        fs.writeFileSync(
+            manifestPath,
+            JSON.stringify({ debugId, generatedAt, files: [] }, null, 2),
+            'utf8'
+        );
+
+        let manifest = {
+            debugId,
+            generatedAt,
+            files: this.listDebugFiles(debugId, { includeManifest: true }),
+        };
+
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+        manifest = {
+            debugId,
+            generatedAt,
+            files: this.listDebugFiles(debugId, { includeManifest: true }),
+        };
+        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+        return manifest;
+    }
+
+    buildArtifactList(debugId) {
+        return this.listDebugFiles(debugId, { includeManifest: true });
+    }
+
+    listDebugFiles(debugId, { includeManifest = true } = {}) {
+        const sessionDir = this.resolveDebugSessionDir(debugId);
+        if (!fs.existsSync(sessionDir)) {
+            return [];
+        }
+
+        return fs
+            .readdirSync(sessionDir, { withFileTypes: true })
+            .filter((entry) => entry.isFile())
+            .map((entry) => entry.name)
+            .filter((filename) => {
+                if (!includeManifest && filename === 'manifest.json') {
+                    return false;
+                }
+                return this.isAllowedDebugFilename(filename);
+            })
+            .sort((a, b) => a.localeCompare(b))
+            .map((filename) => {
+                const filePath = path.join(sessionDir, filename);
+                const ext = path.extname(filename).toLowerCase();
+                const stat = fs.statSync(filePath);
+                return {
+                    name: filename,
+                    type: DEBUG_IMAGE_EXTENSIONS.has(ext) ? 'image' : 'json',
+                    sizeBytes: stat.size,
+                    url: `/api/omr/debug/${encodeURIComponent(debugId)}/file/${encodeURIComponent(filename)}`,
+                };
+            });
+    }
+
+    resolveDebugSessionDir(debugId) {
+        const normalizedDebugId = this.validateDebugId(debugId);
+        const debugRoot = this.getDebugRoot();
+        const sessionDir = path.resolve(debugRoot, normalizedDebugId);
+        const resolvedRoot = path.resolve(debugRoot);
+
+        if (sessionDir !== resolvedRoot && sessionDir.startsWith(`${resolvedRoot}${path.sep}`)) {
+            return sessionDir;
+        }
+
+        throw new Error('debugId invalido.');
+    }
+
+    resolveDebugFile(debugId, filename) {
+        const sessionDir = this.resolveDebugSessionDir(debugId);
+        const safeFilename = this.validateDebugFilename(filename);
+        const filePath = path.resolve(sessionDir, safeFilename);
+
+        if (!filePath.startsWith(`${sessionDir}${path.sep}`)) {
+            throw new Error('Arquivo de debug invalido.');
+        }
+
+        if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+            return null;
+        }
+
+        return {
+            filePath,
+            filename: safeFilename,
+            contentType: this._contentTypeForExtension(path.extname(safeFilename).toLowerCase()),
+        };
+    }
+
+    validateDebugId(debugId) {
+        const normalizedDebugId = String(debugId || '').trim();
+        if (
+            !normalizedDebugId ||
+            normalizedDebugId.includes('..') ||
+            normalizedDebugId.includes('/') ||
+            normalizedDebugId.includes('\\') ||
+            path.isAbsolute(normalizedDebugId) ||
+            !DEBUG_ID_PATTERN.test(normalizedDebugId)
+        ) {
+            throw new Error('debugId invalido.');
+        }
+
+        return normalizedDebugId;
+    }
+
+    validateDebugFilename(filename) {
+        const normalizedFilename = String(filename || '').trim();
+        const ext = path.extname(normalizedFilename).toLowerCase();
+
+        if (
+            !normalizedFilename ||
+            normalizedFilename.includes('..') ||
+            normalizedFilename.includes('/') ||
+            normalizedFilename.includes('\\') ||
+            path.isAbsolute(normalizedFilename) ||
+            path.basename(normalizedFilename) !== normalizedFilename ||
+            !DEBUG_FILE_EXTENSIONS.has(ext)
+        ) {
+            throw new Error('Arquivo de debug invalido.');
+        }
+
+        return normalizedFilename;
+    }
+
+    isAllowedDebugFilename(filename) {
+        try {
+            this.validateDebugFilename(filename);
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    createDebugZip(debugId) {
+        const sessionDir = this.resolveDebugSessionDir(debugId);
+        if (!fs.existsSync(sessionDir)) {
+            return null;
+        }
+
+        const files = this.listDebugFiles(debugId, { includeManifest: true })
+            .map((file) => file.name)
+            .filter((filename) => this.isAllowedDebugFilename(filename));
+
+        if (!files.length) {
+            return null;
+        }
+
+        return this._buildStoredZipBuffer(
+            files.map((filename) => {
+                const filePath = path.join(sessionDir, filename);
+                return {
+                    name: filename,
+                    data: fs.readFileSync(filePath),
+                    mtime: fs.statSync(filePath).mtime,
+                };
+            })
+        );
+    }
+
     _extractJson(stdout) {
         const lines = String(stdout)
             .split('\n')
@@ -226,7 +413,94 @@ class OmrProcessingService {
     _contentTypeForExtension(ext) {
         if (ext === '.png') return 'image/png';
         if (ext === '.webp') return 'image/webp';
+        if (ext === '.json') return 'application/json';
         return 'image/jpeg';
+    }
+
+    _crc32(buffer) {
+        let crc = 0xffffffff;
+        for (const byte of buffer) {
+            crc = ZIP_CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+        }
+        return (crc ^ 0xffffffff) >>> 0;
+    }
+
+    _dosDateTime(date = new Date()) {
+        const year = Math.max(1980, date.getFullYear());
+        const dosTime =
+            (date.getHours() << 11) |
+            (date.getMinutes() << 5) |
+            Math.floor(date.getSeconds() / 2);
+        const dosDate =
+            ((year - 1980) << 9) |
+            ((date.getMonth() + 1) << 5) |
+            date.getDate();
+
+        return { dosTime, dosDate };
+    }
+
+    _buildStoredZipBuffer(files) {
+        const localParts = [];
+        const centralParts = [];
+        let offset = 0;
+
+        for (const file of files) {
+            const filenameBuffer = Buffer.from(file.name, 'utf8');
+            const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data);
+            const crc = this._crc32(data);
+            const { dosTime, dosDate } = this._dosDateTime(file.mtime);
+
+            const localHeader = Buffer.alloc(30);
+            localHeader.writeUInt32LE(0x04034b50, 0);
+            localHeader.writeUInt16LE(20, 4);
+            localHeader.writeUInt16LE(0, 6);
+            localHeader.writeUInt16LE(0, 8);
+            localHeader.writeUInt16LE(dosTime, 10);
+            localHeader.writeUInt16LE(dosDate, 12);
+            localHeader.writeUInt32LE(crc, 14);
+            localHeader.writeUInt32LE(data.length, 18);
+            localHeader.writeUInt32LE(data.length, 22);
+            localHeader.writeUInt16LE(filenameBuffer.length, 26);
+            localHeader.writeUInt16LE(0, 28);
+
+            localParts.push(localHeader, filenameBuffer, data);
+
+            const centralHeader = Buffer.alloc(46);
+            centralHeader.writeUInt32LE(0x02014b50, 0);
+            centralHeader.writeUInt16LE(20, 4);
+            centralHeader.writeUInt16LE(20, 6);
+            centralHeader.writeUInt16LE(0, 8);
+            centralHeader.writeUInt16LE(0, 10);
+            centralHeader.writeUInt16LE(dosTime, 12);
+            centralHeader.writeUInt16LE(dosDate, 14);
+            centralHeader.writeUInt32LE(crc, 16);
+            centralHeader.writeUInt32LE(data.length, 20);
+            centralHeader.writeUInt32LE(data.length, 24);
+            centralHeader.writeUInt16LE(filenameBuffer.length, 28);
+            centralHeader.writeUInt16LE(0, 30);
+            centralHeader.writeUInt16LE(0, 32);
+            centralHeader.writeUInt16LE(0, 34);
+            centralHeader.writeUInt16LE(0, 36);
+            centralHeader.writeUInt32LE(0, 38);
+            centralHeader.writeUInt32LE(offset, 42);
+
+            centralParts.push(centralHeader, filenameBuffer);
+            offset += localHeader.length + filenameBuffer.length + data.length;
+        }
+
+        const localDirectory = Buffer.concat(localParts);
+        const centralDirectory = Buffer.concat(centralParts);
+        const endRecord = Buffer.alloc(22);
+        endRecord.writeUInt32LE(0x06054b50, 0);
+        endRecord.writeUInt16LE(0, 4);
+        endRecord.writeUInt16LE(0, 6);
+        endRecord.writeUInt16LE(files.length, 8);
+        endRecord.writeUInt16LE(files.length, 10);
+        endRecord.writeUInt32LE(centralDirectory.length, 12);
+        endRecord.writeUInt32LE(localDirectory.length, 16);
+        endRecord.writeUInt16LE(0, 20);
+
+        return Buffer.concat([localDirectory, centralDirectory, endRecord]);
     }
 }
 

@@ -49,11 +49,11 @@ function extractJson(stdout) {
   return JSON.parse(jsonLine);
 }
 
-function listOverlayFiles(dirPath) {
+function listArtifactFiles(dirPath) {
   if (!fs.existsSync(dirPath)) return [];
 
   const files = [];
-  const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+  const allowed = new Set(['.jpg', '.jpeg', '.png', '.json']);
 
   function walk(current) {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
@@ -71,6 +71,24 @@ function listOverlayFiles(dirPath) {
 
   walk(dirPath);
   return files.sort();
+}
+
+function buildManifest(debugId, debugRoot) {
+  return {
+    debugId,
+    generatedAt: new Date().toISOString(),
+    files: listArtifactFiles(debugRoot).map((filePath) => {
+      const name = path.basename(filePath);
+      const ext = path.extname(name).toLowerCase();
+      const stat = fs.statSync(filePath);
+      return {
+        name,
+        type: ext === '.json' ? 'json' : 'image',
+        sizeBytes: stat.size,
+        path: filePath,
+      };
+    }),
+  };
 }
 
 function formatOptionDetails(question) {
@@ -170,6 +188,16 @@ async function main() {
   }
 
   const { result } = await runPython({ imagePath, layoutPath, debugRoot });
+  fs.writeFileSync(path.join(debugRoot, 'debug.json'), JSON.stringify(result.debug || result, null, 2));
+  fs.writeFileSync(
+    path.join(debugRoot, 'manifest.json'),
+    JSON.stringify(buildManifest(debugId, debugRoot), null, 2)
+  );
+  fs.writeFileSync(
+    path.join(debugRoot, 'manifest.json'),
+    JSON.stringify(buildManifest(debugId, debugRoot), null, 2)
+  );
+
   const questions = result.debug?.questions || [];
 
   console.log(`Debug ID: ${debugId}`);
@@ -196,9 +224,9 @@ async function main() {
     }
   }
 
-  const overlays = listOverlayFiles(debugRoot);
+  const overlays = listArtifactFiles(debugRoot);
   console.log('');
-  console.log('Overlays gerados:');
+  console.log('Artefatos gerados:');
   for (const file of overlays) {
     console.log(`  ${file}`);
   }

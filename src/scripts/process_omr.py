@@ -90,7 +90,7 @@ def main():
         save_images = env_flag("OMR_DEBUG_SAVE_IMAGES", False)
         debug_root = os.getenv("OMR_DEBUG_DIR")
         if save_images and debug_root:
-            outdir = str(Path(debug_root) / f"omr_{Path(image_path).stem}")
+            outdir = str(Path(debug_root))
         elif save_images:
             outdir = str(Path(image_path).resolve().parent / f"debug_{Path(image_path).stem}")
         else:
@@ -117,6 +117,7 @@ def main():
                     "threshold": answer.get("threshold"),
                     "reason": answer.get("reason"),
                     "options": answer.get("options"),
+                    "topSecondDifference": answer.get("topSecondDifference"),
                 }
             )
 

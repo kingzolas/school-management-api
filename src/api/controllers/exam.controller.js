@@ -11,6 +11,10 @@ function getRequestRoles(req) {
 }
 
 function hasOmrDebugAccess(req) {
+    if (req.omrDebugAuth) {
+        return true;
+    }
+
     const configuredToken = omrProcessingService.getDebugToken();
     const requestToken =
         req.headers['x-omr-debug-token'] ||
@@ -23,6 +27,78 @@ function hasOmrDebugAccess(req) {
 
     const roles = getRequestRoles(req);
     return roles.some((role) => ['admin', 'coordenador'].includes(role));
+}
+
+function findQuestionDebug(result, questionNumber) {
+    const questions = result?.debug?.questions;
+    if (!Array.isArray(questions)) {
+        return null;
+    }
+
+    return questions.find((question) => Number(question.question) === Number(questionNumber)) || null;
+}
+
+function buildPersistedDebugPayload({
+    sessionId,
+    result,
+    debugContext,
+    saveImages,
+}) {
+    const pipelineDebug = result.debug || {};
+    const questions = Array.isArray(pipelineDebug.questions) ? pipelineDebug.questions : [];
+
+    return {
+        debugId: sessionId,
+        ...debugContext,
+        success: Boolean(result.success),
+        type: result.type || 'BUBBLE_SHEET',
+        stage: result.stage || null,
+        message: result.message || null,
+        anchorsFound: result.anchorsFound ?? null,
+        questionsCount: result.questionsCount ?? null,
+        imageWidth: pipelineDebug.imageWidth ?? null,
+        imageHeight: pipelineDebug.imageHeight ?? null,
+        orientation: pipelineDebug.orientation ?? null,
+        anchors: pipelineDebug.anchors || null,
+        homography: pipelineDebug.homography || null,
+        machineWidth: pipelineDebug.machineWidth ?? null,
+        machineHeight: pipelineDebug.machineHeight ?? null,
+        layoutDebug: pipelineDebug.layoutDebug || null,
+        layoutAttempts: pipelineDebug.layoutAttempts || [],
+        bubbleTemplate: pipelineDebug.bubbleTemplate || [],
+        questions,
+        question5: questions.find((question) => Number(question.question) === 5) || null,
+        answers: result.answers || [],
+        captureHints: result.captureHints || [],
+        saveImages,
+    };
+}
+
+function attachOmrDebugInfo({
+    payload,
+    result,
+    sessionId,
+    manifest,
+    debugPayload,
+    debugMode,
+}) {
+    if (debugMode) {
+        payload.debug = {
+            ...debugPayload,
+            manifest: manifest || null,
+            artifacts: manifest?.files || [],
+        };
+        return;
+    }
+
+    delete payload.debug;
+    payload.debugId = sessionId;
+    payload.debugFilesUrl = `/api/omr/debug/${encodeURIComponent(sessionId)}/files`;
+    payload.debugZipUrl = `/api/omr/debug/${encodeURIComponent(sessionId)}/zip`;
+    payload.debugArtifacts = manifest?.files || [];
+    payload.anchorDebug = debugPayload.anchors;
+    payload.homographyDebug = debugPayload.homography;
+    payload.question5Debug = debugPayload.question5 || findQuestionDebug(result, 5);
 }
 
 function buildOmrCaptureMessage(result) {
@@ -123,7 +199,17 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             qrCodeUuid = null,
         } = req.body;
 
-        const schoolId = req.user.school_id;
+        const schoolId = req.user?.school_id || req.user?.schoolId || req.body?.schoolId;
+
+        if (!schoolId) {
+            return {
+                status: 400,
+                payload: {
+                    success: false,
+                    message: 'schoolId e obrigatorio para debug OMR quando nao ha JWT.',
+                },
+            };
+        }
 
         if (!imageBase64) {
             return {
@@ -158,7 +244,8 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
 
         const imagePath = omrProcessingService.writeBase64ImageToDisk(imageBase64, sessionDir);
         const layoutPath = omrProcessingService.writeLayoutToDisk(omrLayout, sessionDir);
-        const saveImages = debugMode && omrProcessingService.shouldSaveDebugImages();
+        const debugEnabled = omrProcessingService.isDebugEnabled();
+        const saveImages = debugEnabled && omrProcessingService.shouldSaveDebugImages();
 
         const { result } = await omrProcessingService.runPythonOmr({
             imagePath,
@@ -168,16 +255,19 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             saveImages,
         });
 
-        const pipelineDebug = result.debug || {};
-        if (debugMode) {
-            result.debug = {
-                debugId: session.sessionId,
-                ...pipelineDebug,
-                ...debugContext,
+        const debugPayload = debugEnabled
+            ? buildPersistedDebugPayload({
+                sessionId: session.sessionId,
+                result,
+                debugContext,
                 saveImages,
-            };
-        } else {
-            delete result.debug;
+            })
+            : null;
+        let manifest = null;
+
+        if (debugPayload && saveImages) {
+            omrProcessingService.writeDebugJson(sessionDir, debugPayload);
+            manifest = omrProcessingService.writeManifest(sessionDir, session.sessionId);
         }
 
         if (!result.success) {
@@ -186,8 +276,17 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
                 result.userMessage = friendlyMessage;
             }
 
-            if (debugMode && saveImages) {
-                result.debug.overlays = omrProcessingService.collectImageArtifacts(sessionDir);
+            if (debugPayload) {
+                attachOmrDebugInfo({
+                    payload: result,
+                    result,
+                    sessionId: session.sessionId,
+                    manifest,
+                    debugPayload,
+                    debugMode,
+                });
+            } else {
+                delete result.debug;
             }
 
             return { status: 200, payload: result };
@@ -223,9 +322,19 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
 
         if (debugMode) {
             responsePayload.academicWriteSkipped = true;
-            if (saveImages) {
-                responsePayload.debug.overlays = omrProcessingService.collectImageArtifacts(sessionDir);
-            }
+        }
+
+        if (debugPayload) {
+            attachOmrDebugInfo({
+                payload: responsePayload,
+                result,
+                sessionId: session.sessionId,
+                manifest,
+                debugPayload,
+                debugMode,
+            });
+        } else {
+            delete responsePayload.debug;
         }
 
         return { status: 200, payload: responsePayload };
@@ -376,6 +485,73 @@ class ExamController {
             return res.status(status).json(payload);
         } catch (error) {
             console.error('ERRO AO PROCESSAR DEBUG OMR:', error.message);
+            return res.status(400).json({
+                success: false,
+                message: error.message,
+            });
+        }
+    }
+
+    async listOMRDebugFiles(req, res) {
+        try {
+            const { debugId } = req.params;
+            const sessionDir = omrProcessingService.resolveDebugSessionDir(debugId);
+            const files = omrProcessingService.buildArtifactList(debugId);
+
+            return res.status(200).json({
+                debugId,
+                exists: require('fs').existsSync(sessionDir),
+                files,
+            });
+        } catch (error) {
+            return res.status(400).json({
+                success: false,
+                message: error.message,
+            });
+        }
+    }
+
+    async downloadOMRDebugFile(req, res) {
+        try {
+            const { debugId, filename } = req.params;
+            const file = omrProcessingService.resolveDebugFile(debugId, filename);
+
+            if (!file) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Arquivo de debug nao encontrado.',
+                });
+            }
+
+            res.setHeader('Content-Type', file.contentType);
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            return res.sendFile(file.filePath);
+        } catch (error) {
+            return res.status(400).json({
+                success: false,
+                message: error.message,
+            });
+        }
+    }
+
+    async downloadOMRDebugZip(req, res) {
+        try {
+            const { debugId } = req.params;
+            const zipBuffer = omrProcessingService.createDebugZip(debugId);
+
+            if (!zipBuffer) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Artefatos de debug nao encontrados.',
+                });
+            }
+
+            res.setHeader('Content-Type', 'application/zip');
+            res.setHeader('Content-Disposition', `attachment; filename="omr_debug_${debugId}.zip"`);
+            res.setHeader('Content-Length', zipBuffer.length);
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            return res.send(zipBuffer);
+        } catch (error) {
             return res.status(400).json({
                 success: false,
                 message: error.message,
