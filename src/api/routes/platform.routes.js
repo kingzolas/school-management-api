@@ -19,6 +19,14 @@ const {
 const router = express.Router();
 
 const FILE_LIMIT_BYTES = 25 * 1024 * 1024;
+const USER_ROLE_ALIASES = {
+  professor: 'Professor',
+  teacher: 'Professor',
+  coordenador: 'Coordenador',
+  coordinator: 'Coordenador',
+  admin: 'Admin',
+  staff: 'Staff',
+};
 
 function asyncRoute(handler) {
   return async (req, res) => {
@@ -107,6 +115,35 @@ function normalizeSubscriptionStatus(value, fallback = 'pending') {
     throw error;
   }
   return status;
+}
+
+function normalizeUserRoleFilter(value) {
+  const raw = normalizeText(value);
+  if (!raw) return null;
+
+  const normalized = raw.toLowerCase();
+  const role = USER_ROLE_ALIASES[normalized] || raw;
+  if (!['Professor', 'Coordenador', 'Admin', 'Staff'].includes(role)) {
+    const error = new Error('Perfil de usuario invalido.');
+    error.status = 400;
+    error.code = 'INVALID_USER_ROLE';
+    throw error;
+  }
+  return role;
+}
+
+function normalizeUserStatusFilter(value) {
+  const raw = normalizeText(value);
+  if (!raw) return null;
+
+  const normalized = raw.toLowerCase();
+  if (['active', 'ativo'].includes(normalized)) return 'Ativo';
+  if (['inactive', 'inativo'].includes(normalized)) return 'Inativo';
+
+  const error = new Error('Status de usuario invalido.');
+  error.status = 400;
+  error.code = 'INVALID_USER_STATUS';
+  throw error;
 }
 
 function normalizeBillingDay(value, fallback = 10) {
@@ -280,6 +317,57 @@ function normalizeSchoolResponse(school) {
   };
 }
 
+function normalizeUserStatusForResponse(rawStatus) {
+  const status = rawStatus || 'Ativo';
+  return {
+    rawStatus: status,
+    status: status === 'Inativo' ? 'inactive' : 'active',
+    isActive: status !== 'Inativo',
+  };
+}
+
+function normalizePlatformUserResponse(user) {
+  const item = user?.toObject ? user.toObject() : user;
+  const status = normalizeUserStatusForResponse(item.status);
+  const roles = Array.isArray(item.roles) ? item.roles : [];
+
+  return {
+    id: String(item._id),
+    name: item.fullName || '',
+    email: item.email || '',
+    role: roles[0] || null,
+    roles,
+    phone: item.phoneNumber || item.phoneFixed || null,
+    status: status.status,
+    rawStatus: status.rawStatus,
+    isActive: status.isActive,
+    createdAt: item.createdAt,
+    lastLogin: item.lastLogin || null,
+  };
+}
+
+function normalizeOverviewSubscription(subscription, latestPayment) {
+  return {
+    planName: subscription?.planName || '',
+    monthlyAmount: subscription?.monthlyAmount || 0,
+    billingDay: subscription?.billingDay || null,
+    status: subscription?.status || 'pending',
+    nextDueDate: subscription?.nextDueDate || null,
+    lastPaymentDate: subscription?.lastPaymentDate || latestPayment?.paidAt || null,
+  };
+}
+
+function normalizeOverviewAccess(access = {}) {
+  const status = access.isBlocked ? 'blocked' : (access.status || 'active');
+  return {
+    status,
+    isBlocked: Boolean(access.isBlocked || status === 'blocked'),
+    reason: access.reason || null,
+    blockedAt: access.blockedAt || null,
+    blockedUntil: access.blockedUntil || null,
+  };
+}
+
 async function getLatestPaymentMap(schoolIds) {
   const payments = await SchoolSubscriptionPayment.find({
     schoolId: { $in: schoolIds },
@@ -323,6 +411,52 @@ async function buildSchoolTableRow(school, subscription, latestPayment) {
     lastPaymentDate: subscription?.lastPaymentDate || latestPayment?.paidAt || null,
     nextDueDate: subscription?.nextDueDate || null,
     createdAt: school.createdAt,
+  };
+}
+
+async function buildSchoolOverviewData(school, subscription, latestPayment) {
+  const schoolId = school._id;
+  const [
+    activeStudentCount,
+    classCount,
+    activeClassCount,
+    userCount,
+    activeUserCount,
+    teacherCount,
+    coordinatorCount,
+    adminCount,
+    staffCount,
+  ] = await Promise.all([
+    Student.countDocuments({ school_id: schoolId, isActive: true }),
+    ClassModel.countDocuments({ school_id: schoolId }),
+    ClassModel.countDocuments({ school_id: schoolId, status: 'Ativa' }),
+    User.countDocuments({ school_id: schoolId }),
+    User.countDocuments({ school_id: schoolId, status: 'Ativo' }),
+    User.countDocuments({ school_id: schoolId, roles: 'Professor' }),
+    User.countDocuments({ school_id: schoolId, roles: 'Coordenador' }),
+    User.countDocuments({ school_id: schoolId, roles: 'Admin' }),
+    User.countDocuments({ school_id: schoolId, roles: 'Staff' }),
+  ]);
+
+  return {
+    schoolId: String(schoolId),
+    studentCount: activeStudentCount,
+    activeStudentCount,
+    classCount,
+    activeClassCount,
+    userCount,
+    activeUserCount,
+    teacherCount,
+    adminCount,
+    coordinatorCount,
+    staffCount,
+    subscription: normalizeOverviewSubscription(subscription, latestPayment),
+    platformAccess: normalizeOverviewAccess(school.platformAccess || {}),
+    overview: {
+      studentCount: activeStudentCount,
+      classCount,
+      userCount,
+    },
   };
 }
 
@@ -624,10 +758,31 @@ router.get('/schools/:schoolId', asyncRoute(async (req, res) => {
   const school = await School.findById(req.params.schoolId).select('-logo.data').lean();
   if (!school) return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
 
-  const subscription = await SchoolSubscription.findOne({ schoolId: req.params.schoolId }).lean();
+  const [subscription, latestPaymentMap] = await Promise.all([
+    SchoolSubscription.findOne({ schoolId: req.params.schoolId }).lean(),
+    getLatestPaymentMap([req.params.schoolId]),
+  ]);
+  const overview = await buildSchoolOverviewData(
+    school,
+    subscription,
+    latestPaymentMap.get(String(req.params.schoolId))
+  );
+
   return res.status(200).json({
     school: normalizeSchoolResponse(school),
     subscription,
+    platformAccess: overview.platformAccess,
+    studentCount: overview.studentCount,
+    activeStudentCount: overview.activeStudentCount,
+    classCount: overview.classCount,
+    activeClassCount: overview.activeClassCount,
+    userCount: overview.userCount,
+    activeUserCount: overview.activeUserCount,
+    teacherCount: overview.teacherCount,
+    adminCount: overview.adminCount,
+    coordinatorCount: overview.coordinatorCount,
+    staffCount: overview.staffCount,
+    overview: overview.overview,
   });
 }));
 
@@ -726,17 +881,89 @@ router.get('/schools/:schoolId/overview', asyncRoute(async (req, res) => {
     getLatestPaymentMap([req.params.schoolId]),
   ]);
 
-  const row = await buildSchoolTableRow(
+  const latestPayment = latestPaymentMap.get(String(req.params.schoolId));
+  const overview = await buildSchoolOverviewData(
     school,
     subscription,
-    latestPaymentMap.get(String(req.params.schoolId))
+    latestPayment
   );
 
   return res.status(200).json({
+    ...overview,
     school: normalizeSchoolResponse(school),
-    overview: row,
-    subscription,
   });
+}));
+
+router.get('/schools/:schoolId/users', asyncRoute(async (req, res) => {
+  const school = await School.findById(req.params.schoolId).select('_id').lean();
+  if (!school) return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
+
+  const { page, limit, skip } = normalizePagination(req.query);
+  const query = { school_id: req.params.schoolId };
+
+  if (req.query.search) {
+    const regex = new RegExp(escapeRegex(req.query.search), 'i');
+    query.$or = [
+      { fullName: regex },
+      { email: regex },
+      { username: regex },
+    ];
+  }
+
+  const role = normalizeUserRoleFilter(req.query.role);
+  if (role) query.roles = role;
+
+  const status = normalizeUserStatusFilter(req.query.status);
+  if (status) query.status = status;
+
+  const [users, total] = await Promise.all([
+    User.find(query)
+      .select('fullName email roles status phoneNumber phoneFixed createdAt updatedAt')
+      .sort({ fullName: 1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    User.countDocuments(query),
+  ]);
+
+  return res.status(200).json({
+    items: users.map(normalizePlatformUserResponse),
+    total,
+    page,
+    limit,
+  });
+}));
+
+router.post('/schools/:schoolId/users/:userId/reset-password', asyncRoute(async (req, res) => {
+  const newPassword = normalizeText(req.body.newPassword);
+  if (newPassword.length < 8) {
+    return res.status(400).json({
+      message: 'A nova senha deve ter pelo menos 8 caracteres.',
+      code: 'INVALID_PASSWORD',
+    });
+  }
+
+  const user = await User.findOne({
+    _id: req.params.userId,
+    school_id: req.params.schoolId,
+  });
+
+  if (!user) {
+    return res.status(404).json({
+      message: 'Usuario nao encontrado para esta escola.',
+      code: 'USER_NOT_FOUND_IN_SCHOOL',
+    });
+  }
+
+  user.password = newPassword;
+  await user.save();
+
+  const response = { message: 'Senha redefinida com sucesso.' };
+  if (Object.prototype.hasOwnProperty.call(req.body, 'forceChangeOnNextLogin')) {
+    response.warning = 'forceChangeOnNextLogin ainda nao e suportado pelo model User e foi ignorado.';
+  }
+
+  return res.status(200).json(response);
 }));
 
 router.get('/schools/:schoolId/subscription', asyncRoute(async (req, res) => {
