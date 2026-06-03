@@ -73,6 +73,11 @@ function parseStringArray(value) {
   return [];
 }
 
+function parseObject(value) {
+  const parsed = parseMaybeJson(value);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+}
+
 function parseNumber(value, fallback = 0) {
   if (value === undefined || value === null || value === '') return fallback;
   const parsed = Number(value);
@@ -182,6 +187,44 @@ function sanitizeFileName(fileName) {
   return base || 'arquivo';
 }
 
+function getRequestBaseUrl(req) {
+  const configuredBaseUrl = normalizeText(process.env.PUBLIC_API_BASE_URL || process.env.API_BASE_URL)
+    .replace(/\/+$/, '');
+  if (configuredBaseUrl) return configuredBaseUrl;
+
+  const forwardedProto = normalizeText(req.get('x-forwarded-proto')).split(',')[0].trim();
+  const forwardedHost = normalizeText(req.get('x-forwarded-host')).split(',')[0].trim();
+  const protocol = forwardedProto || req.protocol || 'https';
+  const host = forwardedHost || req.get('host');
+
+  return host ? `${protocol}://${host}` : '';
+}
+
+function buildSchoolLogoMeta(school, req) {
+  const item = school?.toObject ? school.toObject() : school;
+  const schoolId = item?._id ? String(item._id) : '';
+  const storedLogoUrl = normalizeText(item?.logoUrl);
+  const hasBinaryLogo = Boolean(item?.logo?.contentType);
+  const hasLogo = Boolean(storedLogoUrl || hasBinaryLogo);
+
+  if (!hasLogo || !schoolId) {
+    return {
+      logoUrl: null,
+      logoEndpoint: null,
+      hasLogo: false,
+    };
+  }
+
+  const logoEndpoint = hasBinaryLogo ? `/api/schools/${schoolId}/logo` : null;
+  const baseUrl = getRequestBaseUrl(req);
+
+  return {
+    logoUrl: storedLogoUrl || (baseUrl ? `${baseUrl}${logoEndpoint}` : logoEndpoint),
+    logoEndpoint,
+    hasLogo: true,
+  };
+}
+
 function createUploadMiddleware(upload) {
   return (req, res, next) => upload(req, res, (error) => {
     if (!error) return next();
@@ -215,6 +258,7 @@ const pdfUpload = createUploadMiddleware(multer({
 function buildSchoolPayload(body = {}) {
   const status = normalizeOperationalStatus(body.initialStatus || body.status || 'active');
   const isBlocked = status === 'blocked';
+  const address = parseObject(body.address);
 
   return {
     name: normalizeText(body.name),
@@ -223,12 +267,12 @@ function buildSchoolPayload(body = {}) {
     contactEmail: normalizeEmail(body.email || body.contactEmail),
     contactPhone: normalizeText(body.phone || body.contactPhone),
     address: {
-      city: normalizeText(body.city || body['address.city']),
-      state: normalizeText(body.state || body['address.state']),
-      zipCode: normalizeText(body.zipCode || body['address.zipCode']),
-      street: normalizeText(body.street || body['address.street']),
-      number: normalizeText(body.number || body['address.number']),
-      neighborhood: normalizeText(body.neighborhood || body['address.neighborhood']),
+      city: normalizeText(body.city || body['address.city'] || address.city),
+      state: normalizeText(body.state || body['address.state'] || address.state),
+      zipCode: normalizeText(body.zipCode || body['address.zipCode'] || address.zipCode),
+      street: normalizeText(body.street || body['address.street'] || address.street),
+      number: normalizeText(body.number || body['address.number'] || address.number),
+      neighborhood: normalizeText(body.neighborhood || body['address.neighborhood'] || address.neighborhood),
     },
     platformContact: {
       responsibleName: normalizeText(body.responsibleName),
@@ -249,6 +293,7 @@ function buildSchoolPayload(body = {}) {
 
 function buildSchoolUpdatePayload(body = {}) {
   const update = {};
+  const address = parseObject(body.address);
 
   const fieldMap = {
     name: 'name',
@@ -281,6 +326,15 @@ function buildSchoolUpdatePayload(body = {}) {
     }
   }
 
+  for (const [source, target] of Object.entries(addressMap)) {
+    if (
+      Object.prototype.hasOwnProperty.call(address, source)
+      && !Object.prototype.hasOwnProperty.call(update, target)
+    ) {
+      update[target] = normalizeText(address[source]);
+    }
+  }
+
   const contactMap = {
     responsibleName: 'platformContact.responsibleName',
     responsibleEmail: 'platformContact.responsibleEmail',
@@ -296,7 +350,7 @@ function buildSchoolUpdatePayload(body = {}) {
   return update;
 }
 
-function normalizeSchoolResponse(school) {
+function normalizeSchoolResponse(school, req) {
   const item = school?.toObject ? school.toObject() : school;
   if (!item) return null;
 
@@ -310,10 +364,39 @@ function normalizeSchoolResponse(school) {
     city: item.address?.city || '',
     state: item.address?.state || '',
     address: item.address || {},
+    ...buildSchoolLogoMeta(item, req),
     platformContact: item.platformContact || {},
     platformAccess: item.platformAccess || { status: 'active', isBlocked: false },
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
+  };
+}
+
+function normalizeActivityBookResponse(book) {
+  const item = book?.toObject ? book.toObject() : book;
+  if (!item) return null;
+
+  return {
+    ...item,
+    id: String(item._id),
+    _id: item._id,
+    allowedSchoolIds: Array.isArray(item.allowedSchoolIds)
+      ? item.allowedSchoolIds.map((schoolId) => String(schoolId))
+      : [],
+    createdBy: item.createdBy ? String(item.createdBy) : item.createdBy,
+    schoolId: item.schoolId ? String(item.schoolId) : item.schoolId,
+  };
+}
+
+function normalizeActivityPageResponse(page) {
+  const item = page?.toObject ? page.toObject() : page;
+  if (!item) return null;
+
+  return {
+    ...item,
+    id: String(item._id),
+    _id: item._id,
+    bookId: item.bookId ? String(item.bookId) : item.bookId,
   };
 }
 
@@ -384,7 +467,7 @@ async function getLatestPaymentMap(schoolIds) {
   return map;
 }
 
-async function buildSchoolTableRow(school, subscription, latestPayment) {
+async function buildSchoolTableRow(school, subscription, latestPayment, req) {
   const schoolId = school._id;
   const [studentCount, classCount, userCount] = await Promise.all([
     Student.countDocuments({ school_id: schoolId, isActive: true }),
@@ -407,6 +490,7 @@ async function buildSchoolTableRow(school, subscription, latestPayment) {
     studentCount,
     classCount,
     userCount,
+    ...buildSchoolLogoMeta(school, req),
     isBlocked: Boolean(access.isBlocked || operationalStatus === 'blocked'),
     lastPaymentDate: subscription?.lastPaymentDate || latestPayment?.paidAt || null,
     nextDueDate: subscription?.nextDueDate || null,
@@ -414,7 +498,7 @@ async function buildSchoolTableRow(school, subscription, latestPayment) {
   };
 }
 
-async function buildSchoolOverviewData(school, subscription, latestPayment) {
+async function buildSchoolOverviewData(school, subscription, latestPayment, req) {
   const schoolId = school._id;
   const [
     activeStudentCount,
@@ -450,6 +534,7 @@ async function buildSchoolOverviewData(school, subscription, latestPayment) {
     adminCount,
     coordinatorCount,
     staffCount,
+    ...buildSchoolLogoMeta(school, req),
     subscription: normalizeOverviewSubscription(subscription, latestPayment),
     platformAccess: normalizeOverviewAccess(school.platformAccess || {}),
     overview: {
@@ -539,7 +624,8 @@ async function sendSchoolsList(req, res) {
   const items = await Promise.all(schools.map((school) => buildSchoolTableRow(
     school,
     subscriptionMap.get(String(school._id)),
-    latestPaymentMap.get(String(school._id))
+    latestPaymentMap.get(String(school._id)),
+    req
   )));
 
   return res.status(200).json({ items, page, limit, total });
@@ -749,7 +835,7 @@ router.post('/schools', asyncRoute(async (req, res) => {
   }
 
   return res.status(201).json({
-    school: normalizeSchoolResponse(school),
+    school: normalizeSchoolResponse(school, req),
     subscription,
   });
 }));
@@ -765,11 +851,12 @@ router.get('/schools/:schoolId', asyncRoute(async (req, res) => {
   const overview = await buildSchoolOverviewData(
     school,
     subscription,
-    latestPaymentMap.get(String(req.params.schoolId))
+    latestPaymentMap.get(String(req.params.schoolId)),
+    req
   );
 
   return res.status(200).json({
-    school: normalizeSchoolResponse(school),
+    school: normalizeSchoolResponse(school, req),
     subscription,
     platformAccess: overview.platformAccess,
     studentCount: overview.studentCount,
@@ -789,7 +876,7 @@ router.get('/schools/:schoolId', asyncRoute(async (req, res) => {
 router.patch('/schools/:schoolId', asyncRoute(async (req, res) => {
   const updatePayload = buildSchoolUpdatePayload(req.body);
   const school = await SchoolService.updateSchool(req.params.schoolId, updatePayload, null);
-  return res.status(200).json({ school: normalizeSchoolResponse(school) });
+  return res.status(200).json({ school: normalizeSchoolResponse(school, req) });
 }));
 
 router.post('/schools/:schoolId/activate', asyncRoute(async (req, res) => {
@@ -807,7 +894,7 @@ router.post('/schools/:schoolId/activate', asyncRoute(async (req, res) => {
   ).select('-logo.data');
 
   if (!school) return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
-  return res.status(200).json({ message: 'Escola ativada com sucesso.', school: normalizeSchoolResponse(school) });
+  return res.status(200).json({ message: 'Escola ativada com sucesso.', school: normalizeSchoolResponse(school, req) });
 }));
 
 router.post('/schools/:schoolId/inactivate', asyncRoute(async (req, res) => {
@@ -823,7 +910,7 @@ router.post('/schools/:schoolId/inactivate', asyncRoute(async (req, res) => {
   ).select('-logo.data');
 
   if (!school) return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
-  return res.status(200).json({ message: 'Escola inativada com sucesso.', school: normalizeSchoolResponse(school) });
+  return res.status(200).json({ message: 'Escola inativada com sucesso.', school: normalizeSchoolResponse(school, req) });
 }));
 
 router.post('/schools/:schoolId/block', asyncRoute(async (req, res) => {
@@ -846,7 +933,7 @@ router.post('/schools/:schoolId/block', asyncRoute(async (req, res) => {
   if (!school) return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
   return res.status(200).json({
     message: 'Escola bloqueada com sucesso.',
-    school: normalizeSchoolResponse(school),
+    school: normalizeSchoolResponse(school, req),
   });
 }));
 
@@ -868,7 +955,7 @@ router.post('/schools/:schoolId/unblock', asyncRoute(async (req, res) => {
   if (!school) return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
   return res.status(200).json({
     message: 'Escola desbloqueada com sucesso.',
-    school: normalizeSchoolResponse(school),
+    school: normalizeSchoolResponse(school, req),
   });
 }));
 
@@ -885,12 +972,13 @@ router.get('/schools/:schoolId/overview', asyncRoute(async (req, res) => {
   const overview = await buildSchoolOverviewData(
     school,
     subscription,
-    latestPayment
+    latestPayment,
+    req
   );
 
   return res.status(200).json({
     ...overview,
-    school: normalizeSchoolResponse(school),
+    school: normalizeSchoolResponse(school, req),
   });
 }));
 
@@ -1074,7 +1162,10 @@ router.patch('/schools/:schoolId/subscription/payments/:paymentId', asyncRoute(a
 
 router.get('/activity-books', asyncRoute(async (req, res) => {
   const result = await activityLibraryService.listActivityBooks(req.query);
-  return res.status(200).json(result);
+  return res.status(200).json({
+    ...result,
+    items: result.items.map(normalizeActivityBookResponse),
+  });
 }));
 
 router.post('/activity-books', pdfUpload, asyncRoute(async (req, res) => {
@@ -1084,55 +1175,86 @@ router.post('/activity-books', pdfUpload, asyncRoute(async (req, res) => {
     adminId: req.platformAdmin.id,
   });
 
-  return res.status(201).json(result);
+  return res.status(201).json({
+    ...result,
+    book: normalizeActivityBookResponse(result.book),
+  });
+}));
+
+router.get('/activity-books/:bookId/download-url', asyncRoute(async (req, res) => {
+  const book = await activityLibraryService.getActivityBook(req.params.bookId);
+  const key = normalizeText(book.originalPdfKey);
+  const expiresIn = Math.min(Math.max(Number(req.query.expiresIn) || 300, 60), 3600);
+
+  if (!key) {
+    return res.status(404).json({
+      message: 'PDF original nao encontrado para este caderno.',
+      code: 'ORIGINAL_PDF_NOT_FOUND',
+    });
+  }
+
+  const exists = await r2StorageService.objectExists(key);
+  if (!exists) {
+    return res.status(404).json({
+      message: 'PDF original nao encontrado no R2.',
+      code: 'ORIGINAL_PDF_OBJECT_NOT_FOUND',
+    });
+  }
+
+  const result = await r2StorageService.getSignedDownloadUrl(key, expiresIn);
+  return res.status(200).json({
+    key: result.key,
+    url: result.url,
+    expiresIn,
+  });
 }));
 
 router.get('/activity-books/:bookId', asyncRoute(async (req, res) => {
   const book = await activityLibraryService.getActivityBook(req.params.bookId);
-  return res.status(200).json({ book });
+  return res.status(200).json({ book: normalizeActivityBookResponse(book) });
 }));
 
 router.patch('/activity-books/:bookId', asyncRoute(async (req, res) => {
   const book = await activityLibraryService.updateActivityBook(req.params.bookId, req.body);
-  return res.status(200).json({ book });
+  return res.status(200).json({ book: normalizeActivityBookResponse(book) });
 }));
 
 router.delete('/activity-books/:bookId', asyncRoute(async (req, res) => {
   const book = await activityLibraryService.archiveActivityBook(req.params.bookId);
   return res.status(200).json({
     message: 'ActivityBook arquivado com sucesso. Arquivo fisico preservado no R2.',
-    book,
+    book: normalizeActivityBookResponse(book),
   });
 }));
 
 router.get('/activity-books/:bookId/pages', asyncRoute(async (req, res) => {
   const pages = await activityLibraryService.listPages(req.params.bookId);
-  return res.status(200).json({ items: pages, total: pages.length });
+  return res.status(200).json({ items: pages.map(normalizeActivityPageResponse), total: pages.length });
 }));
 
 router.patch('/activity-pages/:pageId', asyncRoute(async (req, res) => {
   const page = await activityLibraryService.updatePage(req.params.pageId, req.body);
-  return res.status(200).json({ page });
+  return res.status(200).json({ page: normalizeActivityPageResponse(page) });
 }));
 
 router.patch('/activity-pages/:pageId/header-overlay', asyncRoute(async (req, res) => {
   const page = await activityLibraryService.updateHeaderOverlay(req.params.pageId, req.body);
-  return res.status(200).json({ page });
+  return res.status(200).json({ page: normalizeActivityPageResponse(page) });
 }));
 
 router.post('/activity-books/:bookId/visibility', asyncRoute(async (req, res) => {
   const book = await activityLibraryService.updateVisibility(req.params.bookId, req.body);
-  return res.status(200).json({ book });
+  return res.status(200).json({ book: normalizeActivityBookResponse(book) });
 }));
 
 router.post('/activity-books/:bookId/publish', asyncRoute(async (req, res) => {
   const book = await activityLibraryService.publishBook(req.params.bookId);
-  return res.status(200).json({ message: 'ActivityBook publicado com sucesso.', book });
+  return res.status(200).json({ message: 'ActivityBook publicado com sucesso.', book: normalizeActivityBookResponse(book) });
 }));
 
 router.post('/activity-books/:bookId/unpublish', asyncRoute(async (req, res) => {
   const book = await activityLibraryService.unpublishBook(req.params.bookId);
-  return res.status(200).json({ message: 'ActivityBook despublicado com sucesso.', book });
+  return res.status(200).json({ message: 'ActivityBook despublicado com sucesso.', book: normalizeActivityBookResponse(book) });
 }));
 
 module.exports = router;
