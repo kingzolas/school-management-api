@@ -43,6 +43,10 @@ class OmrProcessingService {
         return this._envFlag('KEEP_OMR_DEBUG_FILES', false);
     }
 
+    isPerformanceDebugEnabled() {
+        return this._envFlag('OMR_PERFORMANCE_DEBUG', false);
+    }
+
     getDebugToken() {
         return process.env.OMR_DEBUG_TOKEN || null;
     }
@@ -87,10 +91,21 @@ class OmrProcessingService {
         };
     }
 
-    writeBase64ImageToDisk(imageBase64, sessionDir) {
+    writeBase64ImageToDisk(imageBase64, sessionDir, performanceTimings = null) {
+        const decodeStart = process.hrtime.bigint();
         const base64Data = String(imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
+        const imageBuffer = Buffer.from(base64Data, 'base64');
+        if (performanceTimings) {
+            performanceTimings.decodeBase64Ms = this._elapsedMs(decodeStart);
+        }
+
+        const writeStart = process.hrtime.bigint();
         const imagePath = path.join(sessionDir, '00_input.jpg');
-        fs.writeFileSync(imagePath, base64Data, { encoding: 'base64' });
+        fs.writeFileSync(imagePath, imageBuffer);
+        if (performanceTimings) {
+            performanceTimings.tempImageWriteMs = this._elapsedMs(writeStart);
+        }
+
         return imagePath;
     }
 
@@ -365,6 +380,10 @@ class OmrProcessingService {
         }
 
         return JSON.parse(jsonLine);
+    }
+
+    _elapsedMs(startHrtime) {
+        return Number(process.hrtime.bigint() - startHrtime) / 1e6;
     }
 
     collectImageArtifacts(sessionDir, { includeBase64 = true } = {}) {

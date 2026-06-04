@@ -1,4 +1,5 @@
 import itertools
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -32,6 +33,7 @@ class DetectionResult:
     missing_anchors: List[str]
     capture_hints: List[str]
     message: str
+    performance: Optional[dict] = None
 
 
 class AcademyHubSheetDetector:
@@ -54,9 +56,15 @@ class AcademyHubSheetDetector:
         else:
             debug = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
         orientation = self._detect_orientation(gray_image.shape)
+        performance = {}
+        total_start = time.perf_counter()
 
+        threshold_start = time.perf_counter()
         thresh = self._threshold_image(gray_image)
+        performance["pythonThresholdMs"] = self._elapsed_ms(threshold_start)
+        anchor_start = time.perf_counter()
         candidates = self._find_anchor_candidates(thresh, gray_image.shape)
+        performance["pythonAnchorMs"] = self._elapsed_ms(anchor_start)
         candidates_debug = [
             self._candidate_to_debug(candidate, gray_image.shape)
             for candidate in candidates
@@ -90,9 +98,16 @@ class AcademyHubSheetDetector:
                     "not_enough_anchors",
                 ),
                 message="Menos de 4 ancoras candidatas detectadas.",
+                performance={
+                    **performance,
+                    "pythonHomographyMs": 0.0,
+                    "pythonSheetDetectionMs": self._elapsed_ms(total_start),
+                },
             )
 
+        anchor_select_start = time.perf_counter()
         best_quad, best_metrics = self._choose_best_quad(candidates, gray_image.shape)
+        performance["pythonAnchorSelectMs"] = self._elapsed_ms(anchor_select_start)
 
         if best_quad is None:
             missing_anchors = self._infer_missing_anchors(candidates, gray_image.shape)
@@ -116,6 +131,11 @@ class AcademyHubSheetDetector:
                     "invalid_quad",
                 ),
                 message="Nenhum conjunto valido de 4 ancoras encontrado.",
+                performance={
+                    **performance,
+                    "pythonHomographyMs": 0.0,
+                    "pythonSheetDetectionMs": self._elapsed_ms(total_start),
+                },
             )
 
         ordered = self._order_points(best_quad.astype(np.float32))
@@ -134,7 +154,10 @@ class AcademyHubSheetDetector:
                 cv2.LINE_AA,
             )
 
+        homography_start = time.perf_counter()
         warped, matrix = self._warp_machine(original, ordered)
+        performance["pythonHomographyMs"] = self._elapsed_ms(homography_start)
+        performance["pythonSheetDetectionMs"] = self._elapsed_ms(total_start)
 
         return DetectionResult(
             success=True,
@@ -154,6 +177,7 @@ class AcademyHubSheetDetector:
             missing_anchors=[],
             capture_hints=[],
             message="Area OMR principal detectada com sucesso.",
+            performance=performance,
         )
 
     def _threshold_image(self, gray: np.ndarray) -> np.ndarray:
@@ -356,6 +380,10 @@ class AcademyHubSheetDetector:
         if w > h * 1.08:
             return "landscape"
         return "square"
+
+    @staticmethod
+    def _elapsed_ms(start: float) -> float:
+        return round((time.perf_counter() - start) * 1000.0, 2)
 
     def _candidate_to_debug(
         self,

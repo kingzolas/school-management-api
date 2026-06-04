@@ -1,5 +1,65 @@
 const examService = require('../services/exam.service');
 const omrProcessingService = require('../services/omrProcessing.service');
+const crypto = require('crypto');
+
+function elapsedMs(startHrtime) {
+    return Number(process.hrtime.bigint() - startHrtime) / 1e6;
+}
+
+function roundMs(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    return Math.round(Number(value) * 100) / 100;
+}
+
+function timedNow() {
+    return process.hrtime.bigint();
+}
+
+function buildCorrelationId(req) {
+    const raw =
+        req.headers['x-correlation-id'] ||
+        req.headers['x-omr-correlation-id'] ||
+        req.body?.correlationId ||
+        req.query?.correlationId;
+
+    const normalized = raw ? String(raw).trim() : '';
+    if (normalized) {
+        return normalized.slice(0, 120);
+    }
+
+    return `omr-${crypto.randomUUID()}`;
+}
+
+function buildPayloadSize(req, imageBase64) {
+    const contentLength = Number(req.headers['content-length'] || 0);
+    if (Number.isFinite(contentLength) && contentLength > 0) {
+        return contentLength;
+    }
+
+    const imageSize = String(imageBase64 || '').length;
+    return imageSize > 0 ? imageSize : null;
+}
+
+function finishOmrRequest({ status, payload, performanceTimings, requestStart }) {
+    if (!performanceTimings) {
+        return { status, payload };
+    }
+
+    performanceTimings.totalRequestMs = roundMs(elapsedMs(requestStart));
+    for (const [key, value] of Object.entries(performanceTimings)) {
+        if (typeof value === 'number') {
+            performanceTimings[key] = roundMs(value);
+        }
+    }
+
+    payload.correlationId = performanceTimings.correlationId;
+    payload.performance = performanceTimings;
+
+    console.log('[OMR PERF]', JSON.stringify(performanceTimings));
+    return { status, payload };
+}
 
 function getRequestRoles(req) {
     return [
@@ -167,25 +227,34 @@ async function resolveOmrContext({ req, examId, qrCodeUuid, schoolId }) {
 }
 
 async function runOmrRequest(req, { persistResults, debugMode }) {
+    const requestStart = timedNow();
+    const performanceDebug = omrProcessingService.isPerformanceDebugEnabled();
+    const performanceTimings = performanceDebug
+        ? {
+            correlationId: buildCorrelationId(req),
+            route: req.originalUrl || req.url,
+            method: req.method,
+            debugMode: Boolean(debugMode),
+            persistResults: Boolean(persistResults),
+            startedAt: new Date().toISOString(),
+        }
+        : null;
+    const finish = (status, payload) =>
+        finishOmrRequest({ status, payload, performanceTimings, requestStart });
+
     if (debugMode) {
         if (!omrProcessingService.isDebugEnabled()) {
-            return {
-                status: 404,
-                payload: {
+            return finish(404, {
                     success: false,
                     message: 'Debug OMR desativado.',
-                },
-            };
+            });
         }
 
         if (!hasOmrDebugAccess(req)) {
-            return {
-                status: 403,
-                payload: {
+            return finish(403, {
                     success: false,
                     message: 'Acesso ao debug OMR nao autorizado.',
-                },
-            };
+            });
         }
     }
 
@@ -199,54 +268,84 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             qrCodeUuid = null,
         } = req.body;
 
+        if (performanceTimings) {
+            performanceTimings.payloadSizeBytes = buildPayloadSize(req, imageBase64);
+            performanceTimings.imageBase64Size = String(imageBase64 || '')
+                .replace(/^data:image\/\w+;base64,/, '')
+                .length;
+            performanceTimings.correctionType = correctionType;
+            performanceTimings.examId = examId ? String(examId) : null;
+            performanceTimings.qrCodeUuidPresent = Boolean(qrCodeUuid);
+        }
+
         const schoolId = req.user?.school_id || req.user?.schoolId || req.body?.schoolId;
 
         if (!schoolId) {
-            return {
-                status: 400,
-                payload: {
+            return finish(400, {
                     success: false,
                     message: 'schoolId e obrigatorio para debug OMR quando nao ha JWT.',
-                },
-            };
+            });
         }
 
         if (!imageBase64) {
-            return {
-                status: 400,
-                payload: {
+            return finish(400, {
                     success: false,
                     message: 'Imagem nao enviada.',
-                },
-            };
+            });
         }
 
         if (correctionType !== 'BUBBLE_SHEET') {
-            return {
-                status: 400,
-                payload: {
+            return finish(400, {
                     success: false,
                     message: 'O novo motor OMR atende somente correctionType=BUBBLE_SHEET.',
-                },
-            };
+            });
         }
 
+        const contextStart = timedNow();
         const context = await resolveOmrContext({ req, examId, qrCodeUuid, schoolId });
+        if (performanceTimings) {
+            performanceTimings.contextResolveMs = elapsedMs(contextStart);
+        }
         if (context.errorPayload) {
-            return { status: context.errorStatus, payload: context.errorPayload };
+            return finish(context.errorStatus, context.errorPayload);
         }
 
         const { exam, examId: resolvedExamId, debugContext } = context;
+        const layoutFetchStart = timedNow();
         const omrLayout = await examService.getExamOmrLayout(resolvedExamId, schoolId);
+        if (performanceTimings) {
+            performanceTimings.layoutFetchMs = elapsedMs(layoutFetchStart);
+            performanceTimings.layoutBuildMs = null;
+            performanceTimings.totalQuestions = omrLayout?.totalQuestions || null;
+        }
 
+        const sessionStart = timedNow();
         const session = omrProcessingService.createDebugSession();
         sessionDir = session.sessionDir;
+        if (performanceTimings) {
+            performanceTimings.tempSessionCreateMs = elapsedMs(sessionStart);
+            performanceTimings.debugId = session.sessionId;
+        }
 
-        const imagePath = omrProcessingService.writeBase64ImageToDisk(imageBase64, sessionDir);
+        const imagePath = omrProcessingService.writeBase64ImageToDisk(
+            imageBase64,
+            sessionDir,
+            performanceTimings
+        );
+        const layoutWriteStart = timedNow();
         const layoutPath = omrProcessingService.writeLayoutToDisk(omrLayout, sessionDir);
+        if (performanceTimings) {
+            performanceTimings.layoutWriteMs = elapsedMs(layoutWriteStart);
+        }
         const debugEnabled = omrProcessingService.isDebugEnabled();
         const saveImages = debugEnabled && omrProcessingService.shouldSaveDebugImages();
+        if (performanceTimings) {
+            performanceTimings.omrDebugEnabled = debugEnabled;
+            performanceTimings.omrDebugSaveImages = saveImages;
+            performanceTimings.keepOmrDebugFiles = omrProcessingService.shouldKeepDebugFiles();
+        }
 
+        const pythonStart = timedNow();
         const { result } = await omrProcessingService.runPythonOmr({
             imagePath,
             correctionType,
@@ -254,7 +353,16 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             sessionDir,
             saveImages,
         });
+        if (performanceTimings) {
+            performanceTimings.pythonTotalMs = elapsedMs(pythonStart);
+            if (result.performance && typeof result.performance === 'object') {
+                for (const [key, value] of Object.entries(result.performance)) {
+                    performanceTimings[key] = value;
+                }
+            }
+        }
 
+        const debugPayloadStart = timedNow();
         const debugPayload = debugEnabled
             ? buildPersistedDebugPayload({
                 sessionId: session.sessionId,
@@ -268,6 +376,9 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
         if (debugPayload && saveImages) {
             omrProcessingService.writeDebugJson(sessionDir, debugPayload);
             manifest = omrProcessingService.writeManifest(sessionDir, session.sessionId);
+        }
+        if (performanceTimings) {
+            performanceTimings.debugPayloadMs = elapsedMs(debugPayloadStart);
         }
 
         if (!result.success) {
@@ -289,10 +400,14 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
                 delete result.debug;
             }
 
-            return { status: 200, payload: result };
+            return finish(200, result);
         }
 
+        const gradingStart = timedNow();
         const correction = examService.buildBubbleSheetCorrection(exam, result.answers);
+        if (performanceTimings) {
+            performanceTimings.gradingMs = elapsedMs(gradingStart);
+        }
 
         const responsePayload = {
             ...result,
@@ -303,6 +418,7 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
         };
 
         if (persistResults && qrCodeUuid) {
+            const dbSaveStart = timedNow();
             const persistedSheet = await examService.scanExamSheet(
                 {
                     qrCodeUuid,
@@ -312,11 +428,17 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
                 },
                 schoolId
             );
+            if (performanceTimings) {
+                performanceTimings.dbSaveMs = elapsedMs(dbSaveStart);
+            }
 
             responsePayload.persisted = true;
             responsePayload.sheetId = persistedSheet._id;
             responsePayload.sheetStatus = persistedSheet.status;
         } else {
+            if (performanceTimings) {
+                performanceTimings.dbSaveMs = 0;
+            }
             responsePayload.persisted = false;
         }
 
@@ -337,7 +459,7 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             delete responsePayload.debug;
         }
 
-        return { status: 200, payload: responsePayload };
+        return finish(200, responsePayload);
     } finally {
         if (sessionDir) {
             omrProcessingService.cleanupSession(sessionDir);
@@ -435,12 +557,39 @@ class ExamController {
     }
 
     async verifySheet(req, res) {
+        const requestStart = timedNow();
+        const performanceDebug = omrProcessingService.isPerformanceDebugEnabled();
+        const correlationId = performanceDebug ? buildCorrelationId(req) : null;
+
         try {
             const schoolId = req.user.school_id;
             const { uuid } = req.params;
+            const verifyStart = timedNow();
             const info = await examService.verifyExamSheet(uuid, schoolId);
+            if (performanceDebug) {
+                info.correlationId = correlationId;
+                info.performance = {
+                    correlationId,
+                    route: req.originalUrl || req.url,
+                    method: req.method,
+                    qrUuidPresent: Boolean(uuid),
+                    verifySheetMs: roundMs(elapsedMs(verifyStart)),
+                    totalRequestMs: roundMs(elapsedMs(requestStart)),
+                };
+                console.log('[QR PERF]', JSON.stringify(info.performance));
+            }
             res.status(200).json(info);
         } catch (error) {
+            if (performanceDebug) {
+                const performancePayload = {
+                    correlationId,
+                    route: req.originalUrl || req.url,
+                    method: req.method,
+                    error: error.message,
+                    totalRequestMs: roundMs(elapsedMs(requestStart)),
+                };
+                console.log('[QR PERF]', JSON.stringify(performancePayload));
+            }
             console.error('ERRO AO VERIFICAR QR CODE:', error.message);
             res.status(400).json({ message: error.message });
         }

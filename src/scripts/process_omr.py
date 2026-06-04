@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -51,6 +52,10 @@ def build_error(message: str, correction_type: str = "BUBBLE_SHEET"):
 
 
 def main():
+    performance_enabled = env_flag("OMR_PERFORMANCE_DEBUG", False)
+    total_start = time.perf_counter()
+    performance = {} if performance_enabled else None
+
     try:
         if len(sys.argv) < 3:
             print(json.dumps(build_error("Uso inválido do script."), ensure_ascii=False))
@@ -72,7 +77,10 @@ def main():
             )
             return
 
+        layout_start = time.perf_counter()
         layout_data = load_layout(layout_path) if layout_path else None
+        if performance is not None:
+            performance["pythonLayoutJsonLoadMs"] = elapsed_ms(layout_start)
         questions_count = extract_questions_count(layout_data)
 
         if not questions_count:
@@ -101,7 +109,12 @@ def main():
             questions_count=questions_count,
             outdir=outdir,
             layout_data=layout_data,
+            collect_performance=performance_enabled,
         )
+
+        if performance is not None:
+            performance.update(result.get("performance") or {})
+            performance["pythonTotalProcessMs"] = elapsed_ms(total_start)
 
         normalized_answers = []
         for answer in result.get("answers", []):
@@ -133,6 +146,9 @@ def main():
             "debug": result.get("debug"),
         }
 
+        if performance is not None:
+            payload["performance"] = performance
+
         print(json.dumps(payload, ensure_ascii=False))
     except Exception as exc:
         print(
@@ -141,6 +157,10 @@ def main():
                 ensure_ascii=False,
             )
         )
+
+
+def elapsed_ms(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000.0, 2)
 
 
 if __name__ == "__main__":

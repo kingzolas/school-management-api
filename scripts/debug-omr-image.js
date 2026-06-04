@@ -9,6 +9,8 @@ function parseArgs(argv) {
     layoutPath: null,
     questions: Number(process.env.OMR_DEBUG_QUESTIONS || 5),
     json: false,
+    noImages: false,
+    performance: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -21,6 +23,10 @@ function parseArgs(argv) {
       index += 1;
     } else if (value === '--json') {
       args.json = true;
+    } else if (value === '--no-images') {
+      args.noImages = true;
+    } else if (value === '--performance') {
+      args.performance = true;
     } else if (!args.imagePath) {
       args.imagePath = value;
     }
@@ -106,7 +112,7 @@ function formatOptionDetails(question) {
     .join('\n');
 }
 
-async function runPython({ imagePath, layoutPath, debugRoot }) {
+async function runPython({ imagePath, layoutPath, debugRoot, saveImages, performance }) {
   const pythonBin =
     process.env.OMR_PYTHON_BIN ||
     process.env.PYTHON_BIN ||
@@ -121,7 +127,9 @@ async function runPython({ imagePath, layoutPath, debugRoot }) {
       env: {
         ...process.env,
         OMR_DEBUG_DIR: debugRoot,
-        OMR_DEBUG_SAVE_IMAGES: 'true',
+        OMR_DEBUG_SAVE_IMAGES: saveImages ? 'true' : 'false',
+        OMR_PERFORMANCE_DEBUG:
+          performance || process.env.OMR_PERFORMANCE_DEBUG === 'true' ? 'true' : 'false',
       },
       shell: false,
     });
@@ -157,7 +165,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (!args.imagePath) {
-    throw new Error('Uso: node scripts/debug-omr-image.js ./samples/omr/cartao.jpeg [--questions 5] [--layout ./layout.json]');
+    throw new Error('Uso: node scripts/debug-omr-image.js ./samples/omr/cartao.jpeg [--questions 5] [--layout ./layout.json] [--no-images] [--performance]');
   }
 
   const imagePath = path.resolve(args.imagePath);
@@ -190,7 +198,13 @@ async function main() {
     );
   }
 
-  const { result } = await runPython({ imagePath, layoutPath, debugRoot });
+  const { result } = await runPython({
+    imagePath,
+    layoutPath,
+    debugRoot,
+    saveImages: !args.noImages,
+    performance: args.performance,
+  });
   fs.writeFileSync(path.join(debugRoot, 'debug.json'), JSON.stringify(result.debug || result, null, 2));
   fs.writeFileSync(
     path.join(debugRoot, 'manifest.json'),
@@ -210,6 +224,9 @@ async function main() {
   console.log(`Mensagem: ${result.message || 'n/a'}`);
   console.log(`Anchors: ${result.anchorsFound ?? 'n/a'}`);
   console.log(`Layout usado: ${result.debug?.layoutDebug?.source || 'n/a'}`);
+  if (result.performance) {
+    console.log(`Performance: ${JSON.stringify(result.performance)}`);
+  }
   console.log('');
 
   for (const question of questions) {

@@ -1,4 +1,5 @@
 import argparse
+import time
 from pathlib import Path
 
 import cv2
@@ -15,7 +16,10 @@ class AcademyHubOmrRunner:
         questions_count: int,
         outdir: str = None,
         layout_data: dict = None,
+        collect_performance: bool = False,
     ):
+        total_start = time.perf_counter()
+        performance = {} if collect_performance else None
         image_path = Path(image_path)
 
         if not image_path.exists():
@@ -26,7 +30,10 @@ class AcademyHubOmrRunner:
                 "answers": [],
             }
 
+        load_start = time.perf_counter()
         original_color = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if performance is not None:
+            performance["pythonLoadImageMs"] = AcademyHubOmrRunner._elapsed_ms(load_start)
         if original_color is None:
             return {
                 "success": False,
@@ -35,14 +42,20 @@ class AcademyHubOmrRunner:
                 "answers": [],
             }
 
+        grayscale_start = time.perf_counter()
         gray = cv2.cvtColor(original_color, cv2.COLOR_BGR2GRAY)
+        if performance is not None:
+            performance["pythonGrayscaleMs"] = AcademyHubOmrRunner._elapsed_ms(grayscale_start)
         image_height, image_width = gray.shape[:2]
 
         try:
+            layout_start = time.perf_counter()
             layouts = AcademyHubOmrRunner._build_layout_attempts(
                 questions_count=questions_count,
                 layout_data=layout_data,
             )
+            if performance is not None:
+                performance["pythonLayoutBuildMs"] = AcademyHubOmrRunner._elapsed_ms(layout_start)
         except Exception as exc:
             return {
                 "success": False,
@@ -53,10 +66,15 @@ class AcademyHubOmrRunner:
 
         debug_root = None
         if outdir:
+            debug_save_start = time.perf_counter()
             debug_root = Path(outdir)
             debug_root.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(debug_root / "00_input.jpg"), original_color)
             cv2.imwrite(str(debug_root / "01_grayscale.jpg"), gray)
+            if performance is not None:
+                performance["pythonInitialDebugImageWriteMs"] = (
+                    AcademyHubOmrRunner._elapsed_ms(debug_save_start)
+                )
 
         attempts_summary = []
         last_result = None
@@ -74,7 +92,13 @@ class AcademyHubOmrRunner:
                 debug_dir=attempt_dir,
                 image_width=image_width,
                 image_height=image_height,
+                collect_performance=collect_performance,
             )
+            if performance is not None:
+                performance.update(result.get("performance") or {})
+                performance["pythonTotalMs"] = AcademyHubOmrRunner._elapsed_ms(total_start)
+                result["performance"] = performance.copy()
+                result["debug"]["performance"] = performance.copy()
             result["debug"]["layoutAttempts"] = attempts_summary + [
                 AcademyHubOmrRunner._summarize_attempt(result, layout)
             ]
@@ -89,6 +113,10 @@ class AcademyHubOmrRunner:
 
         if last_result is not None and debug_root is not None:
             last_result["debug"]["outdir"] = str(debug_root)
+        if last_result is not None and performance is not None:
+            performance["pythonTotalMs"] = AcademyHubOmrRunner._elapsed_ms(total_start)
+            last_result["performance"] = performance.copy()
+            last_result["debug"]["performance"] = performance.copy()
         return last_result
 
     @staticmethod
@@ -117,19 +145,29 @@ class AcademyHubOmrRunner:
         debug_dir,
         image_width: int,
         image_height: int,
+        collect_performance: bool = False,
     ):
+        attempt_start = time.perf_counter()
+        performance = {} if collect_performance else None
         if debug_dir is not None:
             debug_dir.mkdir(parents=True, exist_ok=True)
 
         detector = AcademyHubSheetDetector(layout)
         detection = detector.detect_and_warp(gray, debug_base_image=original_color)
+        if performance is not None and detection.performance:
+            performance.update(detection.performance)
 
         if debug_dir is not None:
+            overlay_start = time.perf_counter()
             cv2.imwrite(str(debug_dir / "02_threshold.jpg"), detection.threshold_image)
             cv2.imwrite(str(debug_dir / "03_anchors_detected.jpg"), detection.debug_image)
+            if performance is not None:
+                performance["pythonDetectionDebugImageWriteMs"] = (
+                    AcademyHubOmrRunner._elapsed_ms(overlay_start)
+                )
 
         if not detection.success or detection.warped_machine is None:
-            return {
+            result = {
                 "success": False,
                 "type": "BUBBLE_SHEET",
                 "stage": "sheet_detection",
@@ -147,18 +185,37 @@ class AcademyHubOmrRunner:
                     read_result=None,
                 ),
             }
+            if performance is not None:
+                performance["pythonBubbleReadMs"] = 0.0
+                performance["pythonLayoutAttemptMs"] = AcademyHubOmrRunner._elapsed_ms(attempt_start)
+                result["performance"] = performance
+                result["debug"]["performance"] = performance
+            return result
 
         if debug_dir is not None:
+            warped_write_start = time.perf_counter()
             cv2.imwrite(str(debug_dir / "04_warped.jpg"), detection.warped_machine)
+            if performance is not None:
+                performance["pythonWarpedImageWriteMs"] = (
+                    AcademyHubOmrRunner._elapsed_ms(warped_write_start)
+                )
 
         reader = AcademyHubBubbleReader(layout)
+        bubble_start = time.perf_counter()
         read_result = reader.read(detection.warped_machine)
+        if performance is not None:
+            performance["pythonBubbleReadMs"] = AcademyHubOmrRunner._elapsed_ms(bubble_start)
 
         if debug_dir is not None:
+            result_overlay_start = time.perf_counter()
             cv2.imwrite(str(debug_dir / "05_bubbles_overlay.jpg"), read_result.bubbles_overlay_image)
             cv2.imwrite(str(debug_dir / "06_result_overlay.jpg"), read_result.debug_image)
+            if performance is not None:
+                performance["pythonResultOverlayWriteMs"] = (
+                    AcademyHubOmrRunner._elapsed_ms(result_overlay_start)
+                )
 
-        return {
+        result = {
             "success": True,
             "type": "BUBBLE_SHEET",
             "stage": "completed",
@@ -176,6 +233,11 @@ class AcademyHubOmrRunner:
                 read_result=read_result,
             ),
         }
+        if performance is not None:
+            performance["pythonLayoutAttemptMs"] = AcademyHubOmrRunner._elapsed_ms(attempt_start)
+            result["performance"] = performance
+            result["debug"]["performance"] = performance
+        return result
 
     @staticmethod
     def _summarize_attempt(result, layout):
@@ -357,6 +419,10 @@ class AcademyHubOmrRunner:
             "captureHints": detection.capture_hints,
             "layoutAttempts": [],
         }
+
+    @staticmethod
+    def _elapsed_ms(start: float) -> float:
+        return round((time.perf_counter() - start) * 1000.0, 2)
 
 
 def parse_args():
