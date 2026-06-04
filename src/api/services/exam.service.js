@@ -191,6 +191,8 @@ class ExamService {
                 studentMarked: markedOption,
                 correctAnswer,
                 status: answer.status || 'ok',
+                debugStatus: answer.debugStatus || null,
+                reason: answer.reason || null,
                 confidence: answer.confidence ?? null,
                 isCorrect,
                 earnedPoints,
@@ -202,6 +204,8 @@ class ExamService {
                 markedOption,
                 correctAnswer,
                 status: answer.status || 'ok',
+                debugStatus: answer.debugStatus || null,
+                reason: answer.reason || null,
                 confidence: answer.confidence ?? null,
                 isCorrect,
             });

@@ -96,9 +96,12 @@ function formatOptionDetails(question) {
   return Object.entries(options)
     .map(([option, data]) => {
       const ratio = data.fillRatio == null ? 'n/a' : Number(data.fillRatio).toFixed(4);
+      const innerRatio = data.innerFillRatio == null ? 'n/a' : Number(data.innerFillRatio).toFixed(4);
       const mean = data.mean == null ? 'n/a' : Number(data.mean).toFixed(2);
+      const innerMean = data.innerMean == null ? 'n/a' : Number(data.innerMean).toFixed(2);
+      const darknessDelta = data.darknessDelta == null ? 'n/a' : Number(data.darknessDelta).toFixed(2);
       const bbox = Array.isArray(data.bbox) ? `[${data.bbox.join(',')}]` : 'n/a';
-      return `    ${option}: fillRatio=${ratio} mean=${mean} bbox=${bbox}`;
+      return `    ${option}: fillRatio=${ratio} innerFillRatio=${innerRatio} mean=${mean} innerMean=${innerMean} darknessDelta=${darknessDelta} bbox=${bbox}`;
     })
     .join('\n');
 }

@@ -204,9 +204,14 @@ class AcademyHubOmrRunner:
                 if bubble is None:
                     options[choice] = {
                         "fillRatio": 0.0,
+                        "innerFillRatio": 0.0,
                         "score": 0.0,
+                        "decisionScore": 0.0,
                         "mean": None,
+                        "innerMean": None,
+                        "darknessDelta": 0.0,
                         "bbox": None,
+                        "innerBbox": None,
                         "center": None,
                         "outOfBounds": True,
                         "missing": True,
@@ -215,14 +220,19 @@ class AcademyHubOmrRunner:
 
                 options[choice] = {
                     "fillRatio": 0.0,
+                    "innerFillRatio": 0.0,
                     "score": 0.0,
+                    "decisionScore": 0.0,
                     "mean": None,
+                    "innerMean": None,
+                    "darknessDelta": 0.0,
                     "bbox": [
                         int(round(bubble.x - bubble.r)),
                         int(round(bubble.y - bubble.r)),
                         int(round(bubble.r * 2)),
                         int(round(bubble.r * 2)),
                     ],
+                    "innerBbox": None,
                     "center": [int(round(bubble.x)), int(round(bubble.y))],
                     "outOfBounds": False,
                 }
@@ -242,6 +252,7 @@ class AcademyHubOmrRunner:
                         "secondScore": 0.0,
                         "diff": 0.0,
                         "thresholds": AcademyHubBubbleReader.THRESHOLDS,
+                        "scoreMetric": "innerFillRatio",
                     },
                     "topSecondDifference": 0.0,
                 }
