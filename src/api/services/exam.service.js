@@ -234,6 +234,11 @@ class ExamService {
 
         const exam = await Exam.findById(sheet.exam_id).populate('class_id subject_id');
 
+        const omrLayout = exam.settings?.omrLayout || null;
+        const objectiveQuestionsCount = Array.isArray(exam.questions)
+            ? exam.questions.filter((question) => question?.type === 'OBJECTIVE').length
+            : null;
+
         return {
             studentName: sheet.student_id.fullName || sheet.student_id.name,
             examTitle: exam.title,
@@ -242,7 +247,9 @@ class ExamService {
             correctionType: exam.correctionType,
             examVersion: sheet.examVersion || 'STANDARD',
             examId: exam._id,
-            hasOmrLayout: !!(exam.settings && exam.settings.omrLayout),
+            hasOmrLayout: !!omrLayout,
+            totalQuestions: omrLayout?.totalQuestions ?? objectiveQuestionsCount,
+            totalOptionsPerQuestion: omrLayout?.totalOptionsPerQuestion ?? null,
         };
     }
 
