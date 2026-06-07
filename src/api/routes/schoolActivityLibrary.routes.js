@@ -3,6 +3,7 @@ const express = require('express');
 const { verifyToken } = require('../middlewares/auth.middleware');
 const { verifySchoolAccess } = require('../middlewares/schoolAccess.middleware');
 const activityLibraryService = require('../services/activityLibrary.service');
+const activityPrintService = require('../services/activityPrint.service');
 
 const router = express.Router();
 
@@ -17,6 +18,23 @@ router.get('/', async (req, res) => {
     return res.status(error.status || error.statusCode || 500).json({
       message: error.message || 'Erro ao listar biblioteca de atividades.',
       code: error.code || 'SCHOOL_ACTIVITY_LIBRARY_ERROR',
+    });
+  }
+});
+
+router.post('/:activityPageId/print', async (req, res) => {
+  try {
+    const result = await activityPrintService.createPrintRun({
+      activityPageId: req.params.activityPageId,
+      payload: req.body,
+      actor: req.user,
+    });
+
+    return res.status(201).json(result);
+  } catch (error) {
+    return res.status(error.status || error.statusCode || 500).json({
+      message: error.message || 'Erro ao gerar impressao da atividade.',
+      code: error.code || 'ACTIVITY_PRINT_ERROR',
     });
   }
 });

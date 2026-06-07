@@ -82,6 +82,59 @@ class R2StorageService {
     return { key: safeKey, url };
   }
 
+  async downloadBuffer(key) {
+    const safeKey = assertSafeKey(key);
+
+    try {
+      const response = await getR2Client().send(new GetObjectCommand({
+        Bucket: getR2BucketName(),
+        Key: safeKey,
+      }));
+
+      if (!response?.Body) {
+        const error = new Error('Objeto encontrado no R2, mas sem corpo de resposta.');
+        error.status = 502;
+        error.code = 'EMPTY_R2_OBJECT_BODY';
+        throw error;
+      }
+
+      if (typeof response.Body.transformToByteArray === 'function') {
+        const bytes = await response.Body.transformToByteArray();
+        return Buffer.from(bytes);
+      }
+
+      if (typeof response.Body.transformToString === 'function') {
+        const text = await response.Body.transformToString();
+        return Buffer.from(text);
+      }
+
+      if (Buffer.isBuffer(response.Body)) {
+        return response.Body;
+      }
+
+      const chunks = [];
+      for await (const chunk of response.Body) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    } catch (error) {
+      const status = error?.$metadata?.httpStatusCode;
+      if (status === 404 || error?.name === 'NotFound' || error?.Code === 'NoSuchKey') {
+        const notFound = new Error('Objeto nao encontrado no R2.');
+        notFound.status = 404;
+        notFound.code = 'R2_OBJECT_NOT_FOUND';
+        throw notFound;
+      }
+
+      if (error?.code) throw error;
+
+      const wrapped = new Error(`Falha ao baixar objeto do R2: ${error?.message || 'erro desconhecido'}`);
+      wrapped.status = 502;
+      wrapped.code = 'R2_DOWNLOAD_FAILED';
+      throw wrapped;
+    }
+  }
+
   async objectExists(key) {
     const safeKey = assertSafeKey(key);
 

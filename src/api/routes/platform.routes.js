@@ -1242,6 +1242,21 @@ router.patch('/activity-pages/:pageId/header-overlay', asyncRoute(async (req, re
   return res.status(200).json({ page: normalizeActivityPageResponse(page) });
 }));
 
+router.patch('/activity-pages/:pageId/content-crop', asyncRoute(async (req, res) => {
+  const page = await activityLibraryService.updateContentCrop(req.params.pageId, req.body);
+  return res.status(200).json({ page: normalizeActivityPageResponse(page) });
+}));
+
+router.patch('/activity-pages/:pageId/footer-crop', asyncRoute(async (req, res) => {
+  const page = await activityLibraryService.updateFooterCrop(req.params.pageId, req.body);
+  return res.status(200).json({ page: normalizeActivityPageResponse(page) });
+}));
+
+router.patch('/activity-pages/:pageId/print-layout', asyncRoute(async (req, res) => {
+  const page = await activityLibraryService.updatePrintLayout(req.params.pageId, req.body);
+  return res.status(200).json({ page: normalizeActivityPageResponse(page) });
+}));
+
 router.post('/activity-books/:bookId/visibility', asyncRoute(async (req, res) => {
   const book = await activityLibraryService.updateVisibility(req.params.bookId, req.body);
   return res.status(200).json({ book: normalizeActivityBookResponse(book) });

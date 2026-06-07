@@ -6,6 +6,9 @@ const ActivityPage = require('../models/activityPage.model');
 const r2StorageService = require('./r2Storage.service');
 
 const PDF_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024;
+const ACTIVITY_PAGE_TYPES = new Set(['cover', 'index', 'activity', 'support']);
+const PRINT_LAYOUT_MODES = new Set(['overlay', 'crop-and-recompose']);
+const PRINT_SCALE_MODES = new Set(['fit-width', 'fit-page']);
 
 function createHttpError(message, status = 400, code = 'ACTIVITY_LIBRARY_ERROR') {
   const error = new Error(message);
@@ -73,6 +76,134 @@ function normalizeVisibility(value) {
 
 function normalizeTags(value) {
   return [...new Set(parseStringArray(value).map((tag) => tag.toLowerCase()))];
+}
+
+function parseBoolean(value, defaultValue = false) {
+  if (value === undefined) return defaultValue;
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return defaultValue;
+}
+
+function validatePctRect(rawValue, code = 'INVALID_PERCENT_RECT') {
+  const payload = parseJsonMaybe(rawValue);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw createHttpError('A configuracao percentual precisa ser um objeto.', 400, code);
+  }
+
+  const fields = ['xPct', 'yPct', 'widthPct', 'heightPct'];
+  const normalized = {};
+
+  fields.forEach((field) => {
+    if (!Object.prototype.hasOwnProperty.call(payload, field)) {
+      throw createHttpError(`${field} e obrigatorio.`, 400, code);
+    }
+
+    const value = Number(payload[field]);
+    if (!Number.isFinite(value)) {
+      throw createHttpError(`${field} precisa ser numerico.`, 400, code);
+    }
+
+    normalized[field] = value;
+  });
+
+  if (normalized.xPct < 0 || normalized.yPct < 0) {
+    throw createHttpError('xPct e yPct precisam ser maiores ou iguais a zero.', 400, code);
+  }
+
+  if (normalized.widthPct <= 0 || normalized.heightPct <= 0) {
+    throw createHttpError('widthPct e heightPct precisam ser maiores que zero.', 400, code);
+  }
+
+  if (normalized.xPct + normalized.widthPct > 100) {
+    throw createHttpError('xPct + widthPct nao pode ultrapassar 100.', 400, code);
+  }
+
+  if (normalized.yPct + normalized.heightPct > 100) {
+    throw createHttpError('yPct + heightPct nao pode ultrapassar 100.', 400, code);
+  }
+
+  return normalized;
+}
+
+function validatePartialPctRectPayload(rawValue, code = 'INVALID_PERCENT_RECT') {
+  const payload = parseJsonMaybe(rawValue);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw createHttpError('A configuracao percentual precisa ser um objeto.', 400, code);
+  }
+
+  const fields = ['xPct', 'yPct', 'widthPct', 'heightPct'];
+  const presentFields = fields.filter((field) => Object.prototype.hasOwnProperty.call(payload, field));
+  if (presentFields.length === 0) {
+    throw createHttpError('Payload vazio nao e permitido.', 400, code);
+  }
+
+  const normalized = {};
+  presentFields.forEach((field) => {
+    const value = Number(payload[field]);
+    if (!Number.isFinite(value)) {
+      throw createHttpError(`${field} precisa ser numerico.`, 400, code);
+    }
+    normalized[field] = value;
+  });
+
+  return normalized;
+}
+
+function validatePrintLayout(rawValue, code = 'INVALID_PRINT_LAYOUT') {
+  const payload = parseJsonMaybe(rawValue);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw createHttpError('printLayout precisa ser um objeto.', 400, code);
+  }
+
+  const normalized = {};
+  let hasAnyField = false;
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'mode')) {
+    const mode = normalizeText(payload.mode).toLowerCase();
+    if (!PRINT_LAYOUT_MODES.has(mode)) {
+      throw createHttpError('printLayout.mode invalido.', 400, code);
+    }
+    normalized.mode = mode;
+    hasAnyField = true;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'academyHeaderHeightPct')) {
+    const value = Number(payload.academyHeaderHeightPct);
+    if (!Number.isFinite(value) || value <= 0 || value > 100) {
+      throw createHttpError('printLayout.academyHeaderHeightPct precisa ser um numero entre 0 e 100.', 400, code);
+    }
+    normalized.academyHeaderHeightPct = value;
+    hasAnyField = true;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'preserveFooter')) {
+    normalized.preserveFooter = parseBoolean(payload.preserveFooter);
+    hasAnyField = true;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'scaleMode')) {
+    const scaleMode = normalizeText(payload.scaleMode).toLowerCase();
+    if (!PRINT_SCALE_MODES.has(scaleMode)) {
+      throw createHttpError('printLayout.scaleMode invalido.', 400, code);
+    }
+    normalized.scaleMode = scaleMode;
+    hasAnyField = true;
+  }
+
+  if (!hasAnyField) {
+    throw createHttpError('Payload vazio nao e permitido.', 400, code);
+  }
+
+  return normalized;
+}
+
+function normalizePageType(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!ACTIVITY_PAGE_TYPES.has(normalized)) {
+    throw createHttpError('pageType invalido.', 400, 'INVALID_PAGE_TYPE');
+  }
+  return normalized;
 }
 
 function assertValidPdfFile(file) {
@@ -152,6 +283,18 @@ class ActivityLibraryService {
       description: normalizeText(body.description),
       visibility,
       allowedSchoolIds,
+      defaultPrintLayout: Object.prototype.hasOwnProperty.call(body, 'defaultPrintLayout')
+        ? validatePrintLayout(body.defaultPrintLayout, 'INVALID_DEFAULT_PRINT_LAYOUT')
+        : undefined,
+      defaultHeaderOverlay: Object.prototype.hasOwnProperty.call(body, 'defaultHeaderOverlay')
+        ? validatePctRect(body.defaultHeaderOverlay, 'INVALID_DEFAULT_HEADER_OVERLAY')
+        : undefined,
+      defaultContentCrop: Object.prototype.hasOwnProperty.call(body, 'defaultContentCrop')
+        ? validatePctRect(body.defaultContentCrop, 'INVALID_DEFAULT_CONTENT_CROP')
+        : undefined,
+      defaultFooterCrop: Object.prototype.hasOwnProperty.call(body, 'defaultFooterCrop')
+        ? validatePctRect(body.defaultFooterCrop, 'INVALID_DEFAULT_FOOTER_CROP')
+        : undefined,
       status: 'processing',
       createdBy: adminId,
     });
@@ -260,6 +403,10 @@ class ActivityLibraryService {
       'sourceType',
       'visibility',
       'allowedSchoolIds',
+      'defaultPrintLayout',
+      'defaultHeaderOverlay',
+      'defaultContentCrop',
+      'defaultFooterCrop',
     ];
 
     const update = {};
@@ -270,6 +417,14 @@ class ActivityLibraryService {
         update.allowedSchoolIds = parseObjectIdArray(payload.allowedSchoolIds, 'allowedSchoolIds');
       } else if (field === 'visibility') {
         update.visibility = normalizeVisibility(payload.visibility);
+      } else if (field === 'defaultPrintLayout') {
+        update.defaultPrintLayout = validatePrintLayout(payload.defaultPrintLayout, 'INVALID_DEFAULT_PRINT_LAYOUT');
+      } else if (field === 'defaultHeaderOverlay') {
+        update.defaultHeaderOverlay = validatePctRect(payload.defaultHeaderOverlay, 'INVALID_DEFAULT_HEADER_OVERLAY');
+      } else if (field === 'defaultContentCrop') {
+        update.defaultContentCrop = validatePctRect(payload.defaultContentCrop, 'INVALID_DEFAULT_CONTENT_CROP');
+      } else if (field === 'defaultFooterCrop') {
+        update.defaultFooterCrop = validatePctRect(payload.defaultFooterCrop, 'INVALID_DEFAULT_FOOTER_CROP');
       } else {
         update[field] = normalizeText(payload[field]);
       }
@@ -327,6 +482,8 @@ class ActivityLibraryService {
       'tags',
       'enabled',
       'status',
+      'pageType',
+      'printable',
     ];
 
     const update = {};
@@ -335,6 +492,8 @@ class ActivityLibraryService {
 
       if (field === 'tags') update.tags = normalizeTags(payload.tags);
       else if (field === 'enabled') update.enabled = payload.enabled === true || payload.enabled === 'true';
+      else if (field === 'printable') update.printable = parseBoolean(payload.printable, true);
+      else if (field === 'pageType') update.pageType = normalizePageType(payload.pageType);
       else update[field] = normalizeText(payload[field]);
     }
 
@@ -352,21 +511,53 @@ class ActivityLibraryService {
   }
 
   async updateHeaderOverlay(pageId, payload = {}) {
-    const fields = ['xPct', 'yPct', 'widthPct', 'heightPct'];
-    const update = {};
+    return this.updatePageRectField(pageId, 'headerOverlay', payload, 'INVALID_HEADER_OVERLAY');
+  }
 
-    for (const field of fields) {
-      if (!Object.prototype.hasOwnProperty.call(payload, field)) continue;
-      const value = Number(payload[field]);
-      if (!Number.isFinite(value) || value < 0 || value > 100) {
-        throw createHttpError(`${field} precisa ser um numero entre 0 e 100.`, 400, 'INVALID_HEADER_OVERLAY');
-      }
-      update[`headerOverlay.${field}`] = value;
-    }
+  async updateContentCrop(pageId, payload = {}) {
+    return this.updatePageRectField(pageId, 'contentCrop', payload, 'INVALID_CONTENT_CROP');
+  }
+
+  async updateFooterCrop(pageId, payload = {}) {
+    return this.updatePageRectField(pageId, 'footerCrop', payload, 'INVALID_FOOTER_CROP');
+  }
+
+  async updatePrintLayout(pageId, payload = {}) {
+    const normalized = validatePrintLayout(payload, 'INVALID_PRINT_LAYOUT');
+    const update = {};
+    Object.entries(normalized).forEach(([key, value]) => {
+      update[`printLayout.${key}`] = value;
+    });
 
     const page = await ActivityPage.findByIdAndUpdate(
       pageId,
       { $set: update },
+      { new: true, runValidators: true }
+    ).lean();
+
+    if (!page) {
+      throw createHttpError('ActivityPage nao encontrada.', 404, 'PAGE_NOT_FOUND');
+    }
+
+    return page;
+  }
+
+  async updatePageRectField(pageId, fieldName, payload = {}, code) {
+    const partial = validatePartialPctRectPayload(payload, code);
+    const current = await ActivityPage.findById(pageId).select(fieldName).lean();
+    if (!current) {
+      throw createHttpError('ActivityPage nao encontrada.', 404, 'PAGE_NOT_FOUND');
+    }
+
+    const merged = {
+      ...(current[fieldName] || {}),
+      ...partial,
+    };
+
+    const normalized = validatePctRect(merged, code);
+    const page = await ActivityPage.findByIdAndUpdate(
+      pageId,
+      { $set: { [fieldName]: normalized } },
       { new: true, runValidators: true }
     ).lean();
 
@@ -468,6 +659,15 @@ class ActivityLibraryService {
       bookId: { $in: visibleBookIds },
       enabled: true,
       status: 'published',
+      printable: { $ne: false },
+      $and: [
+        {
+          $or: [
+            { pageType: 'activity' },
+            { pageType: { $exists: false } },
+          ],
+        },
+      ],
     };
 
     if (filters.subject) pageQuery.subject = normalizeText(filters.subject);
@@ -483,16 +683,18 @@ class ActivityLibraryService {
         .filter((book) => regex.test(book.title || ''))
         .map((book) => book._id);
 
-      pageQuery.$or = [
-        { title: regex },
-        { description: regex },
-        { subject: regex },
-        { segment: regex },
-        { grade: regex },
-      ];
+      pageQuery.$and.push({
+        $or: [
+          { title: regex },
+          { description: regex },
+          { subject: regex },
+          { segment: regex },
+          { grade: regex },
+        ],
+      });
 
       if (matchingBookIds.length > 0) {
-        pageQuery.$or.push({ bookId: { $in: matchingBookIds } });
+        pageQuery.$and[pageQuery.$and.length - 1].$or.push({ bookId: { $in: matchingBookIds } });
       }
     }
 
@@ -527,3 +729,8 @@ class ActivityLibraryService {
 }
 
 module.exports = new ActivityLibraryService();
+module.exports.ActivityLibraryService = ActivityLibraryService;
+module.exports.createHttpError = createHttpError;
+module.exports.normalizeText = normalizeText;
+module.exports.validatePctRect = validatePctRect;
+module.exports.validatePrintLayout = validatePrintLayout;

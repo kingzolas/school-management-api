@@ -12,6 +12,44 @@ const ACTIVITY_BOOK_STATUSES = [
 
 const ACTIVITY_VISIBILITIES = ['global', 'restricted', 'private'];
 const ACTIVITY_SOURCE_TYPES = ['global', 'school'];
+const ACTIVITY_PRINT_LAYOUT_MODES = ['overlay', 'crop-and-recompose'];
+const ACTIVITY_PRINT_SCALE_MODES = ['fit-width', 'fit-page'];
+
+const percentRectSchema = new Schema(
+  {
+    xPct: { type: Number, min: 0, max: 100, required: true },
+    yPct: { type: Number, min: 0, max: 100, required: true },
+    widthPct: { type: Number, min: 0, max: 100, required: true },
+    heightPct: { type: Number, min: 0, max: 100, required: true },
+  },
+  { _id: false }
+);
+
+const printLayoutSchema = new Schema(
+  {
+    mode: {
+      type: String,
+      enum: ACTIVITY_PRINT_LAYOUT_MODES,
+      default: undefined,
+    },
+    academyHeaderHeightPct: {
+      type: Number,
+      min: 0,
+      max: 100,
+      default: undefined,
+    },
+    preserveFooter: {
+      type: Boolean,
+      default: undefined,
+    },
+    scaleMode: {
+      type: String,
+      enum: ACTIVITY_PRINT_SCALE_MODES,
+      default: undefined,
+    },
+  },
+  { _id: false }
+);
 
 const activityBookSchema = new Schema(
   {
@@ -97,6 +135,22 @@ const activityBookSchema = new Schema(
       trim: true,
       default: '',
       select: false,
+    },
+    defaultPrintLayout: {
+      type: printLayoutSchema,
+      default: undefined,
+    },
+    defaultHeaderOverlay: {
+      type: percentRectSchema,
+      default: undefined,
+    },
+    defaultContentCrop: {
+      type: percentRectSchema,
+      default: undefined,
+    },
+    defaultFooterCrop: {
+      type: percentRectSchema,
+      default: undefined,
     },
   },
   { timestamps: true }
