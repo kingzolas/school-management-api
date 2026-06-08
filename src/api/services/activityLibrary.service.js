@@ -3,12 +3,14 @@ const { PDFDocument } = require('pdf-lib');
 
 const ActivityBook = require('../models/activityBook.model');
 const ActivityPage = require('../models/activityPage.model');
+const ActivityPrintRun = require('../models/activityPrintRun.model');
 const r2StorageService = require('./r2Storage.service');
 
 const PDF_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024;
 const ACTIVITY_PAGE_TYPES = new Set(['cover', 'index', 'activity', 'support']);
 const PRINT_LAYOUT_MODES = new Set(['overlay', 'crop-and-recompose']);
 const PRINT_SCALE_MODES = new Set(['fit-width', 'fit-page']);
+const ACTIVITY_BOOK_STORAGE_BASE_PREFIX = 'platform/activity-books';
 
 function createHttpError(message, status = 400, code = 'ACTIVITY_LIBRARY_ERROR') {
   const error = new Error(message);
@@ -83,6 +85,26 @@ function parseBoolean(value, defaultValue = false) {
   if (value === true || value === 'true') return true;
   if (value === false || value === 'false') return false;
   return defaultValue;
+}
+
+function buildActivityBookStoragePrefix(bookId) {
+  return `${ACTIVITY_BOOK_STORAGE_BASE_PREFIX}/${String(bookId)}/`;
+}
+
+function ensureSafeActivityBookStoragePrefix(bookId, prefix) {
+  const normalizedBookId = normalizeText(bookId);
+  if (!mongoose.Types.ObjectId.isValid(normalizedBookId)) {
+    throw createHttpError('bookId invalido.', 400, 'INVALID_OBJECT_ID');
+  }
+
+  const expectedPrefix = buildActivityBookStoragePrefix(normalizedBookId);
+  const normalizedPrefix = normalizeText(prefix);
+
+  if (!normalizedPrefix || normalizedPrefix !== expectedPrefix || !normalizedPrefix.startsWith(`${ACTIVITY_BOOK_STORAGE_BASE_PREFIX}/`)) {
+    throw createHttpError('Prefixo de storage inseguro.', 400, 'UNSAFE_ACTIVITY_BOOK_PREFIX');
+  }
+
+  return normalizedPrefix;
 }
 
 function validatePctRect(rawValue, code = 'INVALID_PERCENT_RECT') {
@@ -322,7 +344,7 @@ class ActivityLibraryService {
 
     await book.save();
 
-    const originalPdfKey = `platform/activity-books/${book._id}/original.pdf`;
+    const originalPdfKey = `${buildActivityBookStoragePrefix(book._id)}original.pdf`;
 
     try {
       const uploadResult = await r2StorageService.uploadBuffer({
@@ -484,6 +506,104 @@ class ActivityLibraryService {
 
     await ActivityPage.updateMany({ bookId }, { $set: { status: 'archived', enabled: false } });
     return book;
+  }
+
+  async deleteActivityBookPermanently(bookId, payload = {}) {
+    if (!mongoose.Types.ObjectId.isValid(bookId)) {
+      throw createHttpError('bookId invalido.', 400, 'INVALID_OBJECT_ID');
+    }
+
+    const book = await ActivityBook.findById(bookId).lean();
+    if (!book) {
+      throw createHttpError('ActivityBook nao encontrado.', 404, 'BOOK_NOT_FOUND');
+    }
+
+    const pages = await ActivityPage.find({ bookId })
+      .select('_id thumbnailKey')
+      .lean();
+
+    const deleteFiles = parseBoolean(payload.deleteFiles, true);
+    const deleteGeneratedPrints = parseBoolean(payload.deleteGeneratedPrints, false);
+    const safePrefix = ensureSafeActivityBookStoragePrefix(bookId, buildActivityBookStoragePrefix(bookId));
+    const errors = [];
+    let deletedR2Objects = 0;
+
+    if (deleteGeneratedPrints) {
+      errors.push({
+        code: 'GENERATED_PRINTS_DELETE_NOT_SUPPORTED',
+        message: 'Os PDFs gerados por escolas nao sao apagados por esta rota.',
+      });
+    }
+
+    if (deleteFiles) {
+      const explicitKeys = [
+        normalizeText(book.originalPdfKey),
+        ...pages.map((page) => normalizeText(page.thumbnailKey)),
+      ].filter(Boolean);
+
+      let prefixedKeys = [];
+      try {
+        prefixedKeys = await r2StorageService.listObjectsByPrefix(safePrefix);
+      } catch (error) {
+        errors.push({
+          code: error.code || 'R2_LIST_FAILED',
+          message: error.message || 'Falha ao listar arquivos do caderno no R2.',
+        });
+      }
+
+      const safeKeys = [...new Set([...explicitKeys, ...prefixedKeys])].filter(Boolean);
+      const keysWithinPrefix = [];
+
+      safeKeys.forEach((key) => {
+        if (key.startsWith(safePrefix)) {
+          keysWithinPrefix.push(key);
+          return;
+        }
+
+        errors.push({
+          code: 'UNSAFE_STORAGE_KEY_SKIPPED',
+          key,
+          message: 'Arquivo fora do prefixo seguro do caderno foi preservado.',
+        });
+      });
+
+      if (keysWithinPrefix.length > 0) {
+        try {
+          const deleteResult = await r2StorageService.deleteObjects(keysWithinPrefix);
+          deletedR2Objects += deleteResult.deletedCount || 0;
+          if (Array.isArray(deleteResult.errors) && deleteResult.errors.length > 0) {
+            errors.push(...deleteResult.errors);
+          }
+        } catch (error) {
+          errors.push({
+            code: error.code || 'R2_DELETE_FAILED',
+            message: error.message || 'Falha ao remover arquivos do R2.',
+          });
+        }
+      }
+    }
+
+    const [pageDeleteResult, bookDeleteResult, preservedPrintRuns] = await Promise.all([
+      ActivityPage.deleteMany({ bookId }),
+      ActivityBook.deleteOne({ _id: bookId }),
+      ActivityPrintRun.countDocuments({ bookId }).catch(() => 0),
+    ]);
+
+    return {
+      success: bookDeleteResult.deletedCount === 1,
+      bookId: String(bookId),
+      deleted: {
+        activityBook: bookDeleteResult.deletedCount === 1,
+        activityPages: pageDeleteResult.deletedCount || 0,
+        r2Objects: deletedR2Objects,
+      },
+      skipped: {
+        generatedPrints: true,
+        printRunsPreserved: preservedPrintRuns,
+      },
+      errors,
+      reason: normalizeText(payload.reason),
+    };
   }
 
   async listPages(bookId) {
@@ -875,3 +995,5 @@ module.exports.normalizeText = normalizeText;
 module.exports.validatePctRect = validatePctRect;
 module.exports.validatePrintLayout = validatePrintLayout;
 module.exports.buildSignedThumbnailUrl = buildSignedThumbnailUrl;
+module.exports.buildActivityBookStoragePrefix = buildActivityBookStoragePrefix;
+module.exports.ensureSafeActivityBookStoragePrefix = ensureSafeActivityBookStoragePrefix;

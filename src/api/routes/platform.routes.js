@@ -1357,12 +1357,17 @@ router.patch('/activity-books/:bookId', asyncRoute(async (req, res) => {
   return res.status(200).json({ book: normalizeActivityBookResponse(book) });
 }));
 
-router.delete('/activity-books/:bookId', asyncRoute(async (req, res) => {
+router.patch('/activity-books/:bookId/archive', asyncRoute(async (req, res) => {
   const book = await activityLibraryService.archiveActivityBook(req.params.bookId);
   return res.status(200).json({
     message: 'ActivityBook arquivado com sucesso. Arquivo fisico preservado no R2.',
     book: normalizeActivityBookResponse(book),
   });
+}));
+
+router.delete('/activity-books/:bookId', asyncRoute(async (req, res) => {
+  const result = await activityLibraryService.deleteActivityBookPermanently(req.params.bookId, req.body || {});
+  return res.status(200).json(result);
 }));
 
 router.get('/activity-books/:bookId/pages', asyncRoute(async (req, res) => {

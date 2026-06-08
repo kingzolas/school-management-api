@@ -4,9 +4,12 @@ const mongoose = require('mongoose');
 
 const ActivityBook = require('../../api/models/activityBook.model');
 const ActivityPage = require('../../api/models/activityPage.model');
+const ActivityPrintRun = require('../../api/models/activityPrintRun.model');
 const activityLibraryService = require('../../api/services/activityLibrary.service');
 const r2StorageService = require('../../api/services/r2Storage.service');
 const {
+  buildActivityBookStoragePrefix,
+  ensureSafeActivityBookStoragePrefix,
   validatePctRect,
   validatePrintLayout,
 } = require('../../api/services/activityLibrary.service');
@@ -313,6 +316,177 @@ test('listSchoolLibraryForPlatform returns only printable activity pages with la
     assert.equal(result.items[0].bookTitle, 'Caderno Visivel');
     assert.equal(result.items[0].pageType, 'activity');
     assert.deepEqual(result.items[0].contentCrop, { xPct: 4, yPct: 18, widthPct: 92, heightPct: 72 });
+  } finally {
+    restore();
+  }
+});
+
+test('ensureSafeActivityBookStoragePrefix rejects insecure prefixes', () => {
+  const bookId = String(new mongoose.Types.ObjectId());
+
+  assert.throws(
+    () => ensureSafeActivityBookStoragePrefix(bookId, 'platform/activity-books/outro-book/'),
+    /Prefixo de storage inseguro/
+  );
+
+  assert.equal(
+    ensureSafeActivityBookStoragePrefix(bookId, buildActivityBookStoragePrefix(bookId)),
+    buildActivityBookStoragePrefix(bookId)
+  );
+});
+
+test('deleteActivityBookPermanently removes book/pages and deletes only safe R2 objects', async () => {
+  const bookId = new mongoose.Types.ObjectId();
+  const pageId = new mongoose.Types.ObjectId();
+  const safePrefix = buildActivityBookStoragePrefix(bookId);
+  let deletedKeys = null;
+  let listedPrefix = null;
+
+  const restore = patchMethods([
+    {
+      target: ActivityBook,
+      key: 'findById',
+      value(id) {
+        return createQuery(String(id) === String(bookId) ? {
+          _id: bookId,
+          originalPdfKey: `${safePrefix}original.pdf`,
+        } : null);
+      },
+    },
+    {
+      target: ActivityPage,
+      key: 'find',
+      value() {
+        return createQuery([
+          {
+            _id: pageId,
+            thumbnailKey: `${safePrefix}thumbnails/page-001.png`,
+          },
+        ]);
+      },
+    },
+    {
+      target: ActivityPage,
+      key: 'deleteMany',
+      value: async () => ({ deletedCount: 1 }),
+    },
+    {
+      target: ActivityBook,
+      key: 'deleteOne',
+      value: async () => ({ deletedCount: 1 }),
+    },
+    {
+      target: ActivityPrintRun,
+      key: 'countDocuments',
+      value: async () => 2,
+    },
+    {
+      target: r2StorageService,
+      key: 'listObjectsByPrefix',
+      value: async (prefix) => {
+        listedPrefix = prefix;
+        return [
+          `${safePrefix}original.pdf`,
+          `${safePrefix}thumbnails/page-001.png`,
+          'schools/outro/gerado.pdf',
+        ];
+      },
+    },
+    {
+      target: r2StorageService,
+      key: 'deleteObjects',
+      value: async (keys) => {
+        deletedKeys = keys;
+        return {
+          deleted: keys,
+          errors: [],
+          deletedCount: keys.length,
+        };
+      },
+    },
+  ]);
+
+  try {
+    const result = await activityLibraryService.deleteActivityBookPermanently(String(bookId), {
+      deleteFiles: true,
+      deleteGeneratedPrints: false,
+      reason: 'Remocao de teste',
+    });
+
+    assert.equal(listedPrefix, safePrefix);
+    assert.deepEqual(deletedKeys, [
+      `${safePrefix}original.pdf`,
+      `${safePrefix}thumbnails/page-001.png`,
+    ]);
+    assert.equal(result.success, true);
+    assert.equal(result.deleted.activityBook, true);
+    assert.equal(result.deleted.activityPages, 1);
+    assert.equal(result.deleted.r2Objects, 2);
+    assert.equal(result.skipped.generatedPrints, true);
+    assert.equal(result.skipped.printRunsPreserved, 2);
+    assert.equal(result.errors[0].code, 'UNSAFE_STORAGE_KEY_SKIPPED');
+  } finally {
+    restore();
+  }
+});
+
+test('deleteActivityBookPermanently preserves generated prints even when explicitly requested', async () => {
+  const bookId = new mongoose.Types.ObjectId();
+  const safePrefix = buildActivityBookStoragePrefix(bookId);
+
+  const restore = patchMethods([
+    {
+      target: ActivityBook,
+      key: 'findById',
+      value() {
+        return createQuery({
+          _id: bookId,
+          originalPdfKey: `${safePrefix}original.pdf`,
+        });
+      },
+    },
+    {
+      target: ActivityPage,
+      key: 'find',
+      value() {
+        return createQuery([]);
+      },
+    },
+    {
+      target: ActivityPage,
+      key: 'deleteMany',
+      value: async () => ({ deletedCount: 0 }),
+    },
+    {
+      target: ActivityBook,
+      key: 'deleteOne',
+      value: async () => ({ deletedCount: 1 }),
+    },
+    {
+      target: ActivityPrintRun,
+      key: 'countDocuments',
+      value: async () => 1,
+    },
+    {
+      target: r2StorageService,
+      key: 'listObjectsByPrefix',
+      value: async () => [],
+    },
+    {
+      target: r2StorageService,
+      key: 'deleteObjects',
+      value: async () => ({ deleted: [], errors: [], deletedCount: 0 }),
+    },
+  ]);
+
+  try {
+    const result = await activityLibraryService.deleteActivityBookPermanently(String(bookId), {
+      deleteFiles: true,
+      deleteGeneratedPrints: true,
+    });
+
+    assert.equal(result.skipped.generatedPrints, true);
+    assert.equal(result.errors[0].code, 'GENERATED_PRINTS_DELETE_NOT_SUPPORTED');
   } finally {
     restore();
   }

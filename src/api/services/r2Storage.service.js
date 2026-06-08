@@ -1,7 +1,9 @@
 const {
+  DeleteObjectsCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
 } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
@@ -18,6 +20,19 @@ function assertSafeKey(key) {
     const error = new Error('Chave de storage invalida.');
     error.status = 400;
     error.code = 'INVALID_STORAGE_KEY';
+    throw error;
+  }
+
+  return normalized;
+}
+
+function assertSafePrefix(prefix) {
+  const normalized = String(prefix || '').trim();
+
+  if (!normalized || normalized.startsWith('/') || normalized.includes('..') || normalized.includes('\\')) {
+    const error = new Error('Prefixo de storage invalido.');
+    error.status = 400;
+    error.code = 'INVALID_STORAGE_PREFIX';
     throw error;
   }
 
@@ -66,6 +81,77 @@ class R2StorageService {
     }));
 
     return { key: safeKey, deleted: true };
+  }
+
+  async deleteObjects(keys = []) {
+    const normalizedKeys = [...new Set(
+      (Array.isArray(keys) ? keys : [])
+        .map((key) => assertSafeKey(key))
+        .filter(Boolean)
+    )];
+
+    if (normalizedKeys.length === 0) {
+      return {
+        deleted: [],
+        errors: [],
+        deletedCount: 0,
+      };
+    }
+
+    const response = await getR2Client().send(new DeleteObjectsCommand({
+      Bucket: getR2BucketName(),
+      Delete: {
+        Objects: normalizedKeys.map((key) => ({ Key: key })),
+        Quiet: false,
+      },
+    }));
+
+    const deleted = Array.isArray(response?.Deleted)
+      ? response.Deleted.map((item) => String(item.Key || '')).filter(Boolean)
+      : [];
+
+    const errors = Array.isArray(response?.Errors)
+      ? response.Errors.map((item) => ({
+        key: String(item.Key || ''),
+        code: item.Code || 'R2_DELETE_FAILED',
+        message: item.Message || 'Falha ao remover objeto do R2.',
+      }))
+      : [];
+
+    return {
+      deleted,
+      errors,
+      deletedCount: deleted.length,
+    };
+  }
+
+  async listObjectsByPrefix(prefix) {
+    const safePrefix = assertSafePrefix(prefix);
+    const keys = [];
+    let continuationToken;
+
+    do {
+      const response = await getR2Client().send(new ListObjectsV2Command({
+        Bucket: getR2BucketName(),
+        Prefix: safePrefix,
+        ContinuationToken: continuationToken,
+      }));
+
+      const pageKeys = Array.isArray(response?.Contents)
+        ? response.Contents.map((item) => String(item.Key || '')).filter(Boolean)
+        : [];
+
+      keys.push(...pageKeys);
+      continuationToken = response?.IsTruncated ? response?.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    return [...new Set(keys)];
+  }
+
+  async deletePrefix(prefix) {
+    const safePrefix = assertSafePrefix(prefix);
+    const keys = await this.listObjectsByPrefix(safePrefix);
+    return this.deleteObjects(keys);
   }
 
   async getSignedDownloadUrl(key, expiresIn = 300) {
@@ -155,3 +241,5 @@ class R2StorageService {
 }
 
 module.exports = new R2StorageService();
+module.exports.assertSafeKey = assertSafeKey;
+module.exports.assertSafePrefix = assertSafePrefix;
