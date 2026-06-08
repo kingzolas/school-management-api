@@ -14,6 +14,7 @@ const ACTIVITY_VISIBILITIES = ['global', 'restricted', 'private'];
 const ACTIVITY_SOURCE_TYPES = ['global', 'school'];
 const ACTIVITY_PRINT_LAYOUT_MODES = ['overlay', 'crop-and-recompose'];
 const ACTIVITY_PRINT_SCALE_MODES = ['fit-width', 'fit-page'];
+const ACTIVITY_THUMBNAILS_STATUSES = ['pending', 'processing', 'ready', 'partial', 'failed'];
 
 const percentRectSchema = new Schema(
   {
@@ -135,6 +136,36 @@ const activityBookSchema = new Schema(
       trim: true,
       default: '',
       select: false,
+    },
+    thumbnailsStatus: {
+      type: String,
+      enum: ACTIVITY_THUMBNAILS_STATUSES,
+      default: 'pending',
+      index: true,
+    },
+    thumbnailsGeneratedAt: {
+      type: Date,
+      default: null,
+    },
+    thumbnailsTotal: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+    thumbnailsReady: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+    thumbnailsFailed: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+    thumbnailsError: {
+      type: String,
+      trim: true,
+      default: '',
     },
     defaultPrintLayout: {
       type: printLayoutSchema,

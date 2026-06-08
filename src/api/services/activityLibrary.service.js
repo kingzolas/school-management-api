@@ -253,6 +253,27 @@ function publicPdfUrlFromUpload(uploadResult) {
   return uploadResult?.publicUrl || '';
 }
 
+function shouldExposeThumbnailUrl(thumbnailKey, thumbnailStatus) {
+  const key = normalizeText(thumbnailKey);
+  if (!key) return false;
+
+  const status = normalizeText(thumbnailStatus).toLowerCase();
+  if (!status) return true;
+  return status === 'ready';
+}
+
+async function buildSignedThumbnailUrl(thumbnailKey, expiresIn = 900, thumbnailStatus = 'ready') {
+  const key = normalizeText(thumbnailKey);
+  if (!shouldExposeThumbnailUrl(key, thumbnailStatus)) return null;
+
+  try {
+    const result = await r2StorageService.getSignedDownloadUrl(key, expiresIn);
+    return result.url || null;
+  } catch (error) {
+    return null;
+  }
+}
+
 class ActivityLibraryService {
   getPdfUploadLimitBytes() {
     return PDF_UPLOAD_LIMIT_BYTES;
@@ -467,9 +488,15 @@ class ActivityLibraryService {
 
   async listPages(bookId) {
     await this.getActivityBook(bookId);
-    return ActivityPage.find({ bookId })
+    const pages = await ActivityPage.find({ bookId })
       .sort({ pageNumber: 1 })
       .lean();
+
+    return Promise.all(pages.map(async (page) => ({
+      ...page,
+      thumbnailUrl: await buildSignedThumbnailUrl(page.thumbnailKey, 900, page.thumbnailStatus),
+      thumbnailError: page.thumbnailError || null,
+    })));
   }
 
   async updatePage(pageId, payload = {}) {
@@ -718,13 +745,20 @@ class ActivityLibraryService {
         segment: activityPage.segment || book.segment || '',
         grade: activityPage.grade || book.grade || '',
         pageNumber: activityPage.pageNumber,
-        thumbnailUrl: activityPage.thumbnailUrl || '',
+        thumbnailKey: activityPage.thumbnailKey || '',
+        thumbnailStatus: activityPage.thumbnailStatus || 'pending',
+        thumbnailError: activityPage.thumbnailError || null,
         tags: activityPage.tags || [],
         bookTitle: book.title || '',
       };
     });
 
-    return { items, page, limit, total };
+    const itemsWithUrls = await Promise.all(items.map(async (item) => ({
+      ...item,
+      thumbnailUrl: await buildSignedThumbnailUrl(item.thumbnailKey, 900, item.thumbnailStatus),
+    })));
+
+    return { items: itemsWithUrls, page, limit, total };
   }
 }
 
@@ -734,3 +768,4 @@ module.exports.createHttpError = createHttpError;
 module.exports.normalizeText = normalizeText;
 module.exports.validatePctRect = validatePctRect;
 module.exports.validatePrintLayout = validatePrintLayout;
+module.exports.buildSignedThumbnailUrl = buildSignedThumbnailUrl;

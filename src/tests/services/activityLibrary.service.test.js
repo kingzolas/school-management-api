@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const ActivityBook = require('../../api/models/activityBook.model');
 const ActivityPage = require('../../api/models/activityPage.model');
 const activityLibraryService = require('../../api/services/activityLibrary.service');
+const r2StorageService = require('../../api/services/r2Storage.service');
 const {
   validatePctRect,
   validatePrintLayout,
@@ -127,6 +128,109 @@ test('listSchoolLibrary keeps compatibility with legacy pages missing pageType',
     const result = await activityLibraryService.listSchoolLibrary(schoolId, {});
     assert.equal(result.total, 1);
     assert.equal(result.items[0].title, 'Atividade sem pageType salvo');
+  } finally {
+    restore();
+  }
+});
+
+test('listPages returns thumbnailUrl null when thumbnail is not ready', async () => {
+  const bookId = new mongoose.Types.ObjectId();
+  const pageId = new mongoose.Types.ObjectId();
+  let signedCalls = 0;
+
+  const restore = patchMethods([
+    {
+      target: ActivityBook,
+      key: 'findById',
+      value() {
+        return createQuery({
+          _id: bookId,
+          title: 'Caderno Teste',
+          status: 'published',
+        });
+      },
+    },
+    {
+      target: ActivityPage,
+      key: 'find',
+      value() {
+        return createQuery([
+          {
+            _id: pageId,
+            bookId,
+            pageNumber: 1,
+            thumbnailKey: 'platform/activity-books/book/thumbnails/page-001.png',
+            thumbnailStatus: 'failed',
+            thumbnailError: 'Falha ao gerar',
+          },
+        ]);
+      },
+    },
+    {
+      target: r2StorageService,
+      key: 'getSignedDownloadUrl',
+      value: async () => {
+        signedCalls += 1;
+        return { url: 'https://signed.example/thumb.png' };
+      },
+    },
+  ]);
+
+  try {
+    const pages = await activityLibraryService.listPages(String(bookId));
+    assert.equal(pages.length, 1);
+    assert.equal(pages[0].thumbnailUrl, null);
+    assert.equal(pages[0].thumbnailError, 'Falha ao gerar');
+    assert.equal(signedCalls, 0);
+  } finally {
+    restore();
+  }
+});
+
+test('listPages signs thumbnailUrl when thumbnail is ready', async () => {
+  const bookId = new mongoose.Types.ObjectId();
+  const pageId = new mongoose.Types.ObjectId();
+
+  const restore = patchMethods([
+    {
+      target: ActivityBook,
+      key: 'findById',
+      value() {
+        return createQuery({
+          _id: bookId,
+          title: 'Caderno Teste',
+          status: 'published',
+        });
+      },
+    },
+    {
+      target: ActivityPage,
+      key: 'find',
+      value() {
+        return createQuery([
+          {
+            _id: pageId,
+            bookId,
+            pageNumber: 1,
+            thumbnailKey: 'platform/activity-books/book/thumbnails/page-001.png',
+            thumbnailStatus: 'ready',
+            thumbnailError: '',
+          },
+        ]);
+      },
+    },
+    {
+      target: r2StorageService,
+      key: 'getSignedDownloadUrl',
+      value: async () => ({ url: 'https://signed.example/thumb.png' }),
+    },
+  ]);
+
+  try {
+    const pages = await activityLibraryService.listPages(String(bookId));
+    assert.equal(pages.length, 1);
+    assert.equal(pages[0].thumbnailUrl, 'https://signed.example/thumb.png');
+    assert.equal(pages[0].thumbnailError, null);
   } finally {
     restore();
   }

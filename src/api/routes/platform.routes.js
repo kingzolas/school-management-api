@@ -11,6 +11,7 @@ const SchoolService = require('../services/school.service');
 const platformAdminService = require('../services/platformAdmin.service');
 const r2StorageService = require('../services/r2Storage.service');
 const activityLibraryService = require('../services/activityLibrary.service');
+const activityThumbnailService = require('../services/activityThumbnail.service');
 const {
   requireSuperAdmin,
   verifyPlatformToken,
@@ -1230,6 +1231,15 @@ router.delete('/activity-books/:bookId', asyncRoute(async (req, res) => {
 router.get('/activity-books/:bookId/pages', asyncRoute(async (req, res) => {
   const pages = await activityLibraryService.listPages(req.params.bookId);
   return res.status(200).json({ items: pages.map(normalizeActivityPageResponse), total: pages.length });
+}));
+
+router.post('/activity-books/:bookId/generate-thumbnails', asyncRoute(async (req, res) => {
+  const result = await activityThumbnailService.generateActivityBookThumbnails(req.params.bookId, {
+    force: req.body?.force,
+    pageNumbers: req.body?.pageNumbers,
+  });
+
+  return res.status(200).json(result);
 }));
 
 router.patch('/activity-pages/:pageId', asyncRoute(async (req, res) => {

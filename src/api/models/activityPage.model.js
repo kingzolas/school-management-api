@@ -6,6 +6,7 @@ const ACTIVITY_PAGE_STATUSES = ['draft', 'ready', 'published', 'archived'];
 const ACTIVITY_PAGE_TYPES = ['cover', 'index', 'activity', 'support'];
 const ACTIVITY_PRINT_LAYOUT_MODES = ['overlay', 'crop-and-recompose'];
 const ACTIVITY_PRINT_SCALE_MODES = ['fit-width', 'fit-page'];
+const ACTIVITY_THUMBNAIL_STATUSES = ['pending', 'ready', 'failed'];
 
 const headerOverlaySchema = new Schema(
   {
@@ -104,6 +105,36 @@ const activityPageSchema = new Schema(
       type: String,
       trim: true,
       default: '',
+    },
+    thumbnailStatus: {
+      type: String,
+      enum: ACTIVITY_THUMBNAIL_STATUSES,
+      default: 'pending',
+      index: true,
+    },
+    thumbnailError: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    thumbnailGeneratedAt: {
+      type: Date,
+      default: null,
+    },
+    thumbnailContentType: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    thumbnailWidth: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+    thumbnailHeight: {
+      type: Number,
+      min: 0,
+      default: 0,
     },
     thumbnailUrl: {
       type: String,
