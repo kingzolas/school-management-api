@@ -77,7 +77,13 @@ const activityPrintRunSchema = new Schema(
     requestedByUserId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      default: null,
+      index: true,
+    },
+    requestedByPlatformAdminId: {
+      type: Schema.Types.ObjectId,
+      ref: 'PlatformAdmin',
+      default: null,
       index: true,
     },
     printDate: {

@@ -1,9 +1,11 @@
 const express = require('express');
 const multer = require('multer');
+const mongoose = require('mongoose');
 
 const School = require('../models/school.model');
 const Student = require('../models/student.model');
 const ClassModel = require('../models/class.model');
+const Enrollment = require('../models/enrollment.model');
 const User = require('../models/user.model');
 const SchoolSubscription = require('../models/schoolSubscription.model');
 const SchoolSubscriptionPayment = require('../models/schoolSubscriptionPayment.model');
@@ -11,6 +13,7 @@ const SchoolService = require('../services/school.service');
 const platformAdminService = require('../services/platformAdmin.service');
 const r2StorageService = require('../services/r2Storage.service');
 const activityLibraryService = require('../services/activityLibrary.service');
+const activityPrintService = require('../services/activityPrint.service');
 const activityThumbnailService = require('../services/activityThumbnail.service');
 const {
   requireSuperAdmin,
@@ -408,6 +411,15 @@ function normalizeUserStatusForResponse(rawStatus) {
     status: status === 'Inativo' ? 'inactive' : 'active',
     isActive: status !== 'Inativo',
   };
+}
+
+function ensureValidObjectId(value, message = 'Id invalido.', code = 'INVALID_OBJECT_ID') {
+  if (!mongoose.Types.ObjectId.isValid(value)) {
+    const error = new Error(message);
+    error.status = 400;
+    error.code = code;
+    throw error;
+  }
 }
 
 function normalizePlatformUserResponse(user) {
@@ -1021,6 +1033,131 @@ router.get('/schools/:schoolId/users', asyncRoute(async (req, res) => {
     page,
     limit,
   });
+}));
+
+router.get('/schools/:schoolId/activity-library', asyncRoute(async (req, res) => {
+  ensureValidObjectId(req.params.schoolId, 'Escola invalida.', 'INVALID_SCHOOL_ID');
+
+  const school = await School.findById(req.params.schoolId).select('_id').lean();
+  if (!school) {
+    return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
+  }
+
+  const result = await activityLibraryService.listSchoolLibraryForPlatform(req.params.schoolId, req.query);
+  return res.status(200).json(result);
+}));
+
+router.get('/schools/:schoolId/classes', asyncRoute(async (req, res) => {
+  ensureValidObjectId(req.params.schoolId, 'Escola invalida.', 'INVALID_SCHOOL_ID');
+
+  const school = await School.findById(req.params.schoolId).select('_id').lean();
+  if (!school) {
+    return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
+  }
+
+  const classes = await ClassModel.find({ school_id: req.params.schoolId })
+    .select('_id name grade shift schoolYear status')
+    .sort({ schoolYear: -1, grade: 1, name: 1 })
+    .lean();
+
+  return res.status(200).json({
+    items: classes.map((item) => ({
+      id: String(item._id),
+      name: item.name || '',
+      grade: item.grade || '',
+      shift: item.shift || '',
+      schoolYear: item.schoolYear || null,
+      status: item.status || '',
+    })),
+  });
+}));
+
+router.get('/schools/:schoolId/classes/:classId/students', asyncRoute(async (req, res) => {
+  ensureValidObjectId(req.params.schoolId, 'Escola invalida.', 'INVALID_SCHOOL_ID');
+  ensureValidObjectId(req.params.classId, 'Turma invalida.', 'INVALID_CLASS');
+
+  const school = await School.findById(req.params.schoolId).select('_id').lean();
+  if (!school) {
+    return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
+  }
+
+  const classDoc = await ClassModel.findOne({
+    _id: req.params.classId,
+    school_id: req.params.schoolId,
+  }).select('_id').lean();
+
+  if (!classDoc) {
+    return res.status(404).json({
+      message: 'Turma nao encontrada para esta escola.',
+      code: 'CLASS_NOT_FOUND_IN_SCHOOL',
+    });
+  }
+
+  const enrollments = await Enrollment.find({
+    school_id: req.params.schoolId,
+    class: req.params.classId,
+    status: 'Ativa',
+  })
+    .populate('student', 'fullName name')
+    .sort({ createdAt: 1 })
+    .lean();
+
+  return res.status(200).json({
+    items: enrollments
+      .filter((item) => item.student)
+      .map((item) => ({
+        studentId: String(item.student._id),
+        enrollmentId: String(item._id),
+        fullName: item.student.fullName || item.student.name || '',
+        status: item.status || '',
+      })),
+  });
+}));
+
+router.get('/schools/:schoolId/teachers', asyncRoute(async (req, res) => {
+  ensureValidObjectId(req.params.schoolId, 'Escola invalida.', 'INVALID_SCHOOL_ID');
+
+  const school = await School.findById(req.params.schoolId).select('_id').lean();
+  if (!school) {
+    return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
+  }
+
+  const teachers = await User.find({
+    school_id: req.params.schoolId,
+    roles: 'Professor',
+    status: 'Ativo',
+  })
+    .select('fullName email roles')
+    .sort({ fullName: 1, createdAt: -1 })
+    .lean();
+
+  return res.status(200).json({
+    items: teachers.map((item) => ({
+      id: String(item._id),
+      fullName: item.fullName || '',
+      email: item.email || '',
+      roles: Array.isArray(item.roles) ? item.roles : [],
+    })),
+  });
+}));
+
+router.post('/schools/:schoolId/activity-library/:activityPageId/print-test', asyncRoute(async (req, res) => {
+  ensureValidObjectId(req.params.schoolId, 'Escola invalida.', 'INVALID_SCHOOL_ID');
+  ensureValidObjectId(req.params.activityPageId, 'ActivityPage nao encontrada.', 'ACTIVITY_PAGE_NOT_FOUND');
+
+  const school = await School.findById(req.params.schoolId).select('_id').lean();
+  if (!school) {
+    return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
+  }
+
+  const result = await activityPrintService.createPlatformPrintTestRun({
+    schoolId: req.params.schoolId,
+    activityPageId: req.params.activityPageId,
+    payload: req.body,
+    platformAdmin: req.platformAdmin,
+  });
+
+  return res.status(201).json(result);
 }));
 
 router.post('/schools/:schoolId/users/:userId/reset-password', asyncRoute(async (req, res) => {

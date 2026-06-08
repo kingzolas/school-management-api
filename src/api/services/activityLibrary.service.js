@@ -764,6 +764,108 @@ class ActivityLibraryService {
 
     return { items: itemsWithUrls, page, limit, total };
   }
+
+  async listSchoolLibraryForPlatform(schoolId, filters = {}) {
+    if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+      throw createHttpError('Escola invalida.', 400, 'INVALID_SCHOOL_ID');
+    }
+
+    const { page, limit, skip } = normalizePagination(filters);
+    const visibleBookQuery = {
+      status: 'published',
+      $or: [
+        { visibility: 'global' },
+        { visibility: 'restricted', allowedSchoolIds: schoolId },
+      ],
+    };
+
+    const visibleBooks = await ActivityBook.find(visibleBookQuery)
+      .select('_id title subject segment grade visibility defaultPrintLayout defaultHeaderOverlay defaultContentCrop defaultFooterCrop')
+      .lean();
+
+    const visibleBookIds = visibleBooks.map((book) => book._id);
+    if (visibleBookIds.length === 0) {
+      return { items: [], page, limit, total: 0 };
+    }
+
+    const bookById = new Map(visibleBooks.map((book) => [String(book._id), book]));
+    const pageQuery = {
+      bookId: { $in: visibleBookIds },
+      enabled: true,
+      status: 'published',
+      printable: { $ne: false },
+      $and: [
+        {
+          $or: [
+            { pageType: 'activity' },
+            { pageType: { $exists: false } },
+          ],
+        },
+      ],
+    };
+
+    if (filters.subject) pageQuery.subject = normalizeText(filters.subject);
+    if (filters.segment) pageQuery.segment = normalizeText(filters.segment);
+    if (filters.grade) pageQuery.grade = normalizeText(filters.grade);
+
+    const tags = normalizeTags(filters.tags);
+    if (tags.length > 0) pageQuery.tags = { $in: tags };
+
+    if (filters.search) {
+      const regex = new RegExp(escapeRegex(filters.search), 'i');
+      const matchingBookIds = visibleBooks
+        .filter((book) => regex.test(book.title || ''))
+        .map((book) => book._id);
+
+      pageQuery.$and.push({
+        $or: [
+          { title: regex },
+          { description: regex },
+          { subject: regex },
+          { segment: regex },
+          { grade: regex },
+        ],
+      });
+
+      if (matchingBookIds.length > 0) {
+        pageQuery.$and[pageQuery.$and.length - 1].$or.push({ bookId: { $in: matchingBookIds } });
+      }
+    }
+
+    const [pages, total] = await Promise.all([
+      ActivityPage.find(pageQuery)
+        .sort({ updatedAt: -1, pageNumber: 1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      ActivityPage.countDocuments(pageQuery),
+    ]);
+
+    const items = pages.map((activityPage) => {
+      const book = bookById.get(String(activityPage.bookId)) || {};
+      const pageTitle = activityPage.title || `${book.title || 'Atividade'} - Pagina ${activityPage.pageNumber}`;
+
+      return {
+        activityPageId: String(activityPage._id),
+        bookId: String(activityPage.bookId),
+        bookTitle: book.title || '',
+        pageTitle,
+        pageNumber: activityPage.pageNumber,
+        subject: activityPage.subject || book.subject || '',
+        segment: activityPage.segment || book.segment || '',
+        grade: activityPage.grade || book.grade || '',
+        pageType: activityPage.pageType || 'activity',
+        printable: activityPage.printable !== false,
+        enabled: activityPage.enabled === true,
+        printLayout: activityPage.printLayout || book.defaultPrintLayout || null,
+        contentCrop: activityPage.contentCrop || book.defaultContentCrop || null,
+        footerCrop: activityPage.footerCrop || book.defaultFooterCrop || null,
+        headerOverlay: activityPage.headerOverlay || book.defaultHeaderOverlay || null,
+      };
+    });
+
+    return { items, page, limit, total };
+  }
 }
 
 module.exports = new ActivityLibraryService();

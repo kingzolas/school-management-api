@@ -77,7 +77,50 @@ class ActivityPrintService {
   }
 
   async createPrintRun({ activityPageId, payload = {}, actor = {} }) {
-    const schoolId = actor.school_id || actor.schoolId;
+    const context = this.buildSchoolContext(actor);
+    return this.createPrintRunFromContext({ activityPageId, payload, context });
+  }
+
+  async createPlatformPrintTestRun({
+    schoolId,
+    activityPageId,
+    payload = {},
+    platformAdmin = {},
+  }) {
+    const context = this.buildPlatformContext({ schoolId, platformAdmin });
+    return this.createPrintRunFromContext({ activityPageId, payload, context });
+  }
+
+  buildSchoolContext(actor = {}) {
+    return {
+      actorType: 'school',
+      schoolId: actor.school_id || actor.schoolId,
+      requestedByUserId: extractId(actor.id || actor._id),
+      requestedByPlatformAdminId: null,
+      actorRoles: Array.isArray(actor.roles)
+        ? actor.roles
+        : actor.role
+          ? [actor.role]
+          : [],
+      canBypassTeacherClassAccess: false,
+      actor,
+    };
+  }
+
+  buildPlatformContext({ schoolId, platformAdmin = {} }) {
+    return {
+      actorType: 'platform',
+      schoolId,
+      requestedByUserId: null,
+      requestedByPlatformAdminId: extractId(platformAdmin.id || platformAdmin._id),
+      actorRoles: platformAdmin.role ? [platformAdmin.role] : [],
+      canBypassTeacherClassAccess: true,
+      actor: platformAdmin,
+    };
+  }
+
+  async createPrintRunFromContext({ activityPageId, payload = {}, context = {} }) {
+    const schoolId = context.schoolId;
     ensureObjectId(schoolId, 'INVALID_SCHOOL', 'Escola invalida.');
     ensureObjectId(activityPageId, 'ACTIVITY_PAGE_NOT_FOUND', 'ActivityPage nao encontrada.');
 
@@ -117,9 +160,9 @@ class ActivityPrintService {
 
     let classDoc;
     try {
-      classDoc = await this.ensureClassAccess(actor, schoolId, classId);
+      classDoc = await this.resolveClassForContext({ context, schoolId, classId });
     } catch (error) {
-      throw createHttpError(error.message || 'Turma invalida.', error.statusCode || 400, 'INVALID_CLASS');
+      throw createHttpError(error.message || 'Turma invalida.', error.status || error.statusCode || 400, 'INVALID_CLASS');
     }
 
     const uniqueStudentIds = this.normalizeStudentIds(payload.studentIds);
@@ -138,7 +181,7 @@ class ActivityPrintService {
     });
 
     const { teacherDoc, teacherId } = await this.resolveTeacher({
-      actor,
+      context,
       schoolId,
       teacherId: payload.teacherId,
     });
@@ -158,7 +201,7 @@ class ActivityPrintService {
 
     const printRun = await this.createPendingPrintRun({
       schoolId,
-      actor,
+      context,
       activityBook,
       activityPage,
       classDoc,
@@ -254,6 +297,27 @@ class ActivityPrintService {
     }
   }
 
+  async resolveClassForContext({ context, schoolId, classId }) {
+    if (context.actorType === 'platform') {
+      const classDoc = await this.ClassModel.findOne({
+        _id: classId,
+        school_id: schoolId,
+      }).select('_id name grade shift schoolYear school_id');
+
+      if (!classDoc) {
+        throw createHttpError(
+          'Turma nao encontrada ou nao pertence a escola selecionada.',
+          404,
+          'INVALID_CLASS'
+        );
+      }
+
+      return classDoc;
+    }
+
+    return this.ensureClassAccess(context.actor, schoolId, classId);
+  }
+
   isBookVisibleToSchool(activityBook, schoolId) {
     if (!activityBook) return false;
     if (activityBook.visibility === 'global') return true;
@@ -311,10 +375,11 @@ class ActivityPrintService {
     return students;
   }
 
-  async resolveTeacher({ actor, schoolId, teacherId }) {
+  async resolveTeacher({ context, schoolId, teacherId }) {
+    const actor = context.actor || {};
     const actorId = extractId(actor.id || actor._id);
 
-    if (!isPrivilegedActor(actor)) {
+    if (!context.canBypassTeacherClassAccess && !isPrivilegedActor(actor)) {
       if (!actorId) {
         throw createHttpError('Professor invalido.', 403, 'INVALID_TEACHER');
       }
@@ -350,7 +415,7 @@ class ActivityPrintService {
 
   async createPendingPrintRun({
     schoolId,
-    actor,
+    context,
     activityBook,
     activityPage,
     classDoc,
@@ -374,7 +439,8 @@ class ActivityPrintService {
       schoolId,
       classId: classDoc._id,
       teacherId: teacherDoc?._id || null,
-      requestedByUserId: actor.id || actor._id,
+      requestedByUserId: context.requestedByUserId || null,
+      requestedByPlatformAdminId: context.requestedByPlatformAdminId || null,
       printDate,
       studentIds: students.map((student) => student._id),
       generatedPdfKey: '',

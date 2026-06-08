@@ -235,3 +235,85 @@ test('listPages signs thumbnailUrl when thumbnail is ready', async () => {
     restore();
   }
 });
+
+test('listSchoolLibraryForPlatform returns only printable activity pages with layout details', async () => {
+  const schoolId = String(new mongoose.Types.ObjectId());
+  const visibleBookId = new mongoose.Types.ObjectId();
+  const hiddenBookId = new mongoose.Types.ObjectId();
+  const visiblePageId = new mongoose.Types.ObjectId();
+
+  const restore = patchMethods([
+    {
+      target: ActivityBook,
+      key: 'find',
+      value() {
+        return createQuery([
+          {
+            _id: visibleBookId,
+            title: 'Caderno Visivel',
+            subject: 'Portugues',
+            segment: 'Educacao Infantil',
+            grade: 'Pre-escola',
+            visibility: 'restricted',
+            defaultPrintLayout: { mode: 'overlay' },
+            defaultHeaderOverlay: { xPct: 2, yPct: 2, widthPct: 96, heightPct: 14 },
+          },
+          {
+            _id: hiddenBookId,
+            title: 'Caderno Oculto',
+            subject: 'Matematica',
+            segment: 'Fundamental I',
+            grade: '1 ano',
+            visibility: 'global',
+          },
+        ]);
+      },
+    },
+    {
+      target: ActivityPage,
+      key: 'find',
+      value() {
+        return createQuery([
+          {
+            _id: visiblePageId,
+            bookId: visibleBookId,
+            title: 'Pagina 04',
+            pageNumber: 4,
+            subject: 'Portugues',
+            segment: 'Educacao Infantil',
+            grade: 'Pre-escola',
+            enabled: true,
+            printable: true,
+            pageType: 'activity',
+            status: 'published',
+            printLayout: {
+              mode: 'crop-and-recompose',
+              academyHeaderHeightPct: 18,
+              preserveFooter: true,
+              scaleMode: 'fit-width',
+            },
+            contentCrop: { xPct: 4, yPct: 18, widthPct: 92, heightPct: 72 },
+            footerCrop: { xPct: 4, yPct: 91, widthPct: 92, heightPct: 6 },
+            headerOverlay: { xPct: 2, yPct: 2, widthPct: 96, heightPct: 14 },
+          },
+        ]);
+      },
+    },
+    {
+      target: ActivityPage,
+      key: 'countDocuments',
+      value: async () => 1,
+    },
+  ]);
+
+  try {
+    const result = await activityLibraryService.listSchoolLibraryForPlatform(schoolId, {});
+    assert.equal(result.total, 1);
+    assert.equal(result.items[0].activityPageId, String(visiblePageId));
+    assert.equal(result.items[0].bookTitle, 'Caderno Visivel');
+    assert.equal(result.items[0].pageType, 'activity');
+    assert.deepEqual(result.items[0].contentCrop, { xPct: 4, yPct: 18, widthPct: 92, heightPct: 72 });
+  } finally {
+    restore();
+  }
+});

@@ -119,6 +119,13 @@ function createHarness(overrides = {}) {
         return createQuery(sameId(id, bookId) ? { ...book, ...overrides.book } : null);
       },
     },
+    ClassModelRef: {
+      findOne(filter = {}) {
+        const matchesClass = sameId(filter._id, classId);
+        const matchesSchool = sameId(filter.school_id, schoolId);
+        return createQuery(matchesClass && matchesSchool ? { ...classDoc, ...overrides.classDoc } : null);
+      },
+    },
     ActivityPrintRunModel: FakeActivityPrintRunModel,
     EnrollmentModel: {
       find(filter = {}) {
@@ -353,4 +360,84 @@ test('createPrintRun marks print run as failed when R2 upload fails', async () =
 
   assert.equal(harness.state.saveHistory[0].status, 'pending');
   assert.equal(harness.state.savedRuns[0].status, 'failed');
+});
+
+test('createPlatformPrintTestRun reuses the same print pipeline for platform context', async () => {
+  const harness = createHarness();
+  const platformAdminId = new mongoose.Types.ObjectId();
+
+  const result = await harness.service.createPlatformPrintTestRun({
+    schoolId: harness.ids.schoolId,
+    activityPageId: harness.ids.pageId,
+    platformAdmin: {
+      id: String(platformAdminId),
+      role: 'superAdmin',
+    },
+    payload: {
+      classId: harness.ids.classId,
+      studentIds: [harness.ids.studentA, harness.ids.studentB],
+      teacherId: harness.ids.teacherId,
+      printDate: '2026-06-04',
+    },
+  });
+
+  assert.equal(result.printRun.status, 'generated');
+  assert.equal(result.printRun.studentCount, 2);
+  assert.equal(harness.state.generatedPdfCalls, 1);
+  assert.equal(harness.state.savedRuns[0].requestedByUserId, null);
+  assert.equal(
+    String(harness.state.savedRuns[0].requestedByPlatformAdminId),
+    String(platformAdminId)
+  );
+});
+
+test('createPlatformPrintTestRun rejects class from another school', async () => {
+  const harness = createHarness({
+    classDoc: null,
+  });
+
+  harness.service.ClassModel.findOne = () => createQuery(null);
+
+  await assert.rejects(
+    () => harness.service.createPlatformPrintTestRun({
+      schoolId: harness.ids.schoolId,
+      activityPageId: harness.ids.pageId,
+      platformAdmin: {
+        id: String(new mongoose.Types.ObjectId()),
+        role: 'superAdmin',
+      },
+      payload: {
+        classId: harness.ids.classId,
+        studentIds: [harness.ids.studentA],
+        printDate: '2026-06-04',
+      },
+    }),
+    (error) => error.code === 'INVALID_CLASS'
+  );
+});
+
+test('createPlatformPrintTestRun rejects teacher from another school', async () => {
+  const harness = createHarness();
+  harness.service.UserModel.findOne = (filter = {}) => {
+    if (sameId(filter._id, harness.ids.teacherId)) return createQuery(null);
+    return createQuery(null);
+  };
+
+  await assert.rejects(
+    () => harness.service.createPlatformPrintTestRun({
+      schoolId: harness.ids.schoolId,
+      activityPageId: harness.ids.pageId,
+      platformAdmin: {
+        id: String(new mongoose.Types.ObjectId()),
+        role: 'superAdmin',
+      },
+      payload: {
+        classId: harness.ids.classId,
+        studentIds: [harness.ids.studentA],
+        teacherId: harness.ids.teacherId,
+        printDate: '2026-06-04',
+      },
+    }),
+    (error) => error.code === 'INVALID_TEACHER'
+  );
 });
