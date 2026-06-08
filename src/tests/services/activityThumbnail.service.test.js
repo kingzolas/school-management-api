@@ -6,6 +6,7 @@ const {
   ActivityThumbnailService,
   buildThumbnailKey,
   normalizePageList,
+  getBatchPlan,
 } = require('../../api/services/activityThumbnail.service');
 
 function createQuery(value) {
@@ -19,8 +20,10 @@ function createQuery(value) {
 
 function createHarness(overrides = {}) {
   const bookId = new mongoose.Types.ObjectId();
-  const pageAId = new mongoose.Types.ObjectId();
-  const pageBId = new mongoose.Types.ObjectId();
+  const pageIds = Array.from({ length: 5 }, () => new mongoose.Types.ObjectId());
+  let tick = 0;
+  const logs = [];
+
   const state = {
     book: {
       _id: bookId,
@@ -35,20 +38,51 @@ function createHarness(overrides = {}) {
     },
     pages: [
       {
-        _id: pageAId,
+        _id: pageIds[0],
         bookId,
         pageNumber: 1,
         thumbnailKey: '',
         thumbnailStatus: 'pending',
         thumbnailError: '',
+        thumbnailLastAttemptAt: null,
       },
       {
-        _id: pageBId,
+        _id: pageIds[1],
         bookId,
         pageNumber: 2,
         thumbnailKey: '',
         thumbnailStatus: 'pending',
         thumbnailError: '',
+        thumbnailLastAttemptAt: null,
+      },
+      {
+        _id: pageIds[2],
+        bookId,
+        pageNumber: 3,
+        thumbnailKey: '',
+        thumbnailStatus: 'pending',
+        thumbnailError: '',
+        thumbnailLastAttemptAt: null,
+      },
+      {
+        _id: pageIds[3],
+        bookId,
+        pageNumber: 4,
+        thumbnailKey: '',
+        thumbnailStatus: 'failed',
+        thumbnailError: 'Falha anterior',
+        thumbnailErrorCode: 'PDF_RENDER_FAILED',
+        thumbnailErrorStage: 'render',
+        thumbnailLastAttemptAt: new Date('2026-06-07T00:00:00.000Z'),
+      },
+      {
+        _id: pageIds[4],
+        bookId,
+        pageNumber: 5,
+        thumbnailKey: 'platform/activity-books/book/thumbnails/page-005.png',
+        thumbnailStatus: 'ready',
+        thumbnailError: '',
+        thumbnailLastAttemptAt: new Date('2026-06-07T00:00:10.000Z'),
       },
     ].map((page, index) => ({ ...page, ...(overrides.pages?.[index] || {}) })),
     uploads: [],
@@ -71,7 +105,9 @@ function createHarness(overrides = {}) {
   };
 
   const fakeLoadingTask = {
-    promise: Promise.resolve(fakePdfDocument),
+    promise: overrides.loadingPromiseError
+      ? Promise.reject(overrides.loadingPromiseError)
+      : Promise.resolve(fakePdfDocument),
     destroy() {},
   };
 
@@ -83,9 +119,7 @@ function createHarness(overrides = {}) {
       findByIdAndUpdate(id, update = {}, options = {}) {
         if (String(id) !== String(bookId)) return createQuery(null);
         Object.assign(state.book, update.$set || {});
-        if (options?.new) {
-          return createQuery({ ...state.book });
-        }
+        if (options?.new) return createQuery({ ...state.book });
         return Promise.resolve({ ...state.book });
       },
     },
@@ -125,6 +159,12 @@ function createHarness(overrides = {}) {
         return fakeLoadingTask;
       },
     }),
+    logger: {
+      info(message) {
+        logs.push(message);
+      },
+    },
+    now: () => new Date(Date.UTC(2026, 5, 7, 0, 0, 0, tick++ * 100)),
   });
 
   service.renderPdfPageToPng = async (pdfPage) => {
@@ -134,13 +174,21 @@ function createHarness(overrides = {}) {
     }
     return {
       buffer: Buffer.from(`png-${pdfPage.pageNumber}`),
-      width: 320,
+      width: 360,
       height: 480,
       contentType: 'image/png',
     };
   };
 
-  return { service, state, ids: { bookId: String(bookId), pageAId: String(pageAId), pageBId: String(pageBId) } };
+  return {
+    service,
+    state,
+    logs,
+    ids: {
+      bookId: String(bookId),
+      pageIds: pageIds.map(String),
+    },
+  };
 }
 
 test('buildThumbnailKey zero-pads page numbers', () => {
@@ -155,75 +203,148 @@ test('normalizePageList normalizes, deduplicates and sorts page numbers', () => 
   assert.deepEqual(normalizePageList([3, '1', 3, 2], pages), [1, 2, 3]);
 });
 
-test('generateActivityBookThumbnails skips ready pages when force=false', async () => {
-  const harness = createHarness({
-    pages: [
-      {
-        thumbnailKey: 'platform/activity-books/book/thumbnails/page-001.png',
-        thumbnailStatus: 'ready',
-      },
-      {},
-    ],
+test('getBatchPlan rejects pageNumbers larger than hard limit', () => {
+  const pages = [1, 2, 3, 4].map((pageNumber) => ({ pageNumber }));
+  const originalEnv = process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST;
+  process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST = '3';
+
+  try {
+    assert.throws(
+      () => getBatchPlan(pages, { pageNumbers: [1, 2, 3, 4] }),
+      (error) => error.code === 'THUMBNAIL_BATCH_TOO_LARGE'
+        && error.details.maxBatchSize === 3
+        && error.details.received === 4
+    );
+  } finally {
+    if (originalEnv === undefined) delete process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST;
+    else process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST = originalEnv;
+  }
+});
+
+test('generateActivityBookThumbnails rejects batchSize larger than hard limit', async () => {
+  const harness = createHarness();
+  const originalEnv = process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST;
+  process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST = '3';
+
+  try {
+    await assert.rejects(
+      () => harness.service.generateActivityBookThumbnails(harness.ids.bookId, { batchSize: 4 }),
+      (error) => error.code === 'THUMBNAIL_BATCH_TOO_LARGE'
+        && error.details.maxBatchSize === 3
+        && error.details.received === 4
+    );
+  } finally {
+    if (originalEnv === undefined) delete process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST;
+    else process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST = originalEnv;
+  }
+});
+
+test('generateActivityBookThumbnails without pageNumbers processes only the next safe batch', async () => {
+  const harness = createHarness();
+  const originalEnv = process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST;
+  process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST = '3';
+
+  try {
+    const result = await harness.service.generateActivityBookThumbnails(harness.ids.bookId, {
+      force: false,
+      batchSize: 3,
+    });
+
+    assert.equal(result.total, 5);
+    assert.equal(result.processed, 3);
+    assert.deepEqual(result.processedPageNumbers, [1, 2, 3]);
+    assert.equal(result.generated, 3);
+    assert.equal(result.skipped, 0);
+    assert.equal(result.failed, 0);
+    assert.equal(result.hasMore, true);
+    assert.equal(result.remaining, 1);
+    assert.deepEqual(result.nextRecommendedPageNumbers, [4]);
+    assert.equal(typeof result.timing.durationMs, 'number');
+    assert.equal(typeof result.timing.averagePerPageMs, 'number');
+    assert.equal(typeof result.timing.estimatedRemainingMs, 'number');
+  } finally {
+    if (originalEnv === undefined) delete process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST;
+    else process.env.MAX_THUMBNAIL_PAGES_PER_REQUEST = originalEnv;
+  }
+});
+
+test('generateActivityBookThumbnails skips ready pages when force=false and pageNumbers are explicit', async () => {
+  const harness = createHarness();
+
+  const result = await harness.service.generateActivityBookThumbnails(harness.ids.bookId, {
+    force: false,
+    pageNumbers: [5, 4],
   });
 
-  const result = await harness.service.generateActivityBookThumbnails(harness.ids.bookId, { force: false });
-
+  assert.equal(result.processed, 2);
   assert.equal(result.generated, 1);
   assert.equal(result.skipped, 1);
   assert.equal(result.failed, 0);
-  assert.deepEqual(harness.state.renderCalls, [2]);
-  assert.equal(harness.state.book.thumbnailsReady, 2);
-  assert.equal(harness.state.book.thumbnailsStatus, 'ready');
+  assert.deepEqual(harness.state.renderCalls, [4]);
 });
 
-test('generateActivityBookThumbnails regenerates ready pages when force=true', async () => {
-  const harness = createHarness({
-    pages: [
-      {
-        thumbnailKey: 'platform/activity-books/book/thumbnails/page-001.png',
-        thumbnailStatus: 'ready',
-      },
-      {},
-    ],
+test('generateActivityBookThumbnails regenerates explicit pages when force=true', async () => {
+  const harness = createHarness();
+
+  const result = await harness.service.generateActivityBookThumbnails(harness.ids.bookId, {
+    force: true,
+    pageNumbers: [4, 5],
   });
 
-  const result = await harness.service.generateActivityBookThumbnails(harness.ids.bookId, { force: true });
-
+  assert.equal(result.processed, 2);
   assert.equal(result.generated, 2);
   assert.equal(result.skipped, 0);
-  assert.deepEqual(harness.state.renderCalls, [1, 2]);
-  assert.equal(harness.state.uploads.length, 2);
+  assert.equal(result.failed, 0);
+  assert.deepEqual(harness.state.renderCalls, [4, 5]);
 });
 
-test('generateActivityBookThumbnails marks only failed pages as failed and keeps counters updated', async () => {
+test('generateActivityBookThumbnails includes per-page error details and persists error code/stage', async () => {
   const harness = createHarness({
-    renderErrors: {
-      2: new Error('Pagina corrompida'),
+    pageErrors: {
+      2: new Error('Pagina ausente'),
     },
   });
 
-  const result = await harness.service.generateActivityBookThumbnails(harness.ids.bookId, { force: true });
+  const result = await harness.service.generateActivityBookThumbnails(harness.ids.bookId, {
+    force: false,
+    pageNumbers: [1, 2],
+  });
 
   assert.equal(result.generated, 1);
   assert.equal(result.failed, 1);
-  assert.equal(harness.state.pages[0].thumbnailStatus, 'ready');
+  assert.equal(result.items[1].pageNumber, 2);
+  assert.equal(result.items[1].thumbnailStatus, 'failed');
+  assert.equal(result.items[1].errorCode, 'PDF_PAGE_NOT_FOUND');
+  assert.equal(result.items[1].stage, 'page');
+  assert.equal(typeof result.items[1].durationMs, 'number');
   assert.equal(harness.state.pages[1].thumbnailStatus, 'failed');
-  assert.equal(harness.state.pages[1].thumbnailKey, '');
-  assert.equal(harness.state.book.thumbnailsReady, 1);
-  assert.equal(harness.state.book.thumbnailsFailed, 1);
-  assert.equal(harness.state.book.thumbnailsStatus, 'partial');
+  assert.equal(harness.state.pages[1].thumbnailErrorCode, 'PDF_PAGE_NOT_FOUND');
+  assert.equal(harness.state.pages[1].thumbnailErrorStage, 'page');
+  assert.ok(harness.state.pages[1].thumbnailLastAttemptAt instanceof Date);
 });
 
-test('generateActivityBookThumbnails marks book as failed when download fails', async () => {
+test('generateActivityBookThumbnails marks book as failed and never leaves processing on global failure', async () => {
   const harness = createHarness({
     downloadError: Object.assign(new Error('Objeto nao encontrado no R2.'), { code: 'R2_OBJECT_NOT_FOUND' }),
   });
 
   await assert.rejects(
     () => harness.service.generateActivityBookThumbnails(harness.ids.bookId, { force: true }),
-    (error) => error.code === 'R2_OBJECT_NOT_FOUND'
+    (error) => error.code === 'R2_DOWNLOAD_FAILED'
   );
 
   assert.equal(harness.state.book.thumbnailsStatus, 'failed');
-  assert.match(harness.state.book.thumbnailsError, /Objeto nao encontrado no R2/);
+  assert.match(harness.state.book.thumbnailsError, /Falha ao baixar o PDF original do R2/);
+});
+
+test('thumbnail generation emits safe operational logs without breaking execution', async () => {
+  const harness = createHarness();
+
+  await harness.service.generateActivityBookThumbnails(harness.ids.bookId, {
+    force: false,
+    pageNumbers: [1],
+  });
+
+  assert.equal(harness.logs.length > 0, true);
+  assert.equal(harness.logs.some((line) => /\[activity-thumbnails\]/.test(line)), true);
 });

@@ -139,3 +139,75 @@ test('generate-thumbnails route requires superAdmin role', async () => {
     else process.env.PLATFORM_JWT_SECRET = originalSecret;
   }
 });
+
+test('generate-thumbnails route returns detailed batch error payload for superAdmin', async () => {
+  const originalSecret = process.env.PLATFORM_JWT_SECRET;
+  process.env.PLATFORM_JWT_SECRET = 'platform-secret-test';
+
+  const bookId = new mongoose.Types.ObjectId();
+  const adminId = new mongoose.Types.ObjectId();
+  let capturedPayload = null;
+
+  const restore = patchMethods([
+    {
+      target: PlatformAdmin,
+      key: 'findById',
+      value(id) {
+        if (String(id) !== String(adminId)) return createQuery(null);
+        return createQuery({
+          _id: adminId,
+          name: 'Super Admin',
+          email: 'super@example.com',
+          role: 'superAdmin',
+          isActive: true,
+        });
+      },
+    },
+    {
+      target: activityThumbnailService,
+      key: 'generateActivityBookThumbnails',
+      value: async (_bookId, payload) => {
+        capturedPayload = payload;
+        const error = new Error('Para evitar estouro de memoria, gere no maximo 3 thumbnails por requisicao.');
+        error.status = 400;
+        error.code = 'THUMBNAIL_BATCH_TOO_LARGE';
+        error.details = { maxBatchSize: 3, received: 8 };
+        throw error;
+      },
+    },
+  ]);
+
+  try {
+    const token = jwt.sign(
+      { id: String(adminId), tokenType: 'platform_admin' },
+      process.env.PLATFORM_JWT_SECRET
+    );
+
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/platform/activity-books/${bookId}/generate-thumbnails`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ force: false, batchSize: 3, pageNumbers: [1, 2, 3] }),
+      });
+
+      const payload = await response.json();
+      assert.equal(response.status, 400);
+      assert.equal(payload.error, 'THUMBNAIL_BATCH_TOO_LARGE');
+      assert.equal(payload.code, 'THUMBNAIL_BATCH_TOO_LARGE');
+      assert.equal(payload.maxBatchSize, 3);
+      assert.equal(payload.received, 8);
+      assert.deepEqual(capturedPayload, {
+        force: false,
+        batchSize: 3,
+        pageNumbers: [1, 2, 3],
+      });
+    });
+  } finally {
+    restore();
+    if (originalSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = originalSecret;
+  }
+});

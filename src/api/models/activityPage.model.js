@@ -117,6 +117,20 @@ const activityPageSchema = new Schema(
       trim: true,
       default: '',
     },
+    thumbnailErrorCode: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    thumbnailErrorStage: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    thumbnailLastAttemptAt: {
+      type: Date,
+      default: null,
+    },
     thumbnailGeneratedAt: {
       type: Date,
       default: null,

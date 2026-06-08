@@ -496,6 +496,8 @@ class ActivityLibraryService {
       ...page,
       thumbnailUrl: await buildSignedThumbnailUrl(page.thumbnailKey, 900, page.thumbnailStatus),
       thumbnailError: page.thumbnailError || null,
+      thumbnailErrorCode: page.thumbnailErrorCode || null,
+      thumbnailErrorStage: page.thumbnailErrorStage || null,
     })));
   }
 
@@ -748,6 +750,8 @@ class ActivityLibraryService {
         thumbnailKey: activityPage.thumbnailKey || '',
         thumbnailStatus: activityPage.thumbnailStatus || 'pending',
         thumbnailError: activityPage.thumbnailError || null,
+        thumbnailErrorCode: activityPage.thumbnailErrorCode || null,
+        thumbnailErrorStage: activityPage.thumbnailErrorStage || null,
         tags: activityPage.tags || [],
         bookTitle: book.title || '',
       };

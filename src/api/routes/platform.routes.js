@@ -1233,14 +1233,25 @@ router.get('/activity-books/:bookId/pages', asyncRoute(async (req, res) => {
   return res.status(200).json({ items: pages.map(normalizeActivityPageResponse), total: pages.length });
 }));
 
-router.post('/activity-books/:bookId/generate-thumbnails', asyncRoute(async (req, res) => {
-  const result = await activityThumbnailService.generateActivityBookThumbnails(req.params.bookId, {
-    force: req.body?.force,
-    pageNumbers: req.body?.pageNumbers,
-  });
+router.post('/activity-books/:bookId/generate-thumbnails', async (req, res) => {
+  try {
+    const result = await activityThumbnailService.generateActivityBookThumbnails(req.params.bookId, {
+      force: req.body?.force,
+      batchSize: req.body?.batchSize,
+      pageNumbers: req.body?.pageNumbers,
+    });
 
-  return res.status(200).json(result);
-}));
+    return res.status(200).json(result);
+  } catch (error) {
+    const status = error.status || error.statusCode || 500;
+    return res.status(status).json({
+      error: error.code || 'PLATFORM_ERROR',
+      code: error.code || 'PLATFORM_ERROR',
+      message: error.message || 'Erro interno.',
+      ...(error.details || {}),
+    });
+  }
+});
 
 router.patch('/activity-pages/:pageId', asyncRoute(async (req, res) => {
   const page = await activityLibraryService.updatePage(req.params.pageId, req.body);
