@@ -425,6 +425,7 @@ class ActivityPrintService {
     school,
   }) {
     const items = students.map((student, index) => ({
+      itemId: crypto.randomUUID(),
       studentId: student._id,
       studentName: student.fullName || student.name || '',
       qrCodePayload: `AH-ACTIVITY-1:${crypto.randomUUID()}`,

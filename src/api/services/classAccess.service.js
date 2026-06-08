@@ -201,6 +201,7 @@ module.exports = {
   createHttpError,
   extractId,
   normalizeRoles,
+  getActorRoles,
   isPrivilegedActor,
   getAccessibleClassIds,
   ensureClassAccess,

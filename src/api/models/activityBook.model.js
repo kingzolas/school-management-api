@@ -52,6 +52,26 @@ const printLayoutSchema = new Schema(
   { _id: false }
 );
 
+const criteriaTemplateSchema = new Schema(
+  {
+    key: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    label: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    scale: {
+      type: [String],
+      default: [],
+    },
+  },
+  { _id: false }
+);
+
 const activityBookSchema = new Schema(
   {
     title: {
@@ -181,6 +201,10 @@ const activityBookSchema = new Schema(
     },
     defaultFooterCrop: {
       type: percentRectSchema,
+      default: undefined,
+    },
+    defaultCriteriaTemplate: {
+      type: [criteriaTemplateSchema],
       default: undefined,
     },
   },

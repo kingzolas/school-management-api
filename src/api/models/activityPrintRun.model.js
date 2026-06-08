@@ -7,6 +7,11 @@ const ACTIVITY_PRINT_ITEM_STATUSES = ['pending', 'generated', 'failed'];
 
 const activityPrintRunItemSchema = new Schema(
   {
+    itemId: {
+      type: String,
+      trim: true,
+      default: null,
+    },
     studentId: {
       type: Schema.Types.ObjectId,
       ref: 'Student',

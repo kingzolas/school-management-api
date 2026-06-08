@@ -54,6 +54,26 @@ const printLayoutSchema = new Schema(
   { _id: false }
 );
 
+const criteriaTemplateSchema = new Schema(
+  {
+    key: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    label: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    scale: {
+      type: [String],
+      default: [],
+    },
+  },
+  { _id: false }
+);
+
 const activityPageSchema = new Schema(
   {
     bookId: {
@@ -185,6 +205,10 @@ const activityPageSchema = new Schema(
     },
     printLayout: {
       type: printLayoutSchema,
+      default: undefined,
+    },
+    criteriaTemplate: {
+      type: [criteriaTemplateSchema],
       default: undefined,
     },
     status: {
