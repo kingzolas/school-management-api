@@ -113,3 +113,27 @@ test('embedSchoolLogo supports PNG and JPEG buffers', async () => {
   assert.ok(jpgLogo);
   assert.equal(jpgCalled, true);
 });
+
+test('embedSchoolLogo normalizes buffer-like values from persistence layers', async () => {
+  const service = new ActivityPdfService();
+  let pngCalled = false;
+  const fakePdfDoc = {
+    async embedPng(buffer) {
+      pngCalled = Buffer.isBuffer(buffer) && buffer.length > 0;
+      return { kind: 'png' };
+    },
+    async embedJpg() {
+      throw new Error('should not call jpg');
+    },
+  };
+
+  const logo = await service.embedSchoolLogo(fakePdfDoc, {
+    logo: {
+      data: { type: 'Buffer', data: [...PNG_1X1] },
+      contentType: 'image/png',
+    },
+  });
+
+  assert.ok(logo);
+  assert.equal(pngCalled, true);
+});

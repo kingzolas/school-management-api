@@ -356,8 +356,14 @@ class ActivityPdfService {
   }) {
     const padding = Math.max(8, Math.min(14, rect.height * 0.08));
     const qrSize = Math.max(42, Math.min(64, rect.height - (padding * 2)));
-    const logoSize = logoImage ? Math.max(34, Math.min(54, rect.height * 0.36)) : 0;
-    const textStartX = rect.x + padding + (logoSize ? logoSize + 10 : 0);
+    const logoLayout = logoImage
+      ? this.scaleEmbeddedImage(
+          logoImage,
+          Math.max(40, Math.min(72, rect.width * 0.14)),
+          Math.max(34, Math.min(54, rect.height * 0.36))
+        )
+      : null;
+    const textStartX = rect.x + padding + (logoLayout ? logoLayout.width + 10 : 0);
     const textEndX = rect.x + rect.width - padding - qrSize - 10;
     const maxTextWidth = Math.max(120, textEndX - textStartX);
     const topY = rect.y + rect.height - padding;
@@ -396,12 +402,12 @@ class ActivityPdfService {
       maxTextWidth
     );
 
-    if (logoImage) {
+    if (logoImage && logoLayout) {
       page.drawImage(logoImage, {
         x: rect.x + padding,
-        y: rect.y + rect.height - padding - logoSize,
-        width: logoSize,
-        height: logoSize,
+        y: rect.y + rect.height - padding - logoLayout.height,
+        width: logoLayout.width,
+        height: logoLayout.height,
       });
     }
 
@@ -497,10 +503,8 @@ class ActivityPdfService {
   }
 
   async embedSchoolLogo(pdfDoc, school = {}) {
-    const logoBuffer = school?.logo?.data;
+    const { buffer: logoBuffer, contentType } = await this.resolveSchoolLogoBuffer(school);
     if (!logoBuffer?.length) return null;
-
-    const contentType = String(school?.logo?.contentType || '').toLowerCase();
 
     try {
       if (contentType.includes('png')) return await pdfDoc.embedPng(logoBuffer);
@@ -514,6 +518,81 @@ class ActivityPdfService {
     } catch (error) {
       return null;
     }
+  }
+
+  async resolveSchoolLogoBuffer(school = {}) {
+    const embeddedBuffer = this.normalizeBinaryBuffer(school?.logo?.data);
+    if (embeddedBuffer?.length) {
+      return {
+        buffer: embeddedBuffer,
+        contentType: String(school?.logo?.contentType || '').toLowerCase(),
+      };
+    }
+
+    const logoUrl = String(school?.logoUrl || '').trim();
+    if (!logoUrl) {
+      return { buffer: null, contentType: '' };
+    }
+
+    const dataUrlMatch = logoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (dataUrlMatch) {
+      try {
+        return {
+          buffer: Buffer.from(dataUrlMatch[2], 'base64'),
+          contentType: String(dataUrlMatch[1] || '').toLowerCase(),
+        };
+      } catch (error) {
+        return { buffer: null, contentType: '' };
+      }
+    }
+
+    if (!/^https?:\/\//i.test(logoUrl)) {
+      return { buffer: null, contentType: '' };
+    }
+
+    try {
+      const response = await fetch(logoUrl);
+      if (!response.ok) {
+        return { buffer: null, contentType: '' };
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      return {
+        buffer: Buffer.from(arrayBuffer),
+        contentType: String(response.headers.get('content-type') || '').toLowerCase(),
+      };
+    } catch (error) {
+      return { buffer: null, contentType: '' };
+    }
+  }
+
+  normalizeBinaryBuffer(value) {
+    if (!value) return null;
+    if (Buffer.isBuffer(value)) return value;
+    if (value instanceof Uint8Array) return Buffer.from(value);
+    if (Array.isArray(value)) return Buffer.from(value);
+    if (value?.type === 'Buffer' && Array.isArray(value?.data)) {
+      return Buffer.from(value.data);
+    }
+    if (value?.buffer && Buffer.isBuffer(value.buffer)) {
+      return Buffer.from(value.buffer);
+    }
+    if (value?.buffer instanceof Uint8Array) {
+      return Buffer.from(value.buffer);
+    }
+    return null;
+  }
+
+  scaleEmbeddedImage(image, maxWidth, maxHeight) {
+    if (!image || typeof image.scaleToFit !== 'function') {
+      return { width: maxWidth, height: maxHeight };
+    }
+
+    const layout = image.scaleToFit(maxWidth, maxHeight);
+    return {
+      width: layout.width,
+      height: layout.height,
+    };
   }
 
   async generateQrPng(payload) {

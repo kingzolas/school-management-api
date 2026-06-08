@@ -187,7 +187,7 @@ class ActivityPrintService {
     });
 
     const school = await this.SchoolModel.findById(schoolId)
-      .select('name legalName logo.contentType +logo.data')
+      .select('name legalName logo.contentType +logo.data logoUrl')
       .lean();
 
     if (!school) {
