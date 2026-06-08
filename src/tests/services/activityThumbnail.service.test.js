@@ -268,6 +268,21 @@ test('generateActivityBookThumbnails without pageNumbers processes only the next
   }
 });
 
+test('generateActivityBookThumbnails in debug mode rejects more than one page', async () => {
+  const harness = createHarness();
+
+  await assert.rejects(
+    () => harness.service.generateActivityBookThumbnails(harness.ids.bookId, {
+      force: true,
+      debug: true,
+      pageNumbers: [1, 2],
+    }),
+    (error) => error.code === 'THUMBNAIL_DEBUG_SINGLE_PAGE_REQUIRED'
+      && error.details.maxDebugPages === 1
+      && error.details.received === 2
+  );
+});
+
 test('generateActivityBookThumbnails skips ready pages when force=false and pageNumbers are explicit', async () => {
   const harness = createHarness();
 
@@ -315,12 +330,45 @@ test('generateActivityBookThumbnails includes per-page error details and persist
   assert.equal(result.items[1].pageNumber, 2);
   assert.equal(result.items[1].thumbnailStatus, 'failed');
   assert.equal(result.items[1].errorCode, 'PDF_PAGE_NOT_FOUND');
-  assert.equal(result.items[1].stage, 'page');
+  assert.equal(result.items[1].stage, 'get-page');
   assert.equal(typeof result.items[1].durationMs, 'number');
   assert.equal(harness.state.pages[1].thumbnailStatus, 'failed');
   assert.equal(harness.state.pages[1].thumbnailErrorCode, 'PDF_PAGE_NOT_FOUND');
-  assert.equal(harness.state.pages[1].thumbnailErrorStage, 'page');
+  assert.equal(harness.state.pages[1].thumbnailErrorStage, 'get-page');
   assert.ok(harness.state.pages[1].thumbnailLastAttemptAt instanceof Date);
+});
+
+test('generateActivityBookThumbnails in debug mode returns sanitized renderer error details', async () => {
+  const harness = createHarness({
+    renderErrors: {
+      4: Object.assign(new Error('O renderizador nao conseguiu converter esta pagina em imagem.'), {
+        code: 'PDF_RENDER_FAILED',
+        stage: 'render',
+        status: 502,
+        originalName: 'UnknownErrorException',
+        originalCode: 'ERR_RENDER',
+        originalMessage: 'Setting up fake worker failed: Cannot find standard font data.',
+      }),
+    },
+  });
+
+  const result = await harness.service.generateActivityBookThumbnails(harness.ids.bookId, {
+    force: true,
+    debug: true,
+    pageNumbers: [4],
+  });
+
+  assert.equal(result.processed, 1);
+  assert.equal(result.failed, 1);
+  assert.equal(result.items[0].thumbnailStatus, 'failed');
+  assert.equal(result.items[0].errorCode, 'PDF_RENDER_FAILED');
+  assert.equal(result.items[0].stage, 'render');
+  assert.equal(result.items[0].debug.originalName, 'UnknownErrorException');
+  assert.equal(result.items[0].debug.originalCode, 'ERR_RENDER');
+  assert.match(result.items[0].debug.originalMessage, /standard font data/i);
+  assert.match(result.items[0].debug.renderer, /pdfjs-dist@4\.10\.38/);
+  assert.equal(harness.state.pages[3].thumbnailErrorCode, 'PDF_RENDER_FAILED');
+  assert.equal(harness.state.pages[3].thumbnailErrorStage, 'render');
 });
 
 test('generateActivityBookThumbnails marks book as failed and never leaves processing on global failure', async () => {

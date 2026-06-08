@@ -211,3 +211,86 @@ test('generate-thumbnails route returns detailed batch error payload for superAd
     else process.env.PLATFORM_JWT_SECRET = originalSecret;
   }
 });
+
+test('generate-thumbnails route forwards debug payload for a single-page diagnosis', async () => {
+  const originalSecret = process.env.PLATFORM_JWT_SECRET;
+  process.env.PLATFORM_JWT_SECRET = 'platform-secret-test';
+
+  const bookId = new mongoose.Types.ObjectId();
+  const adminId = new mongoose.Types.ObjectId();
+  let capturedPayload = null;
+
+  const restore = patchMethods([
+    {
+      target: PlatformAdmin,
+      key: 'findById',
+      value(id) {
+        if (String(id) !== String(adminId)) return createQuery(null);
+        return createQuery({
+          _id: adminId,
+          name: 'Super Admin',
+          email: 'super@example.com',
+          role: 'superAdmin',
+          isActive: true,
+        });
+      },
+    },
+    {
+      target: activityThumbnailService,
+      key: 'generateActivityBookThumbnails',
+      value: async (_bookId, payload) => {
+        capturedPayload = payload;
+        return {
+          bookId: String(bookId),
+          processed: 1,
+          failed: 1,
+          items: [{
+            pageNumber: 4,
+            thumbnailStatus: 'failed',
+            errorCode: 'PDF_RENDER_FAILED',
+            errorMessage: 'O renderizador nao conseguiu converter esta pagina em imagem.',
+            stage: 'render',
+            debug: {
+              originalName: 'UnknownErrorException',
+              originalMessage: 'Setting up fake worker failed.',
+              renderer: 'pdfjs-dist@4.10.38 + @napi-rs/canvas',
+            },
+          }],
+        };
+      },
+    },
+  ]);
+
+  try {
+    const token = jwt.sign(
+      { id: String(adminId), tokenType: 'platform_admin' },
+      process.env.PLATFORM_JWT_SECRET
+    );
+
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/platform/activity-books/${bookId}/generate-thumbnails`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ force: true, debug: true, pageNumbers: [4] }),
+      });
+
+      const payload = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(payload.failed, 1);
+      assert.equal(payload.items[0].debug.originalName, 'UnknownErrorException');
+      assert.deepEqual(capturedPayload, {
+        force: true,
+        batchSize: undefined,
+        pageNumbers: [4],
+        debug: true,
+      });
+    });
+  } finally {
+    restore();
+    if (originalSecret === undefined) delete process.env.PLATFORM_JWT_SECRET;
+    else process.env.PLATFORM_JWT_SECRET = originalSecret;
+  }
+});

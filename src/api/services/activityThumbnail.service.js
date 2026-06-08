@@ -1,7 +1,6 @@
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
 
-const { createCanvas, DOMMatrix, ImageData, Path2D } = require('@napi-rs/canvas');
+const { createCanvas, DOMMatrix, ImageData, Path2D, Image } = require('@napi-rs/canvas');
 
 const ActivityBook = require('../models/activityBook.model');
 const ActivityPage = require('../models/activityPage.model');
@@ -14,15 +13,19 @@ const THUMBNAIL_MIN_WIDTH = 360;
 const THUMBNAIL_MAX_WIDTH = 480;
 const THUMBNAIL_EXPIRES_IN_SECONDS = 900;
 const THUMBNAIL_MAX_ERROR_LENGTH = 240;
+const THUMBNAIL_MAX_DETAIL_LENGTH = 300;
 const DEFAULT_MAX_THUMBNAIL_PAGES_PER_REQUEST = 3;
 const DEFAULT_PAGE_TIMEOUT_MS = 15000;
-const STAGE_DOWNLOAD = 'download';
-const STAGE_LOAD = 'load';
-const STAGE_PAGE = 'page';
+const RENDERER_SIGNATURE = 'pdfjs-dist@4.10.38 + @napi-rs/canvas';
+const STAGE_R2_DOWNLOAD = 'r2-download';
+const STAGE_PDF_LOAD = 'pdf-load';
+const STAGE_GET_PAGE = 'get-page';
+const STAGE_VIEWPORT = 'viewport';
+const STAGE_CANVAS_CREATE = 'canvas-create';
 const STAGE_RENDER = 'render';
-const STAGE_CANVAS = 'canvas';
-const STAGE_UPLOAD = 'upload';
-const STAGE_PERSIST = 'persist';
+const STAGE_CANVAS_ENCODE = 'canvas-encode';
+const STAGE_R2_UPLOAD = 'r2-upload';
+const STAGE_DB_UPDATE = 'db-update';
 const STAGE_COMPLETED = 'completed';
 const STAGE_BATCH = 'batch';
 
@@ -36,6 +39,7 @@ const KNOWN_ERROR_CODES = new Set([
   'THUMBNAIL_UPDATE_FAILED',
   'THUMBNAIL_BATCH_TOO_LARGE',
   'THUMBNAIL_TIMEOUT',
+  'THUMBNAIL_DEBUG_SINGLE_PAGE_REQUIRED',
   'UNKNOWN_THUMBNAIL_ERROR',
   'BOOK_NOT_FOUND',
   'PAGES_NOT_FOUND',
@@ -56,10 +60,14 @@ function createStageError(
   code,
   stage,
   status = 500,
-  details = {}
+  details = {},
+  originalError = null
 ) {
   const error = createHttpError(message, status, code, details);
   error.stage = stage;
+  if (originalError) {
+    attachOriginalErrorMetadata(error, originalError);
+  }
   return error;
 }
 
@@ -85,6 +93,46 @@ function clamp(value, min, max) {
 
 function roundDuration(value) {
   return Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
+}
+
+function getSafeErrorName(error) {
+  const value = normalizeText(error?.originalName || error?.name || error?.constructor?.name || '');
+  return value || null;
+}
+
+function getSafeErrorMessage(error, maxLength = THUMBNAIL_MAX_DETAIL_LENGTH) {
+  const raw = normalizeText(error?.originalMessage || error?.message || '');
+  if (!raw) return null;
+  if (raw.length <= maxLength) return raw;
+  return `${raw.slice(0, maxLength - 3)}...`;
+}
+
+function getSafeErrorCode(error) {
+  const value = normalizeText(error?.originalCode || error?.code || '');
+  return value || null;
+}
+
+function getSafeErrorStack(error, maxLength = THUMBNAIL_MAX_DETAIL_LENGTH) {
+  const raw = normalizeText(error?.originalStack || error?.stack || '');
+  if (!raw) return null;
+  if (raw.length <= maxLength) return raw;
+  return `${raw.slice(0, maxLength - 3)}...`;
+}
+
+function attachOriginalErrorMetadata(targetError, originalError) {
+  if (!targetError || !originalError) return targetError;
+
+  const originalName = getSafeErrorName(originalError);
+  const originalMessage = getSafeErrorMessage(originalError);
+  const originalCode = getSafeErrorCode(originalError);
+  const originalStack = getSafeErrorStack(originalError);
+
+  if (originalName) targetError.originalName = originalName;
+  if (originalMessage) targetError.originalMessage = originalMessage;
+  if (originalCode) targetError.originalCode = originalCode;
+  if (originalStack) targetError.originalStack = originalStack;
+
+  return targetError;
 }
 
 function getMaxThumbnailPagesPerRequest() {
@@ -191,7 +239,9 @@ function getAutomaticEligiblePages(pages, force = false) {
 
 function getBatchPlan(pages, options = {}) {
   const maxBatchSize = getMaxThumbnailPagesPerRequest();
-  const batchSize = parsePositiveInteger(options.batchSize) || maxBatchSize;
+  const debug = toBoolean(options.debug, false);
+  const requestedBatchSize = parsePositiveInteger(options.batchSize);
+  const batchSize = requestedBatchSize || (debug ? 1 : maxBatchSize);
 
   if (batchSize > maxBatchSize) {
     throw createHttpError(
@@ -200,6 +250,18 @@ function getBatchPlan(pages, options = {}) {
       'THUMBNAIL_BATCH_TOO_LARGE',
       {
         maxBatchSize,
+        received: batchSize,
+      }
+    );
+  }
+
+  if (debug && requestedBatchSize && batchSize > 1) {
+    throw createHttpError(
+      'No modo debug, gere apenas 1 thumbnail por requisicao.',
+      400,
+      'THUMBNAIL_DEBUG_SINGLE_PAGE_REQUIRED',
+      {
+        maxDebugPages: 1,
         received: batchSize,
       }
     );
@@ -223,14 +285,27 @@ function getBatchPlan(pages, options = {}) {
       );
     }
 
+    if (debug && selectedPageNumbers.length > 1) {
+      throw createHttpError(
+        'No modo debug, gere apenas 1 thumbnail por requisicao.',
+        400,
+        'THUMBNAIL_DEBUG_SINGLE_PAGE_REQUIRED',
+        {
+          maxDebugPages: 1,
+          received: selectedPageNumbers.length,
+        }
+      );
+    }
+
     selectedPages = pages.filter((page) => selectedPageNumbers.includes(Number(page.pageNumber)));
   } else {
     const eligiblePages = getAutomaticEligiblePages(pages, force);
-    selectedPages = eligiblePages.slice(0, batchSize);
+    selectedPages = eligiblePages.slice(0, debug ? 1 : batchSize);
   }
 
   return {
     force,
+    debug,
     batchSize,
     maxBatchSize,
     hasExplicitPageNumbers,
@@ -271,9 +346,12 @@ class ActivityThumbnailService {
     this.logger = logger;
     this.now = now;
     this.pdfjsPromise = null;
-    this.standardFontDataUrl = pathToFileURL(
-      path.join(process.cwd(), 'node_modules/pdfjs-dist/standard_fonts/')
-    ).href;
+    this.standardFontDataDir = this.ensureDirectorySuffix(
+      path.join(process.cwd(), 'node_modules', 'pdfjs-dist', 'standard_fonts')
+    );
+    this.cMapDir = this.ensureDirectorySuffix(
+      path.join(process.cwd(), 'node_modules', 'pdfjs-dist', 'cmaps')
+    );
   }
 
   async generateActivityBookThumbnails(bookId, options = {}) {
@@ -307,6 +385,7 @@ class ActivityThumbnailService {
       maxBatchSize: plan.maxBatchSize,
       batchSize: plan.batchSize,
       force: plan.force,
+      debug: plan.debug,
       rssMB: getMemorySnapshot().rssMB,
       heapUsedMB: getMemorySnapshot().heapUsedMB,
     });
@@ -353,8 +432,10 @@ class ActivityThumbnailService {
         throw createStageError(
           'Falha ao baixar o PDF original do R2.',
           'R2_DOWNLOAD_FAILED',
-          STAGE_DOWNLOAD,
-          502
+          STAGE_R2_DOWNLOAD,
+          502,
+          {},
+          error
         );
       }
 
@@ -363,15 +444,21 @@ class ActivityThumbnailService {
         loadingTask = pdfjs.getDocument({
           data: new Uint8Array(pdfBuffer),
           disableWorker: true,
-          standardFontDataUrl: this.standardFontDataUrl,
+          standardFontDataUrl: this.standardFontDataDir,
+          cMapUrl: this.cMapDir,
+          cMapPacked: true,
+          useSystemFonts: false,
+          isEvalSupported: false,
         });
         pdfDocument = await loadingTask.promise;
       } catch (error) {
         throw createStageError(
           'Falha ao carregar o PDF para gerar thumbnails.',
           'PDF_LOAD_FAILED',
-          STAGE_LOAD,
-          502
+          STAGE_PDF_LOAD,
+          502,
+          {},
+          error
         );
       } finally {
         pdfBuffer = null;
@@ -393,6 +480,7 @@ class ActivityThumbnailService {
             errorCode: null,
             errorMessage: null,
             stage: STAGE_COMPLETED,
+            debug: null,
           });
 
           this.logPageEvent(bookId, page.pageNumber, STAGE_COMPLETED, 'skipped', durationMs);
@@ -424,6 +512,7 @@ class ActivityThumbnailService {
             errorCode: classifiedError.code,
             errorMessage: this.truncateError(classifiedError.message || 'Falha ao gerar thumbnail.'),
             stage: classifiedError.stage || STAGE_BATCH,
+            debug: plan.debug ? this.buildDebugPayload(classifiedError) : null,
           });
 
           this.logPageEvent(
@@ -433,7 +522,8 @@ class ActivityThumbnailService {
             'failed',
             durationMs,
             classifiedError.code,
-            classifiedError.message
+            classifiedError.message,
+            classifiedError
           );
         }
       }
@@ -487,6 +577,10 @@ class ActivityThumbnailService {
       this.logBatchEvent(bookId, classifiedError.stage || STAGE_BATCH, 'failed', {
         code: classifiedError.code,
         message: this.truncateError(classifiedError.message),
+        originalName: classifiedError.originalName,
+        originalCode: classifiedError.originalCode,
+        originalMessage: classifiedError.originalMessage,
+        originalStack: classifiedError.originalStack,
         durationMs: roundDuration(this.now().getTime() - startedAt.getTime()),
         rssMB: getMemorySnapshot().rssMB,
         heapUsedMB: getMemorySnapshot().heapUsedMB,
@@ -516,10 +610,12 @@ class ActivityThumbnailService {
         pdfPage = await pdfDocument.getPage(page.pageNumber);
       } catch (error) {
         throw createStageError(
-          `Falha ao localizar a pagina ${page.pageNumber} no PDF.`,
+          'A pagina solicitada nao existe no PDF original.',
           'PDF_PAGE_NOT_FOUND',
-          STAGE_PAGE,
-          404
+          STAGE_GET_PAGE,
+          404,
+          {},
+          error
         );
       }
 
@@ -534,10 +630,12 @@ class ActivityThumbnailService {
         });
       } catch (error) {
         throw createStageError(
-          `Falha ao enviar a thumbnail da pagina ${page.pageNumber} para o R2.`,
+          'A imagem foi gerada, mas falhou ao salvar no R2.',
           'THUMBNAIL_UPLOAD_FAILED',
-          STAGE_UPLOAD,
-          502
+          STAGE_R2_UPLOAD,
+          502,
+          {},
+          error
         );
       } finally {
         rendered.buffer = null;
@@ -561,10 +659,12 @@ class ActivityThumbnailService {
         });
       } catch (error) {
         throw createStageError(
-          `Falha ao atualizar o status da thumbnail da pagina ${page.pageNumber}.`,
+          'A thumbnail foi gerada, mas falhou ao atualizar o status no banco.',
           'THUMBNAIL_UPDATE_FAILED',
-          STAGE_PERSIST,
-          500
+          STAGE_DB_UPDATE,
+          500,
+          {},
+          error
         );
       }
 
@@ -581,6 +681,7 @@ class ActivityThumbnailService {
         errorCode: null,
         errorMessage: null,
         stage: STAGE_COMPLETED,
+        debug: null,
       };
     } finally {
       if (pdfPage?.cleanup) {
@@ -597,11 +698,27 @@ class ActivityThumbnailService {
   async renderPdfPageToPng(pdfPage, options = {}) {
     const targetWidth = getThumbnailTargetWidth(options.targetWidth);
     const timeoutMs = parsePositiveInteger(options.timeoutMs) || getThumbnailPageTimeoutMs();
-    const baseViewport = pdfPage.getViewport({ scale: 1 });
-    const scale = targetWidth / Math.max(baseViewport.width || targetWidth, 1);
-    const viewport = pdfPage.getViewport({ scale });
-    const width = Math.max(1, Math.ceil(viewport.width));
-    const height = Math.max(1, Math.ceil(viewport.height));
+    let baseViewport = null;
+    let viewport = null;
+    let width = 0;
+    let height = 0;
+
+    try {
+      baseViewport = pdfPage.getViewport({ scale: 1 });
+      const scale = targetWidth / Math.max(baseViewport.width || targetWidth, 1);
+      viewport = pdfPage.getViewport({ scale });
+      width = Math.max(1, Math.ceil(viewport.width));
+      height = Math.max(1, Math.ceil(viewport.height));
+    } catch (error) {
+      throw createStageError(
+        'Falha ao calcular a viewport da thumbnail.',
+        'PDF_RENDER_FAILED',
+        STAGE_VIEWPORT,
+        502,
+        {},
+        error
+      );
+    }
 
     let canvas = null;
     let context = null;
@@ -614,10 +731,12 @@ class ActivityThumbnailService {
         context = canvas.getContext('2d');
       } catch (error) {
         throw createStageError(
-          'Falha ao inicializar o canvas da thumbnail.',
+          'Falha ao preparar o canvas da thumbnail.',
           'CANVAS_RENDER_FAILED',
-          STAGE_CANVAS,
-          500
+          STAGE_CANVAS_CREATE,
+          500,
+          {},
+          error
         );
       }
 
@@ -625,7 +744,7 @@ class ActivityThumbnailService {
         throw createStageError(
           'Falha ao obter contexto 2D do canvas da thumbnail.',
           'CANVAS_RENDER_FAILED',
-          STAGE_CANVAS,
+          STAGE_CANVAS_CREATE,
           500
         );
       }
@@ -661,10 +780,12 @@ class ActivityThumbnailService {
       } catch (error) {
         if (error?.code === 'THUMBNAIL_TIMEOUT') throw error;
         throw createStageError(
-          `Falha ao renderizar a pagina ${pdfPage.pageNumber || ''} do PDF.`,
+          'O renderizador nao conseguiu converter esta pagina em imagem.',
           'PDF_RENDER_FAILED',
           STAGE_RENDER,
-          502
+          502,
+          {},
+          error
         );
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -682,8 +803,10 @@ class ActivityThumbnailService {
         throw createStageError(
           'Falha ao codificar a imagem da thumbnail.',
           'CANVAS_RENDER_FAILED',
-          STAGE_CANVAS,
-          500
+          STAGE_CANVAS_ENCODE,
+          500,
+          {},
+          error
         );
       }
     } finally {
@@ -789,8 +912,10 @@ class ActivityThumbnailService {
       throw createStageError(
         `Falha ao atualizar o status de erro da pagina ${page.pageNumber}.`,
         'THUMBNAIL_UPDATE_FAILED',
-        STAGE_PERSIST,
-        500
+        STAGE_DB_UPDATE,
+        500,
+        {},
+        updateError
       );
     }
   }
@@ -815,12 +940,12 @@ class ActivityThumbnailService {
       return error;
     }
 
-    return createStageError(
+    return attachOriginalErrorMetadata(createStageError(
       this.truncateError(error.message || 'Falha desconhecida ao gerar thumbnail.'),
       'UNKNOWN_THUMBNAIL_ERROR',
       error.stage || STAGE_BATCH,
       error.status || 500
-    );
+    ), error);
   }
 
   classifyBatchError(error) {
@@ -830,13 +955,13 @@ class ActivityThumbnailService {
 
     if (KNOWN_ERROR_CODES.has(error.code)) return error;
 
-    return createStageError(
+    return attachOriginalErrorMetadata(createStageError(
       this.truncateError(error.message || 'Falha ao gerar thumbnails.'),
       error.code || 'UNKNOWN_THUMBNAIL_ERROR',
       error.stage || STAGE_BATCH,
       error.status || 500,
       error.details || {}
-    );
+    ), error);
   }
 
   computeRemainingState(pages, force, batchSize) {
@@ -865,16 +990,34 @@ class ActivityThumbnailService {
         force: details.force,
         batchSize: details.batchSize,
         maxBatchSize: details.maxBatchSize,
+        debug: details.debug,
         code: details.code,
         errorMessage: details.message,
+        originalName: details.originalName,
+        originalCode: details.originalCode,
+        originalMessage: this.truncateError(details.originalMessage || ''),
+        originalStack: this.truncateError(details.originalStack || ''),
         rssMB: details.rssMB ?? memory.rssMB,
         heapUsedMB: details.heapUsedMB ?? memory.heapUsedMB,
       })}`
     );
   }
 
-  logPageEvent(bookId, pageNumber, stage, status, durationMs, errorCode = null, errorMessage = null) {
+  logPageEvent(
+    bookId,
+    pageNumber,
+    stage,
+    status,
+    durationMs,
+    errorCode = null,
+    errorMessage = null,
+    originalError = null
+  ) {
     const memory = getMemorySnapshot();
+    const originalName = getSafeErrorName(originalError);
+    const originalCode = getSafeErrorCode(originalError);
+    const originalMessage = getSafeErrorMessage(originalError);
+    const originalStack = getSafeErrorStack(originalError);
     this.logger.info(
       `[activity-thumbnails] ${formatLogFields({
         book: String(bookId),
@@ -883,6 +1026,10 @@ class ActivityThumbnailService {
         status,
         code: errorCode,
         errorMessage: this.truncateError(errorMessage || ''),
+        originalName,
+        originalCode,
+        originalMessage: this.truncateError(originalMessage || ''),
+        originalStack: this.truncateError(originalStack || ''),
         durationMs,
         rssMB: memory.rssMB,
         heapUsedMB: memory.heapUsedMB,
@@ -895,10 +1042,35 @@ class ActivityThumbnailService {
       global.DOMMatrix = global.DOMMatrix || DOMMatrix;
       global.ImageData = global.ImageData || ImageData;
       global.Path2D = global.Path2D || Path2D;
+      global.Image = global.Image || Image;
       this.pdfjsPromise = this.pdfjsImporter();
     }
 
     return this.pdfjsPromise;
+  }
+
+  ensureDirectorySuffix(dirPath) {
+    const normalized = path.resolve(dirPath);
+    return normalized.endsWith(path.sep) ? normalized : `${normalized}${path.sep}`;
+  }
+
+  buildDebugPayload(error) {
+    const originalName = getSafeErrorName(error);
+    const originalCode = getSafeErrorCode(error);
+    const originalMessage = getSafeErrorMessage(error);
+    const detail = getSafeErrorMessage(error, THUMBNAIL_MAX_DETAIL_LENGTH);
+
+    if (!originalName && !originalCode && !originalMessage && !detail) {
+      return null;
+    }
+
+    return {
+      originalName,
+      originalCode,
+      originalMessage,
+      detail,
+      renderer: RENDERER_SIGNATURE,
+    };
   }
 }
 

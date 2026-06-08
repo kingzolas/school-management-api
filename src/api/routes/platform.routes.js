@@ -1235,11 +1235,16 @@ router.get('/activity-books/:bookId/pages', asyncRoute(async (req, res) => {
 
 router.post('/activity-books/:bookId/generate-thumbnails', async (req, res) => {
   try {
-    const result = await activityThumbnailService.generateActivityBookThumbnails(req.params.bookId, {
+    const payload = {
       force: req.body?.force,
       batchSize: req.body?.batchSize,
       pageNumbers: req.body?.pageNumbers,
-    });
+    };
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'debug')) {
+      payload.debug = req.body.debug;
+    }
+
+    const result = await activityThumbnailService.generateActivityBookThumbnails(req.params.bookId, payload);
 
     return res.status(200).json(result);
   } catch (error) {
