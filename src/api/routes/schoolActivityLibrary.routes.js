@@ -22,6 +22,25 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/books/:bookId/download-url', async (req, res) => {
+  try {
+    const schoolId = req.user.school_id || req.user.schoolId;
+    const expiresIn = Number.parseInt(req.query?.expiresIn, 10) || 300;
+    const result = await activityLibraryService.getSchoolBookDownloadUrl(
+      schoolId,
+      req.params.bookId,
+      expiresIn,
+    );
+
+    return res.status(200).json(result);
+  } catch (error) {
+    return res.status(error.status || error.statusCode || 500).json({
+      message: error.message || 'Erro ao obter PDF original do caderno.',
+      code: error.code || 'SCHOOL_ACTIVITY_LIBRARY_ERROR',
+    });
+  }
+});
+
 router.post('/:activityPageId/print', async (req, res) => {
   try {
     const result = await activityPrintService.createPrintRun({

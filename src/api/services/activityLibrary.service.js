@@ -87,6 +87,16 @@ function parseBoolean(value, defaultValue = false) {
   return defaultValue;
 }
 
+function isBookVisibleToSchool(activityBook, schoolId) {
+  if (!activityBook) return false;
+  if (activityBook.status !== 'published') return false;
+  if (activityBook.visibility === 'global') return true;
+  if (activityBook.visibility !== 'restricted') return false;
+
+  return Array.isArray(activityBook.allowedSchoolIds)
+    && activityBook.allowedSchoolIds.some((allowedId) => String(allowedId) === String(schoolId));
+}
+
 function buildActivityBookStoragePrefix(bookId) {
   return `${ACTIVITY_BOOK_STORAGE_BASE_PREFIX}/${String(bookId)}/`;
 }
@@ -883,6 +893,68 @@ class ActivityLibraryService {
     })));
 
     return { items: itemsWithUrls, page, limit, total };
+  }
+
+  async getSchoolBookDownloadUrl(schoolId, bookId, expiresIn = 300) {
+    if (!mongoose.Types.ObjectId.isValid(schoolId)) {
+      throw createHttpError('Escola invalida.', 400, 'INVALID_SCHOOL_ID');
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(bookId)) {
+      throw createHttpError('Caderno invalido.', 400, 'BOOK_NOT_FOUND');
+    }
+
+    const book = await ActivityBook.findById(bookId)
+      .select('_id title status visibility allowedSchoolIds originalPdfKey')
+      .lean();
+
+    if (!book || book.status === 'archived') {
+      throw createHttpError('Caderno de atividades nao encontrado.', 404, 'BOOK_NOT_FOUND');
+    }
+
+    if (!isBookVisibleToSchool(book, schoolId)) {
+      throw createHttpError(
+        'Caderno de atividades nao disponivel para esta escola.',
+        403,
+        'BOOK_NOT_AVAILABLE_FOR_SCHOOL'
+      );
+    }
+
+    const originalPdfKey = normalizeText(book.originalPdfKey);
+    if (!originalPdfKey) {
+      throw createHttpError(
+        'PDF original do caderno nao esta disponivel.',
+        404,
+        'BOOK_PDF_NOT_FOUND'
+      );
+    }
+
+    try {
+      const result = await r2StorageService.getSignedDownloadUrl(
+        originalPdfKey,
+        expiresIn
+      );
+
+      return {
+        bookId: String(book._id),
+        url: result.url || '',
+        expiresIn,
+      };
+    } catch (error) {
+      if (error.code === 'R2_OBJECT_NOT_FOUND') {
+        throw createHttpError(
+          'PDF original do caderno nao foi encontrado no R2.',
+          404,
+          'BOOK_PDF_NOT_FOUND'
+        );
+      }
+
+      throw createHttpError(
+        error.message || 'Nao foi possivel obter a URL do PDF original.',
+        error.status || 502,
+        error.code || 'BOOK_DOWNLOAD_URL_FAILED'
+      );
+    }
   }
 
   async listSchoolLibraryForPlatform(schoolId, filters = {}) {

@@ -321,6 +321,92 @@ test('listSchoolLibraryForPlatform returns only printable activity pages with la
   }
 });
 
+test('getSchoolBookDownloadUrl returns signed url for visible published book', async () => {
+  const schoolId = String(new mongoose.Types.ObjectId());
+  const bookId = new mongoose.Types.ObjectId();
+
+  const restore = patchMethods([
+    {
+      target: ActivityBook,
+      key: 'findById',
+      value() {
+        return createQuery({
+          _id: bookId,
+          title: 'Caderno de Alfabetizacao',
+          status: 'published',
+          visibility: 'restricted',
+          allowedSchoolIds: [schoolId],
+          originalPdfKey: `platform/activity-books/${bookId}/original.pdf`,
+        });
+      },
+    },
+    {
+      target: r2StorageService,
+      key: 'getSignedDownloadUrl',
+      value: async (key, expiresIn) => ({
+        url: `https://signed.example/${encodeURIComponent(key)}?exp=${expiresIn}`,
+      }),
+    },
+  ]);
+
+  try {
+    const result = await activityLibraryService.getSchoolBookDownloadUrl(
+      schoolId,
+      String(bookId),
+      300
+    );
+
+    assert.equal(result.bookId, String(bookId));
+    assert.equal(
+      result.url,
+      `https://signed.example/${encodeURIComponent(`platform/activity-books/${bookId}/original.pdf`)}?exp=300`
+    );
+    assert.equal(result.expiresIn, 300);
+  } finally {
+    restore();
+  }
+});
+
+test('getSchoolBookDownloadUrl rejects books not visible to the school', async () => {
+  const schoolId = String(new mongoose.Types.ObjectId());
+  const otherSchoolId = String(new mongoose.Types.ObjectId());
+  const bookId = new mongoose.Types.ObjectId();
+
+  const restore = patchMethods([
+    {
+      target: ActivityBook,
+      key: 'findById',
+      value() {
+        return createQuery({
+          _id: bookId,
+          title: 'Caderno Restrito',
+          status: 'published',
+          visibility: 'restricted',
+          allowedSchoolIds: [otherSchoolId],
+          originalPdfKey: `platform/activity-books/${bookId}/original.pdf`,
+        });
+      },
+    },
+  ]);
+
+  try {
+    await assert.rejects(
+      () => activityLibraryService.getSchoolBookDownloadUrl(
+        schoolId,
+        String(bookId),
+        300
+      ),
+      (error) => {
+        assert.equal(error.status, 403);
+        assert.equal(error.code, 'BOOK_NOT_AVAILABLE_FOR_SCHOOL');
+        return true;
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
 test('ensureSafeActivityBookStoragePrefix rejects insecure prefixes', () => {
   const bookId = String(new mongoose.Types.ObjectId());
 
