@@ -55,6 +55,11 @@ const examSchema = new Schema({
         omrLayout: { type: Schema.Types.Mixed, default: null }
     },
 
+    reusedFromExamId: { type: Schema.Types.ObjectId, ref: 'Exam', default: null },
+    reusedFromClassId: { type: Schema.Types.ObjectId, ref: 'Class', default: null },
+    reusedAt: { type: Date, default: null },
+    reusedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+
     status: {
         type: String,
         enum: ['DRAFT', 'READY', 'PRINTED', 'GRADED'],

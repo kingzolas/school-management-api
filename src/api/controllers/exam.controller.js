@@ -521,6 +521,39 @@ class ExamController {
         }
     }
 
+    async getReusable(req, res) {
+        try {
+            const schoolId = req.user.school_id;
+            const exams = await examService.getReusableExams(req.query, schoolId);
+            res.status(200).json(exams);
+        } catch (error) {
+            console.error('ERRO AO BUSCAR PROVAS REUTILIZAVEIS:', error);
+            res.status(400).json({ message: error.message });
+        }
+    }
+
+    async reuseForClass(req, res) {
+        try {
+            const schoolId = req.user.school_id;
+            const userId = req.user.id || req.user._id;
+            const { sourceExamId } = req.params;
+            const { targetClassId, reuseFromAnotherClass } = req.body;
+
+            const reusedExam = await examService.reuseExamForClass(
+                sourceExamId,
+                targetClassId,
+                schoolId,
+                userId,
+                reuseFromAnotherClass
+            );
+
+            res.status(201).json(reusedExam);
+        } catch (error) {
+            console.error('ERRO AO REUTILIZAR PROVA:', error.message);
+            res.status(400).json({ message: error.message });
+        }
+    }
+
     async getById(req, res) {
         try {
             const schoolId = req.user.school_id;

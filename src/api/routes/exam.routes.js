@@ -11,6 +11,8 @@ router.use(verifyToken);
 // Rotas Base da Prova
 router.post('/', examController.create);
 router.get('/', examController.getAll);
+router.get('/reusable', examController.getReusable);
+router.post('/:sourceExamId/reuse-for-class', examController.reuseForClass);
 router.get('/:id', examController.getById);
 
 // Rotas de Operação (Gerar Lote de PDF e Escanear QR Code)

@@ -3,7 +3,14 @@ const ExamSheet = require('../models/exam-sheet.model');
 const Enrollment = require('../models/enrollment.model');
 const Evaluation = require('../models/evaluation.model');
 const ClassGrade = require('../models/grade.model');
+const Class = require('../models/class.model');
 const crypto = require('crypto');
+
+const getObjectIdString = (value) => {
+    if (!value) return '';
+    if (value._id) return String(value._id);
+    return String(value);
+};
 
 class ExamService {
     _logInfo(message, meta = null) {
@@ -348,17 +355,137 @@ class ExamService {
         };
     }
 
+    async _ensureClassBelongsToSchool(classId, schoolId) {
+        const normalizedClassId = getObjectIdString(classId);
+        if (!normalizedClassId) {
+            throw new Error('Turma obrigatÃ³ria.');
+        }
+
+        const classDoc = await Class.findOne({
+            _id: normalizedClassId,
+            school_id: schoolId,
+        });
+
+        if (!classDoc) {
+            throw new Error('Turma nÃ£o encontrada ou nÃ£o pertence Ã  escola.');
+        }
+
+        return classDoc;
+    }
+
     async getExams(query, schoolId) {
-        return await Exam.find({ ...query, school_id: schoolId }).populate(
-            'class_id subject_id teacher_id'
-        );
+        const filter = { school_id: schoolId };
+
+        if (query?.class_id) {
+            const classDoc = await this._ensureClassBelongsToSchool(query.class_id, schoolId);
+            filter.class_id = classDoc._id;
+        }
+
+        if (query?.subject_id) filter.subject_id = query.subject_id;
+        if (query?.teacher_id) filter.teacher_id = query.teacher_id;
+        if (query?.status) filter.status = query.status;
+
+        if (query?.search) {
+            filter.title = { $regex: String(query.search).trim(), $options: 'i' };
+        }
+
+        return await Exam.find(filter)
+            .sort({ applicationDate: -1, createdAt: -1 })
+            .populate('class_id subject_id teacher_id reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
+    }
+
+    async getReusableExams(query, schoolId) {
+        const targetClass = await this._ensureClassBelongsToSchool(query?.targetClassId, schoolId);
+
+        const filter = {
+            school_id: schoolId,
+            class_id: { $ne: targetClass._id },
+        };
+
+        if (query?.sourceClassId) {
+            const sourceClass = await this._ensureClassBelongsToSchool(query.sourceClassId, schoolId);
+            filter.class_id = sourceClass._id;
+        }
+
+        if (query?.subject_id || query?.subjectId) {
+            filter.subject_id = query.subject_id || query.subjectId;
+        }
+
+        if (query?.teacher_id || query?.teacherId) {
+            filter.teacher_id = query.teacher_id || query.teacherId;
+        }
+
+        if (query?.status) filter.status = query.status;
+
+        if (query?.search) {
+            filter.title = { $regex: String(query.search).trim(), $options: 'i' };
+        }
+
+        return await Exam.find(filter)
+            .sort({ applicationDate: -1, createdAt: -1 })
+            .populate('class_id subject_id teacher_id reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
     }
 
     async getExamById(id, schoolId) {
         return await Exam.findOne({
             _id: id,
             school_id: schoolId,
-        }).populate('class_id subject_id teacher_id');
+        }).populate('class_id subject_id teacher_id reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
+    }
+
+    async reuseExamForClass(sourceExamId, targetClassId, schoolId, userId, reuseFromAnotherClass = false) {
+        this._logInfo('Reutilizando prova para outra turma.', {
+            sourceExamId,
+            targetClassId,
+            schoolId,
+        });
+
+        const [sourceExam, targetClass] = await Promise.all([
+            Exam.findOne({ _id: sourceExamId, school_id: schoolId }).lean(),
+            this._ensureClassBelongsToSchool(targetClassId, schoolId),
+        ]);
+
+        if (!sourceExam) {
+            this._logError('Prova de origem nÃ£o encontrada para reutilizaÃ§Ã£o.', {
+                sourceExamId,
+                schoolId,
+            });
+            throw new Error('Prova de origem nÃ£o encontrada.');
+        }
+
+        const sourceClassId = getObjectIdString(sourceExam.class_id);
+        const destinationClassId = getObjectIdString(targetClass._id);
+
+        if (sourceClassId !== destinationClassId && reuseFromAnotherClass !== true) {
+            throw new Error('Confirme explicitamente a reutilizaÃ§Ã£o de prova de outra turma.');
+        }
+
+        const reusedExam = new Exam({
+            school_id: schoolId,
+            teacher_id: sourceExam.teacher_id,
+            class_id: targetClass._id,
+            subject_id: sourceExam.subject_id,
+            schoolyear_id: sourceExam.schoolyear_id || null,
+            title: sourceExam.title,
+            applicationDate: sourceExam.applicationDate || new Date(),
+            totalValue: sourceExam.totalValue,
+            correctionType: sourceExam.correctionType,
+            questions: Array.isArray(sourceExam.questions) ? sourceExam.questions : [],
+            status: 'DRAFT',
+            settings: {
+                evaluationId: null,
+                omrLayout: null,
+            },
+            reusedFromExamId: sourceExam._id,
+            reusedFromClassId: sourceExam.class_id,
+            reusedAt: new Date(),
+            reusedBy: userId || null,
+        });
+
+        await this._attachOmrLayoutToExamIfNeeded(reusedExam);
+        await reusedExam.save();
+
+        return await this.getExamById(reusedExam._id, schoolId);
     }
 
     async generateExamSheets(examId, schoolId, specificStudentIds = []) {
@@ -380,6 +507,7 @@ class ExamService {
 
         const enrollments = await Enrollment.find({
             class: exam.class_id._id,
+            school_id: schoolId,
             status: 'Ativa',
         }).populate('student');
 
@@ -390,6 +518,10 @@ class ExamService {
             targetStudents = targetStudents.filter((student) =>
                 allowedIds.has(String(student._id))
             );
+
+            if (targetStudents.length !== allowedIds.size) {
+                throw new Error('Um ou mais alunos selecionados nÃ£o pertencem Ã  turma da prova.');
+            }
         }
 
         await this._attachOmrLayoutToExamIfNeeded(exam);
