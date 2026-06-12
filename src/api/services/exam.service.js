@@ -4,7 +4,14 @@ const Enrollment = require('../models/enrollment.model');
 const Evaluation = require('../models/evaluation.model');
 const ClassGrade = require('../models/grade.model');
 const Class = require('../models/class.model');
+const mongoose = require('mongoose');
 const crypto = require('crypto');
+const {
+    ensureClassAccess,
+    isPrivilegedActor,
+    extractId,
+    createHttpError,
+} = require('./classAccess.service');
 
 const getObjectIdString = (value) => {
     if (!value) return '';
@@ -12,7 +19,112 @@ const getObjectIdString = (value) => {
     return String(value);
 };
 
+const toBooleanQuery = (value) => {
+    if (typeof value === 'boolean') return value;
+    if (value === undefined || value === null) return false;
+    return ['true', '1', 'yes', 'sim'].includes(String(value).toLowerCase());
+};
+
 class ExamService {
+    _ensureValidObjectId(value, label) {
+        if (!value || !mongoose.Types.ObjectId.isValid(value)) {
+            throw createHttpError(`${label} invalido.`, 400);
+        }
+    }
+
+    async _getReadableExam(examId, schoolId, actor) {
+        this._ensureValidObjectId(examId, 'ID da prova');
+
+        const exam = await Exam.findOne({ _id: examId, school_id: schoolId })
+            .populate('class_id', 'name school_id')
+            .populate('subject_id', 'name')
+            .populate('teacher_id', 'fullName name')
+            .lean();
+
+        if (!exam) {
+            throw createHttpError('Prova nao encontrada.', 404);
+        }
+
+        const classId = getObjectIdString(exam.class_id);
+        await ensureClassAccess(actor, schoolId, classId);
+
+        if (!isPrivilegedActor(actor)) {
+            const actorId = extractId(actor?.id || actor?._id);
+            const examTeacherId = getObjectIdString(exam.teacher_id);
+            if (!actorId || actorId !== examTeacherId) {
+                throw createHttpError('Prova nao encontrada ou sem permissao de acesso.', 404);
+            }
+        }
+
+        return exam;
+    }
+
+    _normalizeStoredAnswer(answer, examQuestion = null) {
+        const rawNumber = answer?.questionNumber ?? answer?.question ?? null;
+        const questionNumber = Number(rawNumber);
+        const markedOption =
+            answer?.markedOption ?? answer?.studentAnswer ?? answer?.studentMarked ?? null;
+        const correctAnswer = answer?.correctAnswer ?? examQuestion?.correctAnswer ?? null;
+        const rawStatus = String(answer?.status || '').trim().toLowerCase();
+        const hasCorrectness = typeof answer?.isCorrect === 'boolean';
+
+        let status = 'unavailable';
+        if (rawStatus === 'blank' || !markedOption) {
+            status = 'blank';
+        } else if (rawStatus === 'multiple' || rawStatus === 'ambiguous') {
+            status = rawStatus;
+        } else if (hasCorrectness) {
+            status = answer.isCorrect ? 'correct' : 'incorrect';
+        } else if (rawStatus) {
+            status = rawStatus;
+        }
+
+        return {
+            questionNumber: Number.isFinite(questionNumber) ? questionNumber : null,
+            markedOption: markedOption || null,
+            correctAnswer: correctAnswer || null,
+            isCorrect: hasCorrectness ? answer.isCorrect : null,
+            status,
+            confidence: typeof answer?.confidence === 'number' ? answer.confidence : null,
+            maxPoints: typeof examQuestion?.weight === 'number' ? examQuestion.weight : null,
+        };
+    }
+
+    _buildStoredAnswerSummary(sheet, exam) {
+        const answers = Array.isArray(sheet?.answers) ? sheet.answers : [];
+        if (answers.length === 0 || exam.correctionType !== 'BUBBLE_SHEET') {
+            return {
+                correctAnswers: null,
+                wrongAnswers: null,
+                blankAnswers: null,
+                detailsAvailable: false,
+            };
+        }
+
+        const normalized = answers.map((answer) => {
+            const number = Number(answer?.questionNumber ?? answer?.question ?? 0);
+            const examQuestion = Number.isFinite(number) && number > 0
+                ? exam.questions?.[number - 1] || null
+                : null;
+            return this._normalizeStoredAnswer(answer, examQuestion);
+        });
+
+        return {
+            correctAnswers: normalized.filter((answer) => answer.status === 'correct').length,
+            wrongAnswers: normalized.filter((answer) =>
+                ['incorrect', 'multiple', 'ambiguous'].includes(answer.status)
+            ).length,
+            blankAnswers: normalized.filter((answer) => answer.status === 'blank').length,
+            detailsAvailable: normalized.length > 0,
+        };
+    }
+
+    _finiteNumber(value) {
+        if (value === null || value === undefined || value === '') return null;
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
+    }
+
     _logInfo(message, meta = null) {
         if (meta) {
             console.log(`[EXAM SERVICE] ${message}`, meta);
@@ -373,6 +485,59 @@ class ExamService {
         return classDoc;
     }
 
+    _normalizeQuestionPreviewText(question) {
+        if (!question) return null;
+
+        if (question.image?.url && !question.text) {
+            return 'QuestÃ£o com imagem';
+        }
+
+        const rawText = question.text || question.questionText || question.statement || '';
+        const normalized = String(rawText)
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        if (!normalized && question.image?.url) {
+            return 'ConteÃºdo visual disponÃ­vel';
+        }
+
+        if (!normalized) return null;
+
+        return normalized.length > 130 ? `${normalized.slice(0, 127).trim()}...` : normalized;
+    }
+
+    _buildExamPreviewPayload(exam) {
+        const questions = Array.isArray(exam?.questions) ? exam.questions : [];
+        const previewQuestions = questions
+            .slice(0, 3)
+            .map((question) => this._normalizeQuestionPreviewText(question))
+            .filter(Boolean);
+
+        return {
+            questionsCount: questions.length,
+            previewQuestions,
+            hasImages: questions.some((question) => Boolean(question?.image?.url)),
+            hasEssayQuestions: questions.some((question) => question?.type === 'DISSERTATIVE'),
+            hasObjectiveQuestions: questions.some((question) => question?.type === 'OBJECTIVE'),
+            contentPreviewAvailable: previewQuestions.length > 0,
+        };
+    }
+
+    _serializeExamForList(exam, { includeQuestions = true } = {}) {
+        const source = typeof exam?.toObject === 'function' ? exam.toObject() : { ...exam };
+        const preview = this._buildExamPreviewPayload(source);
+
+        if (!includeQuestions) {
+            delete source.questions;
+        }
+
+        return {
+            ...source,
+            ...preview,
+        };
+    }
+
     async getExams(query, schoolId) {
         const filter = { school_id: schoolId };
 
@@ -389,9 +554,15 @@ class ExamService {
             filter.title = { $regex: String(query.search).trim(), $options: 'i' };
         }
 
-        return await Exam.find(filter)
+        const includeQuestions = query?.includeQuestions === undefined
+            ? true
+            : toBooleanQuery(query.includeQuestions);
+
+        const exams = await Exam.find(filter)
             .sort({ applicationDate: -1, createdAt: -1 })
             .populate('class_id subject_id teacher_id reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
+
+        return exams.map((exam) => this._serializeExamForList(exam, { includeQuestions }));
     }
 
     async getReusableExams(query, schoolId) {
@@ -421,9 +592,15 @@ class ExamService {
             filter.title = { $regex: String(query.search).trim(), $options: 'i' };
         }
 
-        return await Exam.find(filter)
+        const includeQuestions = query?.includeQuestions === undefined
+            ? true
+            : toBooleanQuery(query.includeQuestions);
+
+        const exams = await Exam.find(filter)
             .sort({ applicationDate: -1, createdAt: -1 })
             .populate('class_id subject_id teacher_id reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
+
+        return exams.map((exam) => this._serializeExamForList(exam, { includeQuestions }));
     }
 
     async getExamById(id, schoolId) {
@@ -486,6 +663,219 @@ class ExamService {
         await reusedExam.save();
 
         return await this.getExamById(reusedExam._id, schoolId);
+    }
+
+    async getExamResults(examId, schoolId, actor) {
+        const exam = await this._getReadableExam(examId, schoolId, actor);
+        const classId = getObjectIdString(exam.class_id);
+
+        const enrollments = await Enrollment.find({
+            class: classId,
+            school_id: schoolId,
+            status: 'Ativa',
+        })
+            .populate('student', 'fullName name')
+            .select('_id student status')
+            .lean();
+
+        const studentIds = enrollments
+            .map((enrollment) => getObjectIdString(enrollment.student))
+            .filter(Boolean);
+
+        const sheets = studentIds.length > 0
+            ? await ExamSheet.find({
+                exam_id: exam._id,
+                school_id: schoolId,
+                student_id: { $in: studentIds },
+            }).lean()
+            : [];
+
+        const sheetByStudent = new Map(
+            sheets.map((sheet) => [getObjectIdString(sheet.student_id), sheet])
+        );
+
+        const gradeByStudent = new Map();
+        const evaluationId = getObjectIdString(exam.settings?.evaluationId);
+        if (evaluationId && studentIds.length > 0) {
+            const evaluation = await Evaluation.findOne({
+                _id: evaluationId,
+                school: schoolId,
+                classInfo: classId,
+            })
+                .select('_id')
+                .lean();
+
+            if (evaluation) {
+                const grades = await ClassGrade.find({
+                    evaluation: evaluation._id,
+                    student: { $in: studentIds },
+                })
+                    .select('_id student enrollment value updatedAt')
+                    .lean();
+
+                for (const grade of grades) {
+                    gradeByStudent.set(getObjectIdString(grade.student), grade);
+                }
+            }
+        }
+
+        const maxScore = this._finiteNumber(exam.totalValue);
+        const totalQuestions = Array.isArray(exam.questions) ? exam.questions.length : 0;
+
+        const students = enrollments
+            .map((enrollment) => {
+                const studentId = getObjectIdString(enrollment.student);
+                const sheet = sheetByStudent.get(studentId) || null;
+                const gradeRecord = gradeByStudent.get(studentId) || null;
+                const sheetScore = this._finiteNumber(sheet?.grade);
+                const gradebookScore = this._finiteNumber(gradeRecord?.value);
+                const score = sheetScore ?? gradebookScore;
+                const corrected = score !== null;
+                const answerSummary = this._buildStoredAnswerSummary(sheet, exam);
+                const correctionType = sheet
+                    ? (exam.correctionType === 'BUBBLE_SHEET' ? 'omr' : 'manual')
+                    : (gradebookScore !== null ? 'manual' : null);
+                const correctedAt = sheetScore !== null
+                    ? (sheet.updatedAt || sheet.createdAt || null)
+                    : (gradeRecord?.updatedAt || null);
+
+                return {
+                    studentId,
+                    studentName:
+                        enrollment.student?.fullName ||
+                        enrollment.student?.name ||
+                        'Aluno sem nome',
+                    enrollmentId: getObjectIdString(enrollment._id),
+                    status: corrected ? 'corrected' : 'pending',
+                    score,
+                    maxScore,
+                    percentage:
+                        score !== null && maxScore !== null && maxScore > 0
+                            ? Math.round((score / maxScore) * 10000) / 100
+                            : null,
+                    correctAnswers: answerSummary.correctAnswers,
+                    wrongAnswers: answerSummary.wrongAnswers,
+                    blankAnswers: answerSummary.blankAnswers,
+                    totalQuestions,
+                    correctionType,
+                    correctionSource: sheetScore !== null
+                        ? 'exam_sheet'
+                        : (gradebookScore !== null ? 'gradebook' : null),
+                    correctedAt,
+                    sheetId: sheet ? getObjectIdString(sheet._id) : null,
+                    sheetStatus: sheet?.status || null,
+                    detailsAvailable: answerSummary.detailsAvailable,
+                };
+            })
+            .sort((left, right) => left.studentName.localeCompare(right.studentName, 'pt-BR'));
+
+        const correctedScores = students
+            .map((student) => student.score)
+            .filter((score) => typeof score === 'number' && Number.isFinite(score));
+
+        return {
+            exam: {
+                id: getObjectIdString(exam._id),
+                title: exam.title,
+                subject: exam.subject_id?.name || '',
+                classId,
+                className: exam.class_id?.name || '',
+                applicationDate: exam.applicationDate || null,
+                totalQuestions,
+                totalPoints: maxScore,
+                status: exam.status,
+                correctionType: exam.correctionType,
+            },
+            summary: {
+                totalStudents: students.length,
+                corrected: correctedScores.length,
+                pending: students.length - correctedScores.length,
+                averageScore: correctedScores.length > 0
+                    ? Math.round(
+                        (correctedScores.reduce((sum, score) => sum + score, 0) /
+                            correctedScores.length) * 100
+                    ) / 100
+                    : null,
+                highestScore: correctedScores.length > 0 ? Math.max(...correctedScores) : null,
+                lowestScore: correctedScores.length > 0 ? Math.min(...correctedScores) : null,
+            },
+            students,
+        };
+    }
+
+    async getExamResultDetails(examId, sheetId, schoolId, actor) {
+        const exam = await this._getReadableExam(examId, schoolId, actor);
+        this._ensureValidObjectId(sheetId, 'ID da folha');
+
+        const sheet = await ExamSheet.findOne({
+            _id: sheetId,
+            exam_id: exam._id,
+            school_id: schoolId,
+        })
+            .populate('student_id', 'fullName name')
+            .lean();
+
+        if (!sheet) {
+            throw createHttpError('Correcao nao encontrada.', 404);
+        }
+
+        const classId = getObjectIdString(exam.class_id);
+        const enrollment = await Enrollment.findOne({
+            school_id: schoolId,
+            class: classId,
+            student: sheet.student_id?._id || sheet.student_id,
+            status: 'Ativa',
+        })
+            .select('_id')
+            .lean();
+
+        if (!enrollment) {
+            throw createHttpError('Aluno nao encontrado na turma ativa da prova.', 404);
+        }
+
+        const isOmr = exam.correctionType === 'BUBBLE_SHEET';
+        const storedAnswers = Array.isArray(sheet.answers) ? sheet.answers : [];
+        const questions = isOmr
+            ? storedAnswers.map((answer) => {
+                const number = Number(answer?.questionNumber ?? answer?.question ?? 0);
+                const examQuestion = Number.isFinite(number) && number > 0
+                    ? exam.questions?.[number - 1] || null
+                    : null;
+                return this._normalizeStoredAnswer(answer, examQuestion);
+            })
+            : [];
+        const summary = this._buildStoredAnswerSummary(sheet, exam);
+
+        return {
+            sheetId: getObjectIdString(sheet._id),
+            student: {
+                id: getObjectIdString(sheet.student_id),
+                name: sheet.student_id?.fullName || sheet.student_id?.name || 'Aluno sem nome',
+            },
+            exam: {
+                id: getObjectIdString(exam._id),
+                title: exam.title,
+                totalQuestions: Array.isArray(exam.questions) ? exam.questions.length : 0,
+            },
+            score: this._finiteNumber(sheet.grade),
+            objectiveScore: this._finiteNumber(sheet.objectiveGrade),
+            dissertativeScore: this._finiteNumber(sheet.dissertativeGrade),
+            maxScore: this._finiteNumber(exam.totalValue),
+            correctionType: isOmr ? 'omr' : 'manual',
+            correctionSource: 'exam_sheet',
+            correctedAt: sheet.updatedAt || sheet.createdAt || null,
+            sheetStatus: sheet.status || null,
+            detailsAvailable: isOmr && questions.length > 0,
+            message: isOmr && questions.length > 0
+                ? null
+                : isOmr
+                    ? 'Detalhes por questao indisponiveis para esta correcao OMR.'
+                    : 'Correcao manual: detalhes por questao indisponiveis.',
+            correctAnswers: summary.correctAnswers,
+            wrongAnswers: summary.wrongAnswers,
+            blankAnswers: summary.blankAnswers,
+            questions,
+        };
     }
 
     async generateExamSheets(examId, schoolId, specificStudentIds = []) {

@@ -13,6 +13,8 @@ router.post('/', examController.create);
 router.get('/', examController.getAll);
 router.get('/reusable', examController.getReusable);
 router.post('/:sourceExamId/reuse-for-class', examController.reuseForClass);
+router.get('/:examId/results', examController.getResults);
+router.get('/:examId/results/:sheetId', examController.getResultDetails);
 router.get('/:id', examController.getById);
 
 // Rotas de Operação (Gerar Lote de PDF e Escanear QR Code)

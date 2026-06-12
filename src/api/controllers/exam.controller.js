@@ -565,6 +565,35 @@ class ExamController {
         }
     }
 
+    async getResults(req, res) {
+        try {
+            const schoolId = req.user.school_id || req.user.schoolId;
+            const result = await examService.getExamResults(
+                req.params.examId,
+                schoolId,
+                req.user
+            );
+            return res.status(200).json(result);
+        } catch (error) {
+            return res.status(error.statusCode || 400).json({ message: error.message });
+        }
+    }
+
+    async getResultDetails(req, res) {
+        try {
+            const schoolId = req.user.school_id || req.user.schoolId;
+            const result = await examService.getExamResultDetails(
+                req.params.examId,
+                req.params.sheetId,
+                schoolId,
+                req.user
+            );
+            return res.status(200).json(result);
+        } catch (error) {
+            return res.status(error.statusCode || 400).json({ message: error.message });
+        }
+    }
+
     async generateSheets(req, res) {
         try {
             const schoolId = req.user.school_id;
