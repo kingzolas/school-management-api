@@ -9,6 +9,7 @@ function sendAttendanceError(res, error, fallbackMessage) {
   return res.status(statusCode).json({
     code: error.code || null,
     message,
+    ...(error.firstAttendanceDate ? { firstAttendanceDate: error.firstAttendanceDate } : {}),
   });
 }
 
@@ -90,12 +91,51 @@ exports.getHistory = async (req, res) => {
 
 exports.getStudentHistory = async (req, res) => {
   try {
-    const { studentId } = req.params;
-    const result = await attendanceService.getHistoryByStudent(req.user.schoolId, studentId);
+    const { classId, studentId } = req.params;
+    const result = await attendanceService.getStudentClassHistoryReport({
+      schoolId: req.user.schoolId,
+      classId,
+      studentId,
+      actor: req.user,
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+    });
     return res.status(200).json(result);
   } catch (error) {
     console.error('Erro ao buscar histórico do aluno:', error);
-    return res.status(500).json({ message: 'Erro ao buscar histórico do aluno.' });
+    return sendAttendanceError(res, error, 'Erro ao buscar histórico do aluno.');
+  }
+};
+
+exports.getClassFirstAttendanceDate = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const result = await attendanceService.getFirstAttendanceInfo(
+      req.user.schoolId,
+      classId,
+      req.user
+    );
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Erro ao buscar primeira chamada da turma:', error);
+    return sendAttendanceError(res, error, 'Erro ao buscar primeira chamada da turma.');
+  }
+};
+
+exports.getClassAttendanceReport = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const result = await attendanceService.getClassAttendanceReport({
+      schoolId: req.user.schoolId,
+      classId,
+      actor: req.user,
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Erro ao gerar relatorio de frequencia da turma:', error);
+    return sendAttendanceError(res, error, 'Erro ao gerar relatorio de frequencia da turma.');
   }
 };
 

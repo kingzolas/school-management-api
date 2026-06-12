@@ -6,6 +6,10 @@ const { verifyToken } = require('../middlewares/auth.middleware');
 // Todas as rotas abaixo requerem autenticação
 router.use(verifyToken);
 
+router.get('/classes/:classId/first-date', attendanceController.getClassFirstAttendanceDate);
+router.get('/classes/:classId/report', attendanceController.getClassAttendanceReport);
+router.get('/classes/:classId/students/:studentId/history', attendanceController.getStudentHistory);
+
 // GET: Busca a lista de chamada (Salva ou Proposta)
 // Exemplo: /api/attendance/class/654a...99?date=2023-12-06
 router.get('/class/:classId', attendanceController.getAttendanceSheet);
