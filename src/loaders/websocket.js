@@ -335,13 +335,17 @@ function broadcast(data, targetSchoolId) {
 
     if (
         String(data.type || '').startsWith('official_document_') ||
-        String(data.type || '').startsWith('absence_justification_')
+        String(data.type || '').startsWith('absence_justification_') ||
+        data.type === 'exam:sheet-corrected'
     ) {
         console.log('[WebSocket] Broadcast notificacao desktop', {
             type: data.type,
             schoolId: targetIdString,
             delivered,
             requestId: data.payload?.requestId || data.payload?.request?._id || null,
+            examId: data.payload?.examId || null,
+            teacherId: data.payload?.teacherId || null,
+            sheetId: data.payload?.sheetId || null,
             audience: data.payload?.audience || null,
             targetRoles: data.payload?.targetRoles || null,
             timestamp: new Date().toISOString(),

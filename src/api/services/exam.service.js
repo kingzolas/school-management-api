@@ -1111,6 +1111,57 @@ class ExamService {
             throw new Error('Folha da prova não encontrada.');
         }
 
+        try {
+            const [eventExam, eventSheet] = await Promise.all([
+                Exam.findOne({ _id: sheet.exam_id, school_id: schoolId })
+                    .populate('class_id', 'name')
+                    .select('title totalValue correctionType teacher_id class_id')
+                    .lean(),
+                ExamSheet.findOne({ _id: sheet._id, school_id: schoolId })
+                    .populate('student_id', 'fullName name')
+                    .select('student_id status updatedAt')
+                    .lean(),
+            ]);
+
+            if (eventExam && eventSheet) {
+                const realtimePayload = {
+                    schoolId: String(schoolId),
+                    school_id: String(schoolId),
+                    teacherId: getObjectIdString(eventExam.teacher_id),
+                    classId: getObjectIdString(eventExam.class_id),
+                    className: eventExam.class_id?.name || '',
+                    examId: getObjectIdString(eventExam._id),
+                    examTitle: eventExam.title || 'Prova',
+                    studentId: getObjectIdString(eventSheet.student_id),
+                    studentName:
+                        eventSheet.student_id?.fullName ||
+                        eventSheet.student_id?.name ||
+                        'Aluno sem nome',
+                    sheetId: getObjectIdString(eventSheet._id),
+                    score: this._finiteNumber(sheet.grade),
+                    maxScore: this._finiteNumber(eventExam.totalValue),
+                    correctionType:
+                        eventExam.correctionType === 'BUBBLE_SHEET' ? 'omr' : 'manual',
+                    correctedAt: eventSheet.updatedAt || new Date(),
+                };
+
+                appEmitter.emit('exam:sheet-corrected', realtimePayload);
+                console.log('[ExamRealtime] Correcao salva e evento emitido', {
+                    schoolId: realtimePayload.schoolId,
+                    teacherId: realtimePayload.teacherId,
+                    examId: realtimePayload.examId,
+                    sheetId: realtimePayload.sheetId,
+                });
+            }
+        } catch (error) {
+            console.error('[ExamRealtime] Falha ao preparar evento de correcao', {
+                schoolId: String(schoolId),
+                examId: getObjectIdString(sheet.exam_id),
+                sheetId: getObjectIdString(sheet._id),
+                error: error?.message || error,
+            });
+        }
+
         const exam = await Exam.findById(sheet.exam_id);
 
         if (exam?.settings?.evaluationId) {
@@ -1126,40 +1177,6 @@ class ExamService {
                 },
                 { upsert: true }
             );
-        }
-
-        const [eventExam, eventSheet] = await Promise.all([
-            Exam.findOne({ _id: sheet.exam_id, school_id: schoolId })
-                .populate('class_id', 'name')
-                .select('title totalValue correctionType teacher_id class_id')
-                .lean(),
-            ExamSheet.findOne({ _id: sheet._id, school_id: schoolId })
-                .populate('student_id', 'fullName name')
-                .select('student_id status updatedAt')
-                .lean(),
-        ]);
-
-        if (eventExam && eventSheet) {
-            appEmitter.emit('exam:sheet-corrected', {
-                schoolId: String(schoolId),
-                school_id: String(schoolId),
-                teacherId: getObjectIdString(eventExam.teacher_id),
-                classId: getObjectIdString(eventExam.class_id),
-                className: eventExam.class_id?.name || '',
-                examId: getObjectIdString(eventExam._id),
-                examTitle: eventExam.title || 'Prova',
-                studentId: getObjectIdString(eventSheet.student_id),
-                studentName:
-                    eventSheet.student_id?.fullName ||
-                    eventSheet.student_id?.name ||
-                    'Aluno sem nome',
-                sheetId: getObjectIdString(eventSheet._id),
-                score: this._finiteNumber(sheet.grade),
-                maxScore: this._finiteNumber(eventExam.totalValue),
-                correctionType:
-                    eventExam.correctionType === 'BUBBLE_SHEET' ? 'omr' : 'manual',
-                correctedAt: eventSheet.updatedAt || new Date(),
-            });
         }
 
         return sheet;
