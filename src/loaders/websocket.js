@@ -275,6 +275,14 @@ function registerAppListeners() {
         broadcast({ type: 'NEW_ASSESSMENT', payload: assessment }, assessment.school_id);
     });
 
+    appEmitter.on('exam:sheet-corrected', (payload) => {
+        console.log('Evento: exam:sheet-corrected');
+        broadcast(
+            { type: 'exam:sheet-corrected', payload },
+            payload.schoolId || payload.school_id
+        );
+    });
+
     // --- [NOVO] Notificações (Automação) ---
     appEmitter.on('notification:created', (log) => {
         // Quando entra na fila

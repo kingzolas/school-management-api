@@ -6,6 +6,7 @@ const ClassGrade = require('../models/grade.model');
 const Class = require('../models/class.model');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
+const appEmitter = require('../../loaders/eventEmitter');
 const {
     ensureClassAccess,
     isPrivilegedActor,
@@ -81,12 +82,106 @@ class ExamService {
 
         return {
             questionNumber: Number.isFinite(questionNumber) ? questionNumber : null,
+            questionText: examQuestion?.text || null,
             markedOption: markedOption || null,
             correctAnswer: correctAnswer || null,
             isCorrect: hasCorrectness ? answer.isCorrect : null,
             status,
             confidence: typeof answer?.confidence === 'number' ? answer.confidence : null,
             maxPoints: typeof examQuestion?.weight === 'number' ? examQuestion.weight : null,
+            earnedPoints:
+                status === 'correct' && typeof examQuestion?.weight === 'number'
+                    ? examQuestion.weight
+                    : status === 'correct'
+                        ? 1
+                        : 0,
+        };
+    }
+
+    _getStoredAnswerExamQuestion(exam, questionNumber) {
+        if (!Number.isFinite(questionNumber) || questionNumber <= 0) return null;
+        const questions = Array.isArray(exam?.questions) ? exam.questions : [];
+        const orderedQuestions =
+            exam?.correctionType === 'BUBBLE_SHEET'
+                ? questions.filter((question) => question?.type === 'OBJECTIVE')
+                : questions;
+        return orderedQuestions[questionNumber - 1] || null;
+    }
+
+    _buildQuestionInsights(sheets, exam) {
+        if (exam.correctionType !== 'BUBBLE_SHEET') {
+            return {
+                available: false,
+                correctedSheetsWithAnswers: 0,
+                averageAccuracy: null,
+                questions: [],
+            };
+        }
+
+        const insightByQuestion = new Map();
+        const sheetsWithAnswers = sheets.filter(
+            (sheet) => Array.isArray(sheet?.answers) && sheet.answers.length > 0
+        );
+
+        for (const sheet of sheetsWithAnswers) {
+            for (const answer of sheet.answers) {
+                const number = Number(answer?.questionNumber ?? answer?.question ?? 0);
+                if (!Number.isFinite(number) || number <= 0) continue;
+
+                const examQuestion = this._getStoredAnswerExamQuestion(exam, number);
+                const normalized = this._normalizeStoredAnswer(answer, examQuestion);
+                const current = insightByQuestion.get(number) || {
+                    questionNumber: number,
+                    questionText: examQuestion?.text || null,
+                    correct: 0,
+                    wrong: 0,
+                    blank: 0,
+                    unavailable: 0,
+                    responses: 0,
+                };
+
+                current.responses += 1;
+                if (normalized.status === 'correct') {
+                    current.correct += 1;
+                } else if (normalized.status === 'blank') {
+                    current.blank += 1;
+                } else if (
+                    ['incorrect', 'multiple', 'ambiguous'].includes(normalized.status)
+                ) {
+                    current.wrong += 1;
+                } else {
+                    current.unavailable += 1;
+                }
+
+                insightByQuestion.set(number, current);
+            }
+        }
+
+        const questions = [...insightByQuestion.values()]
+            .map((item) => ({
+                ...item,
+                correctPercentage:
+                    item.responses > 0
+                        ? Math.round((item.correct / item.responses) * 10000) / 100
+                        : null,
+                errorPercentage:
+                    item.responses > 0
+                        ? Math.round(((item.wrong + item.blank) / item.responses) * 10000) / 100
+                        : null,
+            }))
+            .sort((left, right) => left.questionNumber - right.questionNumber);
+
+        const totalResponses = questions.reduce((sum, item) => sum + item.responses, 0);
+        const totalCorrect = questions.reduce((sum, item) => sum + item.correct, 0);
+
+        return {
+            available: questions.length > 0,
+            correctedSheetsWithAnswers: sheetsWithAnswers.length,
+            averageAccuracy:
+                totalResponses > 0
+                    ? Math.round((totalCorrect / totalResponses) * 10000) / 100
+                    : null,
+            questions,
         };
     }
 
@@ -103,9 +198,7 @@ class ExamService {
 
         const normalized = answers.map((answer) => {
             const number = Number(answer?.questionNumber ?? answer?.question ?? 0);
-            const examQuestion = Number.isFinite(number) && number > 0
-                ? exam.questions?.[number - 1] || null
-                : null;
+            const examQuestion = this._getStoredAnswerExamQuestion(exam, number);
             return this._normalizeStoredAnswer(answer, examQuestion);
         });
 
@@ -730,6 +823,10 @@ class ExamService {
                 const sheetScore = this._finiteNumber(sheet?.grade);
                 const gradebookScore = this._finiteNumber(gradeRecord?.value);
                 const score = sheetScore ?? gradebookScore;
+                const hasGradeDivergence =
+                    sheetScore !== null &&
+                    gradebookScore !== null &&
+                    Math.abs(sheetScore - gradebookScore) > 0.001;
                 const corrected = score !== null;
                 const answerSummary = this._buildStoredAnswerSummary(sheet, exam);
                 const correctionType = sheet
@@ -761,6 +858,12 @@ class ExamService {
                     correctionSource: sheetScore !== null
                         ? 'exam_sheet'
                         : (gradebookScore !== null ? 'gradebook' : null),
+                    examSheetScore: sheetScore,
+                    gradebookScore,
+                    hasGradeDivergence,
+                    gradeDivergenceMessage: hasGradeDivergence
+                        ? 'Atencao: existe divergencia entre a correcao da prova e o diario.'
+                        : null,
                     correctedAt,
                     sheetId: sheet ? getObjectIdString(sheet._id) : null,
                     sheetStatus: sheet?.status || null,
@@ -772,6 +875,7 @@ class ExamService {
         const correctedScores = students
             .map((student) => student.score)
             .filter((score) => typeof score === 'number' && Number.isFinite(score));
+        const insights = this._buildQuestionInsights(sheets, exam);
 
         return {
             exam: {
@@ -799,6 +903,7 @@ class ExamService {
                 highestScore: correctedScores.length > 0 ? Math.max(...correctedScores) : null,
                 lowestScore: correctedScores.length > 0 ? Math.min(...correctedScores) : null,
             },
+            insights,
             students,
         };
     }
@@ -838,13 +943,42 @@ class ExamService {
         const questions = isOmr
             ? storedAnswers.map((answer) => {
                 const number = Number(answer?.questionNumber ?? answer?.question ?? 0);
-                const examQuestion = Number.isFinite(number) && number > 0
-                    ? exam.questions?.[number - 1] || null
-                    : null;
+                const examQuestion = this._getStoredAnswerExamQuestion(exam, number);
                 return this._normalizeStoredAnswer(answer, examQuestion);
             })
             : [];
         const summary = this._buildStoredAnswerSummary(sheet, exam);
+        const sheetScore = this._finiteNumber(sheet.grade);
+        let gradebookScore = null;
+        let gradebookUpdatedAt = null;
+        const evaluationId = getObjectIdString(exam.settings?.evaluationId);
+
+        if (evaluationId) {
+            const evaluation = await Evaluation.findOne({
+                _id: evaluationId,
+                school: schoolId,
+                classInfo: classId,
+            })
+                .select('_id')
+                .lean();
+
+            if (evaluation) {
+                const gradeRecord = await ClassGrade.findOne({
+                    evaluation: evaluation._id,
+                    student: sheet.student_id?._id || sheet.student_id,
+                })
+                    .select('value updatedAt')
+                    .lean();
+                gradebookScore = this._finiteNumber(gradeRecord?.value);
+                gradebookUpdatedAt = gradeRecord?.updatedAt || null;
+            }
+        }
+
+        const hasGradeDivergence =
+            sheetScore !== null &&
+            gradebookScore !== null &&
+            Math.abs(sheetScore - gradebookScore) > 0.001;
+        const score = sheetScore ?? gradebookScore;
 
         return {
             sheetId: getObjectIdString(sheet._id),
@@ -857,19 +991,29 @@ class ExamService {
                 title: exam.title,
                 totalQuestions: Array.isArray(exam.questions) ? exam.questions.length : 0,
             },
-            score: this._finiteNumber(sheet.grade),
+            score,
             objectiveScore: this._finiteNumber(sheet.objectiveGrade),
             dissertativeScore: this._finiteNumber(sheet.dissertativeGrade),
             maxScore: this._finiteNumber(exam.totalValue),
             correctionType: isOmr ? 'omr' : 'manual',
-            correctionSource: 'exam_sheet',
-            correctedAt: sheet.updatedAt || sheet.createdAt || null,
+            correctionSource: sheetScore !== null
+                ? 'exam_sheet'
+                : (gradebookScore !== null ? 'gradebook' : null),
+            examSheetScore: sheetScore,
+            gradebookScore,
+            hasGradeDivergence,
+            gradeDivergenceMessage: hasGradeDivergence
+                ? 'Atencao: existe divergencia entre a correcao da prova e o diario.'
+                : null,
+            correctedAt: sheetScore !== null
+                ? (sheet.updatedAt || sheet.createdAt || null)
+                : (gradebookUpdatedAt || sheet.updatedAt || sheet.createdAt || null),
             sheetStatus: sheet.status || null,
             detailsAvailable: isOmr && questions.length > 0,
             message: isOmr && questions.length > 0
                 ? null
                 : isOmr
-                    ? 'Detalhes por questao indisponiveis para esta correcao OMR.'
+                    ? 'Os detalhes por questao nao foram armazenados para esta correcao.'
                     : 'Correcao manual: detalhes por questao indisponiveis.',
             correctAnswers: summary.correctAnswers,
             wrongAnswers: summary.wrongAnswers,
@@ -982,6 +1126,40 @@ class ExamService {
                 },
                 { upsert: true }
             );
+        }
+
+        const [eventExam, eventSheet] = await Promise.all([
+            Exam.findOne({ _id: sheet.exam_id, school_id: schoolId })
+                .populate('class_id', 'name')
+                .select('title totalValue correctionType teacher_id class_id')
+                .lean(),
+            ExamSheet.findOne({ _id: sheet._id, school_id: schoolId })
+                .populate('student_id', 'fullName name')
+                .select('student_id status updatedAt')
+                .lean(),
+        ]);
+
+        if (eventExam && eventSheet) {
+            appEmitter.emit('exam:sheet-corrected', {
+                schoolId: String(schoolId),
+                school_id: String(schoolId),
+                teacherId: getObjectIdString(eventExam.teacher_id),
+                classId: getObjectIdString(eventExam.class_id),
+                className: eventExam.class_id?.name || '',
+                examId: getObjectIdString(eventExam._id),
+                examTitle: eventExam.title || 'Prova',
+                studentId: getObjectIdString(eventSheet.student_id),
+                studentName:
+                    eventSheet.student_id?.fullName ||
+                    eventSheet.student_id?.name ||
+                    'Aluno sem nome',
+                sheetId: getObjectIdString(eventSheet._id),
+                score: this._finiteNumber(sheet.grade),
+                maxScore: this._finiteNumber(eventExam.totalValue),
+                correctionType:
+                    eventExam.correctionType === 'BUBBLE_SHEET' ? 'omr' : 'manual',
+                correctedAt: eventSheet.updatedAt || new Date(),
+            });
         }
 
         return sheet;
