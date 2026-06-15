@@ -86,6 +86,29 @@ print(json.dumps({
   assert.deepEqual(result.q40, { questions: 40, bubbles: 200, columns: 2, rowsPerColumn: 20 });
 });
 
+test('OMR v2 runner uses the v2 dynamic layout adapter', () => {
+  const stdout = runPython(String.raw`
+import json
+from academyhub_omr_v2.omr_runner import AcademyHubOmrRunner
+
+layout = AcademyHubOmrRunner._build_layout_attempts(40)[0]
+print(json.dumps({
+  "questions": layout.questions_count,
+  "bubbles": len(layout.bubbles),
+  "columns": layout.debug["columnCount"],
+  "source": layout.debug["source"],
+}))
+`);
+  const result = JSON.parse(stdout);
+
+  assert.deepEqual(result, {
+    questions: 40,
+    bubbles: 200,
+    columns: 2,
+    source: 'generated_adapter_v2',
+  });
+});
+
 test('OMR v2 Python process returns INVALID_QUESTIONS outside 1..40', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omr-v2-invalid-'));
   const layoutPath = path.join(tempDir, 'layout.json');

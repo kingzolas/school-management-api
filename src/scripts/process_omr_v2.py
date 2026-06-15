@@ -338,6 +338,7 @@ def main():
             "message": message,
             "anchorsFound": result.get("anchorsFound"),
             "questionsCount": result.get("questionsCount"),
+            "orientation": result.get("orientation") or (result.get("debug") or {}).get("orientation"),
             "captureHints": result.get("captureHints", []),
             "warnings": result.get("captureHints", []),
             "answersMap": build_answers_map(normalized_answers),

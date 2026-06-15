@@ -33,6 +33,7 @@ class DetectionResult:
     missing_anchors: List[str]
     capture_hints: List[str]
     message: str
+    diagnostics: Optional[dict] = None
     performance: Optional[dict] = None
 
 
@@ -60,11 +61,73 @@ class AcademyHubSheetDetector:
         total_start = time.perf_counter()
 
         threshold_start = time.perf_counter()
-        thresh = self._threshold_image(gray_image)
+        thresh, threshold_debug = self._threshold_image(gray_image)
         performance["pythonThresholdMs"] = self._elapsed_ms(threshold_start)
         anchor_start = time.perf_counter()
-        candidates = self._find_anchor_candidates(thresh, gray_image.shape)
+        candidates, filter_debug = self._find_anchor_candidates(thresh, gray_image.shape)
         performance["pythonAnchorMs"] = self._elapsed_ms(anchor_start)
+        diagnostics = {
+            **threshold_debug,
+            **filter_debug,
+        }
+        if len(candidates) < 4:
+            fallback_start = time.perf_counter()
+            fallback_thresh, fallback_threshold_debug = self._threshold_dark_on_paper(gray_image)
+            fallback_candidates, fallback_filter_debug = self._find_anchor_candidates(
+                fallback_thresh,
+                gray_image.shape,
+            )
+            performance["pythonAnchorFallbackMs"] = self._elapsed_ms(fallback_start)
+            if len(fallback_candidates) > len(candidates):
+                thresh = fallback_thresh
+                candidates = fallback_candidates
+                diagnostics = {
+                    **fallback_threshold_debug,
+                    **fallback_filter_debug,
+                    "fallbackUsed": True,
+                    "fallbackReason": "not_enough_anchors_after_primary_threshold",
+                    "primaryAnchorCandidatesAccepted": len(filter_debug.get("acceptedCandidates", [])),
+                }
+            else:
+                diagnostics["fallbackUsed"] = False
+                diagnostics["fallbackReason"] = "fallback_did_not_improve_anchor_candidates"
+
+        best_quad = None
+        best_metrics = None
+        if len(candidates) >= 4:
+            anchor_select_start = time.perf_counter()
+            best_quad, best_metrics = self._choose_best_quad(candidates, gray_image.shape)
+            performance["pythonAnchorSelectMs"] = self._elapsed_ms(anchor_select_start)
+
+            if best_quad is None and diagnostics.get("thresholdMode") != "dark-on-paper":
+                fallback_start = time.perf_counter()
+                fallback_thresh, fallback_threshold_debug = self._threshold_dark_on_paper(gray_image)
+                fallback_candidates, fallback_filter_debug = self._find_anchor_candidates(
+                    fallback_thresh,
+                    gray_image.shape,
+                )
+                fallback_quad, fallback_metrics = self._choose_best_quad(
+                    fallback_candidates,
+                    gray_image.shape,
+                )
+                performance["pythonAnchorFallbackMs"] = self._elapsed_ms(fallback_start)
+
+                if fallback_quad is not None:
+                    thresh = fallback_thresh
+                    candidates = fallback_candidates
+                    best_quad = fallback_quad
+                    best_metrics = fallback_metrics
+                    diagnostics = {
+                        **fallback_threshold_debug,
+                        **fallback_filter_debug,
+                        "fallbackUsed": True,
+                        "fallbackReason": "invalid_quad_after_primary_threshold",
+                        "primaryAnchorCandidatesAccepted": len(filter_debug.get("acceptedCandidates", [])),
+                    }
+                else:
+                    diagnostics["fallbackUsed"] = False
+                    diagnostics["fallbackReason"] = "fallback_did_not_find_valid_quad"
+
         candidates_debug = [
             self._candidate_to_debug(candidate, gray_image.shape)
             for candidate in candidates
@@ -98,16 +161,16 @@ class AcademyHubSheetDetector:
                     "not_enough_anchors",
                 ),
                 message="Menos de 4 ancoras candidatas detectadas.",
+                diagnostics={
+                    **diagnostics,
+                    "failureReason": "not_enough_anchors",
+                },
                 performance={
                     **performance,
                     "pythonHomographyMs": 0.0,
                     "pythonSheetDetectionMs": self._elapsed_ms(total_start),
                 },
             )
-
-        anchor_select_start = time.perf_counter()
-        best_quad, best_metrics = self._choose_best_quad(candidates, gray_image.shape)
-        performance["pythonAnchorSelectMs"] = self._elapsed_ms(anchor_select_start)
 
         if best_quad is None:
             missing_anchors = self._infer_missing_anchors(candidates, gray_image.shape)
@@ -131,6 +194,10 @@ class AcademyHubSheetDetector:
                     "invalid_quad",
                 ),
                 message="Nenhum conjunto valido de 4 ancoras encontrado.",
+                diagnostics={
+                    **diagnostics,
+                    "failureReason": "invalid_quad",
+                },
                 performance={
                     **performance,
                     "pythonHomographyMs": 0.0,
@@ -177,21 +244,96 @@ class AcademyHubSheetDetector:
             missing_anchors=[],
             capture_hints=[],
             message="Area OMR principal detectada com sucesso.",
+            diagnostics={
+                **diagnostics,
+                "failureReason": None,
+            },
             performance=performance,
         )
 
-    def _threshold_image(self, gray: np.ndarray) -> np.ndarray:
+    def _threshold_image(self, gray: np.ndarray) -> Tuple[np.ndarray, dict]:
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = cv2.threshold(
+        threshold_value, thresh = cv2.threshold(
             blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
         )
 
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        return cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
+        return thresh, self._threshold_diagnostics(
+            thresh,
+            gray.shape,
+            mode="otsu-inverted",
+            threshold_value=threshold_value,
+        )
+
+    def _threshold_dark_on_paper(self, gray: np.ndarray) -> Tuple[np.ndarray, dict]:
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, paper = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        paper_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
+        paper = cv2.morphologyEx(paper, cv2.MORPH_CLOSE, paper_kernel, iterations=2)
+
+        contours, _ = cv2.findContours(paper, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        mask = np.zeros_like(gray)
+        paper_rect = None
+        paper_area_ratio = 0.0
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            cv2.drawContours(mask, [largest], -1, 255, -1)
+            paper_rect = [int(value) for value in cv2.boundingRect(largest)]
+            paper_area_ratio = float(cv2.contourArea(largest)) / float(max(1, gray.shape[0] * gray.shape[1]))
+        else:
+            mask[:, :] = 255
+
+        masked = gray.copy()
+        masked[mask == 0] = 255
+
+        threshold_value = 140
+        _, thresh = cv2.threshold(masked, threshold_value, 255, cv2.THRESH_BINARY_INV)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
+        diagnostics = self._threshold_diagnostics(
+            thresh,
+            gray.shape,
+            mode="dark-on-paper",
+            threshold_value=threshold_value,
+        )
+        diagnostics["paperRect"] = paper_rect
+        diagnostics["paperAreaRatio"] = round(float(paper_area_ratio), 4)
+        return thresh, diagnostics
+
+    @staticmethod
+    def _threshold_diagnostics(
+        thresh: np.ndarray,
+        image_shape: Tuple[int, int],
+        mode: str,
+        threshold_value: Optional[float],
+    ) -> dict:
+        h, w = image_shape[:2]
+        foreground_ratio = float(np.count_nonzero(thresh)) / float(max(1, h * w))
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        largest = None
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            x, y, bw, bh = cv2.boundingRect(largest_contour)
+            largest_area = cv2.contourArea(largest_contour)
+            largest = {
+                "rect": [int(x), int(y), int(bw), int(bh)],
+                "areaRatio": round(float(largest_area) / float(max(1, h * w)), 4),
+                "extent": round(float(largest_area) / float(max(1, bw * bh)), 4),
+            }
+
+        return {
+            "thresholdMode": mode,
+            "thresholdValue": None if threshold_value is None else round(float(threshold_value), 2),
+            "blackPixelRatio": round(foreground_ratio, 4),
+            "imageWidth": int(w),
+            "imageHeight": int(h),
+            "largestForegroundContour": largest,
+        }
 
     def _find_anchor_candidates(
         self, thresh: np.ndarray, image_shape: Tuple[int, int]
-    ) -> List[AnchorCandidate]:
+    ) -> Tuple[List[AnchorCandidate], dict]:
         h, w = image_shape[:2]
         image_area = h * w
 
@@ -200,19 +342,43 @@ class AcademyHubSheetDetector:
         )
 
         candidates: List[AnchorCandidate] = []
+        stats = {
+            "anchorCandidatesBeforeFilter": len(contours),
+            "anchorCandidatesAfterAreaFilter": 0,
+            "anchorCandidatesAfterSizeFilter": 0,
+            "anchorCandidatesAfterFrameFilter": 0,
+            "anchorCandidatesAfterShapeFilter": 0,
+            "anchorCandidatesAfterExtentFilter": 0,
+            "anchorCandidatesAfterApproxFilter": 0,
+            "anchorCandidatesAfterSolidityFilter": 0,
+            "acceptedCandidates": [],
+        }
 
         for contour in contours:
             area = cv2.contourArea(contour)
             if area < image_area * 0.00015:
                 continue
+            stats["anchorCandidatesAfterAreaFilter"] += 1
 
             x, y, bw, bh = cv2.boundingRect(contour)
             if bw < 18 or bh < 18:
                 continue
+            stats["anchorCandidatesAfterSizeFilter"] += 1
+
+            # Dark backgrounds can merge with the card and produce a full-frame
+            # contour. A valid anchor can be near an edge, but it cannot occupy
+            # a large chunk of the captured image.
+            touches_frame = x <= 2 or y <= 2 or (x + bw) >= (w - 2) or (y + bh) >= (h - 2)
+            too_large_for_anchor = bw > (w * 0.35) or bh > (h * 0.35)
+            large_edge_contour = touches_frame and (bw > (w * 0.12) or bh > (h * 0.12))
+            if too_large_for_anchor or large_edge_contour:
+                continue
+            stats["anchorCandidatesAfterFrameFilter"] += 1
 
             ratio = bw / float(bh)
             if not (0.60 <= ratio <= 1.40):
                 continue
+            stats["anchorCandidatesAfterShapeFilter"] += 1
 
             rect_area = float(bw * bh)
             if rect_area <= 0:
@@ -221,11 +387,13 @@ class AcademyHubSheetDetector:
             extent = area / rect_area
             if not (0.20 <= extent <= 0.55):
                 continue
+            stats["anchorCandidatesAfterExtentFilter"] += 1
 
             perimeter = cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, 0.04 * perimeter, True)
             if len(approx) < 4 or len(approx) > 8:
                 continue
+            stats["anchorCandidatesAfterApproxFilter"] += 1
 
             hull = cv2.convexHull(contour)
             hull_area = cv2.contourArea(hull)
@@ -235,6 +403,7 @@ class AcademyHubSheetDetector:
             solidity = area / hull_area
             if not (0.45 <= solidity <= 0.95):
                 continue
+            stats["anchorCandidatesAfterSolidityFilter"] += 1
 
             candidates.append(
                 AnchorCandidate(
@@ -245,9 +414,21 @@ class AcademyHubSheetDetector:
                     extent=extent,
                 )
             )
+            if len(stats["acceptedCandidates"]) < 16:
+                stats["acceptedCandidates"].append(
+                    {
+                        "rect": [int(x), int(y), int(bw), int(bh)],
+                        "center": [round(float(x + bw / 2.0), 2), round(float(y + bh / 2.0), 2)],
+                        "area": round(float(area), 2),
+                        "ratio": round(float(ratio), 4),
+                        "extent": round(float(extent), 4),
+                        "solidity": round(float(solidity), 4),
+                        "approxPoints": int(len(approx)),
+                    }
+                )
 
         candidates.sort(key=lambda candidate: candidate.area, reverse=True)
-        return candidates[:12]
+        return candidates[:12], stats
 
     def _choose_best_quad(
         self,

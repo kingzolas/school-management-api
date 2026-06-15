@@ -74,6 +74,7 @@ function buildOmrResultLog({
     const debug = result?.debug || {};
     const anchorsDebug = debug.anchors || {};
     const homographyDebug = debug.homography || {};
+    const anchorDiagnostics = anchorsDebug.diagnostics || {};
     const anchorsFound = Number(result?.anchorsFound ?? anchorsDebug.found ?? 0);
     const requestedQuestions = Number(result?.requestedQuestions ?? omrLayout?.totalQuestions ?? 0);
     const detectedQuestions = Number(result?.detectedQuestions ?? result?.questionsCount ?? 0);
@@ -104,9 +105,22 @@ function buildOmrResultLog({
         requestedQuestions,
         detectedQuestions,
         evaluatedQuestions,
+        orientation: result?.orientation || debug.orientation || null,
         anchorsFound,
         anchorDetectionStatus:
             anchorsFound >= 4 || anchorsDebug.success === true ? 'completed' : 'failed',
+        anchorDiagnostics: {
+            thresholdMode: anchorDiagnostics.thresholdMode || null,
+            blackPixelRatio: anchorDiagnostics.blackPixelRatio ?? null,
+            anchorCandidatesBeforeFilter: anchorDiagnostics.anchorCandidatesBeforeFilter ?? null,
+            anchorCandidatesAfterSizeFilter: anchorDiagnostics.anchorCandidatesAfterSizeFilter ?? null,
+            anchorCandidatesAfterFrameFilter: anchorDiagnostics.anchorCandidatesAfterFrameFilter ?? null,
+            anchorCandidatesAfterShapeFilter: anchorDiagnostics.anchorCandidatesAfterShapeFilter ?? null,
+            anchorCandidatesAfterPositionFilter: anchorDiagnostics.anchorCandidatesAfterPositionFilter ?? null,
+            anchorCandidatesAfterSolidityFilter: anchorDiagnostics.anchorCandidatesAfterSolidityFilter ?? null,
+            fallbackUsed: anchorDiagnostics.fallbackUsed ?? null,
+            failureReason: anchorDiagnostics.failureReason || null,
+        },
         homographyStatus:
             homographyDebug.applied === true || result?.stage === 'completed' ? 'completed' : 'skipped',
         bubbleReadStatus,
