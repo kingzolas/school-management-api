@@ -55,6 +55,24 @@ class OmrProcessingService {
         return path.join(process.cwd(), 'omr_debug');
     }
 
+    getEngineVersion() {
+        const raw = String(process.env.OMR_ENGINE_VERSION || 'legacy').trim().toLowerCase();
+        if (['legacy', 'v2', 'shadow'].includes(raw)) {
+            return raw;
+        }
+        return 'legacy';
+    }
+
+    getPythonTimeoutMs() {
+        const value = Number(process.env.OMR_PYTHON_TIMEOUT_MS || 30000);
+        return Number.isFinite(value) && value > 0 ? value : 30000;
+    }
+
+    getMaxImageBytes() {
+        const value = Number(process.env.OMR_MAX_IMAGE_BYTES || 8 * 1024 * 1024);
+        return Number.isFinite(value) && value > 0 ? value : 8 * 1024 * 1024;
+    }
+
     _logInfo(message, meta = null) {
         if (meta) {
             console.log(`[OMR SERVICE] ${message}`, meta);
@@ -95,8 +113,13 @@ class OmrProcessingService {
         const decodeStart = process.hrtime.bigint();
         const base64Data = String(imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
         const imageBuffer = Buffer.from(base64Data, 'base64');
+        const maxImageBytes = this.getMaxImageBytes();
+        if (imageBuffer.length > maxImageBytes) {
+            throw new Error(`Imagem OMR excede o limite de ${maxImageBytes} bytes.`);
+        }
         if (performanceTimings) {
             performanceTimings.decodeBase64Ms = this._elapsedMs(decodeStart);
+            performanceTimings.imageBytes = imageBuffer.length;
         }
 
         const writeStart = process.hrtime.bigint();
@@ -115,19 +138,30 @@ class OmrProcessingService {
         return layoutPath;
     }
 
-    runPythonOmr({ imagePath, correctionType, layoutPath, sessionDir, saveImages = false }) {
+    runPythonOmr({
+        imagePath,
+        correctionType,
+        layoutPath,
+        sessionDir,
+        saveImages = false,
+        engineVersion = this.getEngineVersion(),
+    }) {
         return new Promise((resolve, reject) => {
-            const scriptPath = path.join(process.cwd(), 'src', 'scripts', 'process_omr.py');
+            const selectedEngine = engineVersion === 'v2' ? 'v2' : 'legacy';
+            const scriptName = selectedEngine === 'v2' ? 'process_omr_v2.py' : 'process_omr.py';
+            const scriptPath = path.join(process.cwd(), 'src', 'scripts', scriptName);
             const args = [scriptPath, imagePath, correctionType];
+            const timeoutMs = this.getPythonTimeoutMs();
 
             if (layoutPath) {
                 args.push(layoutPath);
             }
 
             this._logInfo('Executando motor Python OMR.', {
+                engineVersion: selectedEngine,
                 pythonBin: this.pythonBin,
                 scriptPath,
-                args,
+                timeoutMs,
             });
 
             const child = spawn(this.pythonBin, args, {
@@ -142,6 +176,11 @@ class OmrProcessingService {
 
             let stdout = '';
             let stderr = '';
+            let timedOut = false;
+            const timeout = setTimeout(() => {
+                timedOut = true;
+                child.kill('SIGKILL');
+            }, timeoutMs);
 
             child.stdout.on('data', (chunk) => {
                 stdout += chunk.toString();
@@ -152,10 +191,18 @@ class OmrProcessingService {
             });
 
             child.on('error', (error) => {
+                clearTimeout(timeout);
                 reject(new Error(`Falha ao iniciar o processo Python: ${error.message}`));
             });
 
             child.on('close', (code) => {
+                clearTimeout(timeout);
+                if (timedOut) {
+                    return reject(
+                        new Error(`Processo Python OMR excedeu timeout de ${timeoutMs}ms.`)
+                    );
+                }
+
                 if (code !== 0) {
                     return reject(
                         new Error(

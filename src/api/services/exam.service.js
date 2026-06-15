@@ -262,9 +262,9 @@ class ExamService {
             throw new Error('A prova do tipo BUBBLE_SHEET precisa ter ao menos 1 questão objetiva.');
         }
 
-        if (objectiveQuestions.length > 20) {
+        if (objectiveQuestions.length > 40) {
             throw new Error(
-                'A versão atual da leitura OMR suporta até 20 questões objetivas por prova.'
+                'A versao atual da leitura OMR suporta ate 40 questoes objetivas por prova.'
             );
         }
 
@@ -279,23 +279,47 @@ class ExamService {
             return null;
         }
 
-        if (totalQuestions > 20) {
+        if (totalQuestions > 40) {
             throw new Error(
-                'A versão atual do layout OMR suporta até 20 questões objetivas.'
+                'A versao atual do layout OMR suporta ate 40 questoes objetivas.'
             );
         }
 
+        const blocks = totalQuestions <= 20
+            ? [
+                {
+                    startQuestion: 1,
+                    endQuestion: totalQuestions,
+                    columns: 5,
+                },
+            ]
+            : [
+                {
+                    startQuestion: 1,
+                    endQuestion: 20,
+                    columns: 5,
+                },
+                {
+                    startQuestion: 21,
+                    endQuestion: totalQuestions,
+                    columns: 5,
+                },
+            ];
+
         const layout = {
-            version: 'ACADEMYHUB_OMR_V1',
+            version: 'ACADEMYHUB_OMR_V2',
+            layoutVersion: 'academyhub-omr-v2',
             generatedAt: new Date().toISOString(),
             correctionType: 'BUBBLE_SHEET',
             totalQuestions,
             totalOptionsPerQuestion: 5,
             choices: ['A', 'B', 'C', 'D', 'E'],
+            blocks,
             engine: {
-                name: 'ACADEMYHUB_PYTHON_V1',
-                supportsTwoColumns: false,
-                maxSupportedQuestions: 20,
+                name: 'ACADEMYHUB_PYTHON_V2',
+                supportsDynamicQuestions: true,
+                supportsTwoColumns: true,
+                maxSupportedQuestions: 40,
             },
         };
 

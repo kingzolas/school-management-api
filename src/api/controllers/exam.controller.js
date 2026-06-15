@@ -178,6 +178,52 @@ function buildOmrCaptureMessage(result) {
     return result.message || 'Nao foi possivel ler o gabarito.';
 }
 
+function buildOmrShadowComparison(legacyResult, v2Result) {
+    const legacyAnswers = Array.isArray(legacyResult?.answers) ? legacyResult.answers : [];
+    const v2Answers = Array.isArray(v2Result?.answers) ? v2Result.answers : [];
+    const v2ByQuestion = new Map(
+        v2Answers.map((answer) => [Number(answer.question), answer])
+    );
+    const divergences = [];
+
+    for (const legacyAnswer of legacyAnswers) {
+        const question = Number(legacyAnswer?.question);
+        const v2Answer = v2ByQuestion.get(question);
+        if (!v2Answer) {
+            divergences.push({
+                question,
+                legacy: legacyAnswer?.marked ?? legacyAnswer?.answer ?? null,
+                v2: null,
+                reason: 'missing_in_v2',
+            });
+            continue;
+        }
+
+        const legacyMarked = legacyAnswer?.marked ?? legacyAnswer?.answer ?? null;
+        const v2Marked = v2Answer?.marked ?? v2Answer?.answer ?? null;
+        const legacyStatus = legacyAnswer?.status || null;
+        const v2Status = v2Answer?.status || null;
+        if (legacyMarked !== v2Marked || legacyStatus !== v2Status) {
+            divergences.push({
+                question,
+                legacy: legacyMarked,
+                legacyStatus,
+                v2: v2Marked,
+                v2Status,
+            });
+        }
+    }
+
+    return {
+        enabled: true,
+        v2Success: Boolean(v2Result?.success),
+        v2ImageStatus: v2Result?.imageStatus || null,
+        v2ErrorCode: v2Result?.errorCode || null,
+        divergencesCount: divergences.length,
+        divergences,
+    };
+}
+
 async function resolveOmrContext({ req, examId, qrCodeUuid, schoolId }) {
     let verifiedSheet = null;
     let resolvedExamId = examId;
@@ -345,6 +391,13 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             performanceTimings.keepOmrDebugFiles = omrProcessingService.shouldKeepDebugFiles();
         }
 
+        const engineVersion = omrProcessingService.getEngineVersion();
+        const primaryEngineVersion = engineVersion === 'shadow' ? 'legacy' : engineVersion;
+        if (performanceTimings) {
+            performanceTimings.engineVersion = engineVersion;
+            performanceTimings.primaryEngineVersion = primaryEngineVersion;
+        }
+
         const pythonStart = timedNow();
         const { result } = await omrProcessingService.runPythonOmr({
             imagePath,
@@ -352,6 +405,7 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             layoutPath,
             sessionDir,
             saveImages,
+            engineVersion: primaryEngineVersion,
         });
         if (performanceTimings) {
             performanceTimings.pythonTotalMs = elapsedMs(pythonStart);
@@ -359,6 +413,44 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
                 for (const [key, value] of Object.entries(result.performance)) {
                     performanceTimings[key] = value;
                 }
+            }
+        }
+
+        let shadowComparison = null;
+        if (engineVersion === 'shadow') {
+            const shadowStart = timedNow();
+            try {
+                const { result: v2Result } = await omrProcessingService.runPythonOmr({
+                    imagePath,
+                    correctionType,
+                    layoutPath,
+                    sessionDir,
+                    saveImages: false,
+                    engineVersion: 'v2',
+                });
+                shadowComparison = buildOmrShadowComparison(result, v2Result);
+                console.log('[OMR SHADOW]', {
+                    examId: String(resolvedExamId),
+                    schoolId: String(schoolId),
+                    legacySuccess: Boolean(result?.success),
+                    v2Success: Boolean(v2Result?.success),
+                    v2ImageStatus: v2Result?.imageStatus || null,
+                    divergencesCount: shadowComparison.divergencesCount,
+                    processingTimeMs: roundMs(elapsedMs(shadowStart)),
+                });
+            } catch (error) {
+                shadowComparison = {
+                    enabled: true,
+                    error: error.message,
+                };
+                console.warn('[OMR SHADOW WARN] Falha ao executar v2 em shadow.', {
+                    examId: String(resolvedExamId),
+                    schoolId: String(schoolId),
+                    error: error.message,
+                });
+            }
+            if (performanceTimings) {
+                performanceTimings.shadowV2Ms = elapsedMs(shadowStart);
             }
         }
 
@@ -387,6 +479,11 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
                 result.userMessage = friendlyMessage;
             }
 
+            result.engineVersion = primaryEngineVersion;
+            if (shadowComparison) {
+                result.shadow = shadowComparison;
+            }
+
             if (debugPayload) {
                 attachOmrDebugInfo({
                     payload: result,
@@ -411,11 +508,18 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
 
         const responsePayload = {
             ...result,
+            engineVersion: primaryEngineVersion,
+            requestedQuestions: result.requestedQuestions ?? omrLayout?.totalQuestions ?? null,
+            detectedQuestions: result.detectedQuestions ?? result.questionsCount ?? null,
+            evaluatedQuestions: result.evaluatedQuestions ?? result.questionsCount ?? null,
             grade: correction.grade,
             objectiveGrade: correction.objectiveGrade,
             correctionDetails: correction.correctionDetails,
             omrLayoutVersion: exam.settings?.omrLayout?.version || null,
         };
+        if (shadowComparison) {
+            responsePayload.shadow = shadowComparison;
+        }
 
         if (persistResults && qrCodeUuid) {
             const dbSaveStart = timedNow();
