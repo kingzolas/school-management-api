@@ -250,6 +250,35 @@ class OmrProcessingService {
         return debugPath;
     }
 
+    writeCompatibilityDebugArtifacts({ sessionDir, engineVersion, result }) {
+        const selectedEngine = engineVersion === 'v2' ? 'v2' : 'legacy';
+        const copyIfPresent = (sourceName, targetName) => {
+            const sourcePath = path.join(sessionDir, sourceName);
+            if (!fs.existsSync(sourcePath)) {
+                return null;
+            }
+
+            const targetPath = path.join(sessionDir, targetName);
+            fs.copyFileSync(sourcePath, targetPath);
+            return targetPath;
+        };
+
+        copyIfPresent('00_input.jpg', 'original-received.jpg');
+        copyIfPresent('00_input.jpg', `${selectedEngine}-input.jpg`);
+
+        if (selectedEngine === 'v2') {
+            copyIfPresent('02_threshold.jpg', 'v2-threshold.jpg');
+            copyIfPresent('03_anchors_detected.jpg', 'v2-anchor-overlay.jpg');
+        } else {
+            copyIfPresent('02_threshold.jpg', 'legacy-threshold.jpg');
+            copyIfPresent('03_anchors_detected.jpg', 'legacy-anchor-overlay.jpg');
+        }
+
+        const resultPath = path.join(sessionDir, `${selectedEngine}-result.json`);
+        fs.writeFileSync(resultPath, JSON.stringify(result || {}, null, 2), 'utf8');
+        return resultPath;
+    }
+
     writeManifest(sessionDir, debugId) {
         const manifestPath = path.join(sessionDir, 'manifest.json');
         const generatedAt = new Date().toISOString();

@@ -131,12 +131,23 @@ def build_answers_map(answers):
 def result_image_status(normalized_answers, python_success):
     if not python_success:
         return "recapture_required"
+    if not normalized_answers:
+        return "recapture_required"
     statuses = {normalize_status(answer.get("status")) for answer in normalized_answers}
     if "not_detected" in statuses:
         return "recapture_required"
     if "multiple" in statuses or "uncertain" in statuses:
         return "review_required"
     return "accepted"
+
+
+def is_completed_read(normalized_answers, python_success, requested_questions, detected_questions, image_status):
+    return (
+        bool(python_success)
+        and image_status in ("accepted", "review_required")
+        and int(detected_questions or 0) == int(requested_questions or 0)
+        and len(normalized_answers) == int(requested_questions or 0)
+    )
 
 
 def build_question_count_mismatch(requested, detected, layout_version):
@@ -282,9 +293,18 @@ def main():
             return
 
         image_status = result_image_status(normalized_answers, result.get("success", False))
-        safe_to_grade = result.get("success", False) and image_status == "accepted"
+        read_completed = is_completed_read(
+            normalized_answers,
+            result.get("success", False),
+            questions_count,
+            detected_questions,
+            image_status,
+        )
+        if not read_completed and image_status == "accepted":
+            image_status = "recapture_required"
+
         error_code = None
-        if not safe_to_grade:
+        if not read_completed:
             error_code = (
                 "OMR_RECAPTURE_REQUIRED"
                 if image_status == "recapture_required"
@@ -297,18 +317,25 @@ def main():
             if normalize_status(item.get("status")) != "not_detected"
         ]
 
+        if read_completed and image_status == "review_required":
+            message = "Leitura OMR concluida com pontos para revisao."
+        elif read_completed:
+            message = "Leitura OMR concluida."
+        else:
+            message = result.get("message")
+
         payload = {
-            "success": safe_to_grade,
+            "success": read_completed,
             "imageStatus": image_status,
             "errorCode": error_code,
             "type": "BUBBLE_SHEET",
             "layoutVersion": layout_version,
             "requestedQuestions": questions_count,
             "detectedQuestions": detected_questions,
-            "evaluatedQuestions": questions_count if safe_to_grade else 0,
+            "evaluatedQuestions": questions_count if read_completed else 0,
             "confidence": round(min(confidence_values), 4) if confidence_values else 0.0,
             "stage": result.get("stage"),
-            "message": result.get("message"),
+            "message": message,
             "anchorsFound": result.get("anchorsFound"),
             "questionsCount": result.get("questionsCount"),
             "captureHints": result.get("captureHints", []),

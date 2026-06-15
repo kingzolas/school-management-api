@@ -61,6 +61,65 @@ function finishOmrRequest({ status, payload, performanceTimings, requestStart })
     return { status, payload };
 }
 
+function buildOmrResultLog({
+    result,
+    performanceTimings,
+    engineVersion,
+    primaryEngineVersion,
+    examId,
+    schoolId,
+    teacherId,
+    omrLayout,
+}) {
+    const debug = result?.debug || {};
+    const anchorsDebug = debug.anchors || {};
+    const homographyDebug = debug.homography || {};
+    const anchorsFound = Number(result?.anchorsFound ?? anchorsDebug.found ?? 0);
+    const requestedQuestions = Number(result?.requestedQuestions ?? omrLayout?.totalQuestions ?? 0);
+    const detectedQuestions = Number(result?.detectedQuestions ?? result?.questionsCount ?? 0);
+    const questions = Array.isArray(result?.questions) ? result.questions : [];
+    const answers = Array.isArray(result?.answers) ? result.answers : [];
+    const evaluatedQuestions = Number(
+        result?.evaluatedQuestions ??
+        (result?.success ? result?.questionsCount ?? answers.length : 0)
+    );
+
+    let bubbleReadStatus = 'skipped';
+    if (evaluatedQuestions > 0 || result?.stage === 'completed') {
+        bubbleReadStatus = evaluatedQuestions >= requestedQuestions ? 'completed' : 'partial';
+    } else if (questions.length > 0 && result?.stage !== 'sheet_detection') {
+        bubbleReadStatus = 'partial';
+    }
+
+    return {
+        correlationId: performanceTimings?.correlationId || null,
+        engineVersion,
+        primaryEngineVersion,
+        success: Boolean(result?.success),
+        imageStatus: result?.imageStatus || null,
+        errorCode: result?.errorCode || null,
+        examId: examId ? String(examId) : null,
+        schoolId: schoolId ? String(schoolId) : null,
+        teacherId: teacherId ? String(teacherId) : null,
+        requestedQuestions,
+        detectedQuestions,
+        evaluatedQuestions,
+        anchorsFound,
+        anchorDetectionStatus:
+            anchorsFound >= 4 || anchorsDebug.success === true ? 'completed' : 'failed',
+        homographyStatus:
+            homographyDebug.applied === true || result?.stage === 'completed' ? 'completed' : 'skipped',
+        bubbleReadStatus,
+        confidence: result?.confidence ?? null,
+        warnings: result?.warnings || result?.captureHints || [],
+        message: result?.message || null,
+    };
+}
+
+function logOmrResult(meta) {
+    console.log('[OMR RESULT]', JSON.stringify(buildOmrResultLog(meta)));
+}
+
 function getRequestRoles(req) {
     return [
         ...(Array.isArray(req.user?.roles) ? req.user.roles : []),
@@ -111,11 +170,17 @@ function buildPersistedDebugPayload({
         debugId: sessionId,
         ...debugContext,
         success: Boolean(result.success),
+        imageStatus: result.imageStatus || null,
+        errorCode: result.errorCode || null,
         type: result.type || 'BUBBLE_SHEET',
         stage: result.stage || null,
         message: result.message || null,
         anchorsFound: result.anchorsFound ?? null,
         questionsCount: result.questionsCount ?? null,
+        requestedQuestions: result.requestedQuestions ?? null,
+        detectedQuestions: result.detectedQuestions ?? null,
+        evaluatedQuestions: result.evaluatedQuestions ?? null,
+        confidence: result.confidence ?? null,
         imageWidth: pipelineDebug.imageWidth ?? null,
         imageHeight: pipelineDebug.imageHeight ?? null,
         orientation: pipelineDebug.orientation ?? null,
@@ -454,6 +519,17 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             }
         }
 
+        logOmrResult({
+            result,
+            performanceTimings,
+            engineVersion,
+            primaryEngineVersion,
+            examId: resolvedExamId,
+            schoolId,
+            teacherId: req.user?._id,
+            omrLayout,
+        });
+
         const debugPayloadStart = timedNow();
         const debugPayload = debugEnabled
             ? buildPersistedDebugPayload({
@@ -466,6 +542,11 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
         let manifest = null;
 
         if (debugPayload && saveImages) {
+            omrProcessingService.writeCompatibilityDebugArtifacts({
+                sessionDir,
+                engineVersion: primaryEngineVersion,
+                result,
+            });
             omrProcessingService.writeDebugJson(sessionDir, debugPayload);
             manifest = omrProcessingService.writeManifest(sessionDir, session.sessionId);
         }
@@ -521,7 +602,8 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             responsePayload.shadow = shadowComparison;
         }
 
-        if (persistResults && qrCodeUuid) {
+        const canPersistOmrResult = !result.imageStatus || result.imageStatus === 'accepted';
+        if (persistResults && qrCodeUuid && canPersistOmrResult) {
             const dbSaveStart = timedNow();
             const persistedSheet = await examService.scanExamSheet(
                 {
@@ -544,6 +626,10 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
                 performanceTimings.dbSaveMs = 0;
             }
             responsePayload.persisted = false;
+            if (persistResults && qrCodeUuid && !canPersistOmrResult) {
+                responsePayload.academicWriteSkipped = true;
+                responsePayload.persistenceBlockedReason = `image_status_${result.imageStatus}`;
+            }
         }
 
         if (debugMode) {
