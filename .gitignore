@@ -9,6 +9,7 @@ src/config/serviceAccountKey.json
 
 # OMR diagnostics contain student answer sheets and must stay local.
 omr_debug/
+debug/
 samples/omr/*
 !samples/omr/.gitkeep
 !samples/omr/README.md

@@ -3,10 +3,11 @@ import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 
-from academyhub_omr.bubble_reader import AcademyHubBubbleReader
-from academyhub_omr.layout_adapter import AcademyHubLayoutAdapter
-from academyhub_omr.sheet_detector import AcademyHubSheetDetector
+from .bubble_reader import AcademyHubBubbleReader
+from .layout_adapter import AcademyHubLayoutAdapter
+from .sheet_detector import AcademyHubSheetDetector
 
 
 class AcademyHubOmrRunner:
@@ -147,6 +148,116 @@ class AcademyHubOmrRunner:
         image_height: int,
         collect_performance: bool = False,
     ):
+        orientation_start = time.perf_counter()
+        orientation_candidates = []
+
+        for rotation in (0, 90, 180, 270):
+            rotated_color = AcademyHubOmrRunner._rotate_image(original_color, rotation)
+            rotated_gray = AcademyHubOmrRunner._rotate_image(gray, rotation)
+            result = AcademyHubOmrRunner._run_single_layout_once(
+                gray=rotated_gray,
+                original_color=rotated_color,
+                layout=layout,
+                debug_dir=None,
+                image_width=rotated_gray.shape[1],
+                image_height=rotated_gray.shape[0],
+                collect_performance=collect_performance,
+            )
+            score = AcademyHubOmrRunner._orientation_score(result, rotated_gray)
+            orientation_candidates.append(
+                {
+                    "rotation": rotation,
+                    "score": score,
+                    "result": result,
+                    "gray": rotated_gray,
+                    "color": rotated_color,
+                }
+            )
+
+        original_candidate = next(
+            item for item in orientation_candidates if item["rotation"] == 0
+        )
+        if original_candidate["result"].get("success"):
+            best = original_candidate
+        else:
+            best = max(
+                orientation_candidates,
+                key=lambda item: (
+                    bool(item["result"].get("success")),
+                    item["score"],
+                    int(item["result"].get("anchorsFound") or 0),
+                ),
+            )
+
+        rotated_color = best["color"]
+        rotated_gray = best["gray"]
+        result = AcademyHubOmrRunner._run_single_layout_once(
+            gray=rotated_gray,
+            original_color=rotated_color,
+            layout=layout,
+            debug_dir=debug_dir,
+            image_width=rotated_gray.shape[1],
+            image_height=rotated_gray.shape[0],
+            collect_performance=collect_performance,
+        )
+
+        orientation_summary = [
+            {
+                "rotation": item["rotation"],
+                "score": round(float(item["score"]), 4),
+                "success": bool(item["result"].get("success")),
+                "stage": item["result"].get("stage"),
+                "anchorsFound": item["result"].get("anchorsFound"),
+                "anchorConfidence": (
+                    item["result"].get("debug", {})
+                    .get("anchors", {})
+                    .get("confidence")
+                ),
+                "headerScore": round(
+                    float(
+                        AcademyHubOmrRunner._header_position_score_from_result(
+                            item["result"],
+                            item["gray"],
+                        )
+                    ),
+                    4,
+                ),
+            }
+            for item in orientation_candidates
+        ]
+        method = "rotation-fallback+corner-markers+header-position"
+
+        result["orientation"] = {
+            "detectedRotation": best["rotation"],
+            "confidence": round(float(best["score"]), 4),
+            "method": method,
+            "candidates": orientation_summary,
+        }
+        result.setdefault("debug", {})["orientation"] = result["orientation"]
+        if debug_dir is not None:
+            cv2.imwrite(str(debug_dir / "01_auto_oriented.jpg"), rotated_color)
+
+        if collect_performance:
+            result.setdefault("performance", {})
+            result["performance"]["pythonOrientationMs"] = AcademyHubOmrRunner._elapsed_ms(
+                orientation_start
+            )
+            result.setdefault("debug", {}).setdefault("performance", {}).update(
+                result["performance"]
+            )
+
+        return result
+
+    @staticmethod
+    def _run_single_layout_once(
+        gray,
+        original_color,
+        layout,
+        debug_dir,
+        image_width: int,
+        image_height: int,
+        collect_performance: bool = False,
+    ):
         attempt_start = time.perf_counter()
         performance = {} if collect_performance else None
         if debug_dir is not None:
@@ -238,6 +349,114 @@ class AcademyHubOmrRunner:
             result["performance"] = performance
             result["debug"]["performance"] = performance
         return result
+
+    @staticmethod
+    def _rotate_image(image, rotation: int):
+        if rotation == 90:
+            return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        if rotation == 180:
+            return cv2.rotate(image, cv2.ROTATE_180)
+        if rotation == 270:
+            return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return image.copy()
+
+    @staticmethod
+    def _orientation_score(result, gray) -> float:
+        anchors = result.get("debug", {}).get("anchors", {})
+        anchor_confidence = float(anchors.get("confidence") or 0.0)
+        answers = result.get("answers") or []
+        answer_confidence = 0.0
+        if answers:
+            answer_confidence = sum(float(item.get("confidence") or 0.0) for item in answers) / max(
+                1,
+                len(answers),
+            )
+
+        completed_bonus = 0.18 if result.get("success") else 0.0
+        header_score = AcademyHubOmrRunner._header_position_score_from_result(result, gray)
+        score = (
+            completed_bonus
+            + (anchor_confidence * 0.36)
+            + (answer_confidence * 0.30)
+            + (header_score * 0.34)
+        )
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _header_position_score_from_result(result, gray) -> float:
+        corners = (
+            result.get("debug", {})
+            .get("anchors", {})
+            .get("selectedCorners")
+        )
+        if not corners:
+            return 0.0
+
+        corners_array = cv2.UMat(np.array(corners, dtype=np.float32)).get()
+        return AcademyHubOmrRunner._header_position_score(gray, corners_array)
+
+    @staticmethod
+    def _header_position_score(gray, corners) -> float:
+        h, w = gray.shape[:2]
+        top_y = int(max(0, np.mean(corners[:2, 1])))
+        bottom_y = int(min(h, np.mean(corners[2:, 1])))
+
+        detected, qr_points = cv2.QRCodeDetector().detect(gray)
+        if detected and qr_points is not None:
+            qr_y = float(np.mean(qr_points.reshape(-1, 2)[:, 1]))
+            if qr_y < top_y:
+                return 1.0
+            if qr_y > bottom_y:
+                return 0.0
+
+        left_x = int(max(0, np.min(corners[:, 0])))
+        right_x = int(min(w, np.max(corners[:, 0])))
+        span = max(1, bottom_y - top_y)
+        band = max(30, int(span * 1.25))
+        top = gray[max(0, top_y - band):top_y, left_x:right_x]
+        bottom = gray[bottom_y:min(h, bottom_y + band), left_x:right_x]
+
+        def ink_density(region):
+            if region.size == 0:
+                return 0.0
+            local_background = cv2.GaussianBlur(region, (0, 0), 12)
+            black_hat = np.maximum(
+                local_background.astype(np.int16) - region.astype(np.int16),
+                0,
+            )
+            return float(np.mean(black_hat > 25))
+
+        top_density = ink_density(top)
+        bottom_density = ink_density(bottom)
+        density_difference = top_density - bottom_density
+        broad_score = max(0.0, min(1.0, 0.5 + density_difference * 5.0))
+
+        divider_band = max(20, int(span * 0.22))
+        top_divider = gray[max(0, top_y - divider_band):top_y, left_x:right_x]
+        bottom_divider = gray[bottom_y:min(h, bottom_y + divider_band), left_x:right_x]
+
+        def horizontal_line_score(region):
+            if region.size == 0:
+                return 0.0
+            background = cv2.GaussianBlur(region, (0, 0), 8)
+            black_hat = background.astype(np.int16) - region.astype(np.int16)
+            return float(np.max(np.mean(black_hat > 20, axis=1)))
+
+        divider_score = max(
+            0.0,
+            min(
+                1.0,
+                0.5
+                + (
+                    horizontal_line_score(top_divider)
+                    - horizontal_line_score(bottom_divider)
+                )
+                * 4.0,
+            ),
+        )
+        if abs(density_difference) >= 0.018:
+            return broad_score
+        return divider_score
 
     @staticmethod
     def _summarize_attempt(result, layout):
@@ -403,6 +622,7 @@ class AcademyHubOmrRunner:
                 "selectedCorners": selected_corners,
                 "confidence": detection.selected_anchor_confidence,
                 "missing": detection.missing_anchors,
+                "diagnostics": detection.diagnostics or {},
             },
             "homography": {
                 "applied": detection.homography_applied,

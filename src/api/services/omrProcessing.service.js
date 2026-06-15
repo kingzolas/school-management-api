@@ -20,7 +20,10 @@ const ZIP_CRC_TABLE = (() => {
 
 class OmrProcessingService {
     constructor() {
-        this.pythonBin = process.env.OMR_PYTHON_BIN || process.env.PYTHON_BIN || 'python3';
+        this.pythonBin =
+            process.env.OMR_PYTHON_BIN ||
+            process.env.PYTHON_BIN ||
+            (process.platform === 'win32' ? 'python' : 'python3');
     }
 
     _envFlag(name, defaultValue = false) {
@@ -259,7 +262,16 @@ class OmrProcessingService {
             }
 
             const targetPath = path.join(sessionDir, targetName);
-            fs.copyFileSync(sourcePath, targetPath);
+            try {
+                fs.copyFileSync(sourcePath, targetPath);
+            } catch (error) {
+                this._logError('Falha ao copiar artefato de debug OMR.', {
+                    sourceName,
+                    targetName,
+                    error: error.message,
+                });
+                return null;
+            }
             return targetPath;
         };
 
