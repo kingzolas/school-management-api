@@ -70,10 +70,10 @@ class ExamService {
         const hasCorrectness = typeof answer?.isCorrect === 'boolean';
 
         let status = 'unavailable';
-        if (rawStatus === 'blank' || !markedOption) {
-            status = 'blank';
-        } else if (rawStatus === 'multiple' || rawStatus === 'ambiguous') {
+        if (rawStatus === 'multiple' || rawStatus === 'ambiguous' || rawStatus === 'uncertain' || rawStatus === 'not_detected') {
             status = rawStatus;
+        } else if (rawStatus === 'blank' || !markedOption) {
+            status = 'blank';
         } else if (hasCorrectness) {
             status = answer.isCorrect ? 'correct' : 'incorrect';
         } else if (rawStatus) {
@@ -146,7 +146,7 @@ class ExamService {
                 } else if (normalized.status === 'blank') {
                     current.blank += 1;
                 } else if (
-                    ['incorrect', 'multiple', 'ambiguous'].includes(normalized.status)
+                ['incorrect', 'multiple', 'ambiguous', 'uncertain', 'not_detected'].includes(normalized.status)
                 ) {
                     current.wrong += 1;
                 } else {
@@ -205,7 +205,7 @@ class ExamService {
         return {
             correctAnswers: normalized.filter((answer) => answer.status === 'correct').length,
             wrongAnswers: normalized.filter((answer) =>
-                ['incorrect', 'multiple', 'ambiguous'].includes(answer.status)
+                ['incorrect', 'multiple', 'ambiguous', 'uncertain', 'not_detected'].includes(answer.status)
             ).length,
             blankAnswers: normalized.filter((answer) => answer.status === 'blank').length,
             detailsAvailable: normalized.length > 0,
@@ -396,13 +396,64 @@ class ExamService {
         return exam.settings.omrLayout;
     }
 
+    _normalizeOmrAnswerStatus(answer = {}) {
+        const rawStatus = String(answer.status || answer.debugStatus || '').trim().toLowerCase();
+        if (rawStatus === 'multiple') return 'multiple';
+        if (rawStatus === 'blank') return 'blank';
+        if (rawStatus === 'ambiguous' || rawStatus === 'uncertain' || rawStatus === 'low_confidence') {
+            return 'uncertain';
+        }
+        if (rawStatus === 'not_detected' || rawStatus === 'anchor_failed' || rawStatus === 'out_of_bounds') {
+            return 'not_detected';
+        }
+        return 'marked';
+    }
+
+    _normalizeOmrStudentAnswer(answer = {}, omrStatus = null) {
+        const marked =
+            answer.marked ??
+            answer.selected ??
+            answer.answer ??
+            answer.studentAnswer ??
+            answer.markedOption ??
+            null;
+
+        if (omrStatus === 'blank') return null;
+        if (omrStatus === 'multiple') return 'MULTIPLE';
+        if (omrStatus === 'uncertain') return 'UNCERTAIN';
+        if (omrStatus === 'not_detected') return 'NOT_DETECTED';
+        return marked || null;
+    }
+
+    _roundGrade(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return 0;
+        return Math.round(number * 10000) / 10000;
+    }
+
     buildBubbleSheetCorrection(exam, omrAnswers) {
         const objectiveQuestions = this._ensureBubbleSheetSupport(exam);
 
-        let totalGrade = 0;
-        let objectiveGrade = 0;
+        const maxGrade = this._finiteNumber(exam?.totalValue) ?? 10;
+        const totalQuestions = objectiveQuestions.length;
+        const totalPossiblePoints = objectiveQuestions.reduce((sum, question) => {
+            const weight = this._finiteNumber(question?.weight);
+            return sum + (weight !== null && weight > 0 ? weight : 1);
+        }, 0) || totalQuestions || 1;
+        const pointsPerRawPoint = maxGrade / totalPossiblePoints;
+
+        let rawEarnedPoints = 0;
+        let correctCount = 0;
+        let wrongCount = 0;
+        let blankCount = 0;
+        let multipleCount = 0;
+        let uncertainCount = 0;
+        let notDetectedCount = 0;
         const correctionDetails = [];
         const persistableAnswers = [];
+        const questionResults = [];
+        const studentAnswers = {};
+        const answerKey = {};
 
         for (const answer of omrAnswers || []) {
             const qIndex = Number(answer.question || 0) - 1;
@@ -411,46 +462,133 @@ class ExamService {
             }
 
             const dbQuestion = objectiveQuestions[qIndex];
-            const markedOption = answer.marked ?? null;
+            const questionNumber = qIndex + 1;
+            const omrStatus = this._normalizeOmrAnswerStatus(answer);
+            const studentAnswer = this._normalizeOmrStudentAnswer(answer, omrStatus);
+            const markedOption = ['A', 'B', 'C', 'D', 'E'].includes(studentAnswer)
+                ? studentAnswer
+                : null;
             const correctAnswer = dbQuestion.correctAnswer ?? null;
             const isCorrect = !!markedOption && !!correctAnswer && markedOption === correctAnswer;
-            const earnedPoints = isCorrect ? Number(dbQuestion.weight || 0) : 0;
+            const rawQuestionPoints = this._finiteNumber(dbQuestion.weight);
+            const maxQuestionPoints = rawQuestionPoints !== null && rawQuestionPoints > 0
+                ? rawQuestionPoints
+                : 1;
+            const normalizedQuestionPoints = this._roundGrade(maxQuestionPoints * pointsPerRawPoint);
+            const earnedPoints = isCorrect ? normalizedQuestionPoints : 0;
 
+            let questionStatus = 'wrong';
             if (isCorrect) {
-                objectiveGrade += earnedPoints;
-                totalGrade += earnedPoints;
+                questionStatus = 'correct';
+                correctCount += 1;
+                rawEarnedPoints += maxQuestionPoints;
+            } else if (omrStatus === 'blank') {
+                questionStatus = 'blank';
+                blankCount += 1;
+            } else if (omrStatus === 'multiple') {
+                questionStatus = 'multiple';
+                multipleCount += 1;
+            } else if (omrStatus === 'uncertain') {
+                questionStatus = 'uncertain';
+                uncertainCount += 1;
+            } else if (omrStatus === 'not_detected') {
+                questionStatus = 'not_detected';
+                notDetectedCount += 1;
+            } else {
+                wrongCount += 1;
             }
 
-            correctionDetails.push({
-                questionNumber: answer.question,
+            studentAnswers[String(questionNumber)] = studentAnswer;
+            answerKey[String(questionNumber)] = correctAnswer;
+
+            const markedAlternatives = Array.isArray(answer.markedAlternatives)
+                ? answer.markedAlternatives.filter((item) => ['A', 'B', 'C', 'D', 'E'].includes(item))
+                : [];
+
+            const questionResult = {
+                questionNumber,
                 questionId: dbQuestion._id,
-                studentMarked: markedOption,
                 correctAnswer,
-                status: answer.status || 'ok',
+                studentAnswer,
+                isCorrect,
+                status: questionStatus,
+                omrStatus,
+                confidence: answer.confidence ?? null,
+                points: earnedPoints,
+                maxPoints: normalizedQuestionPoints,
+            };
+
+            if (markedAlternatives.length) {
+                questionResult.markedAlternatives = markedAlternatives;
+            }
+
+            questionResults.push(questionResult);
+
+            correctionDetails.push({
+                questionNumber,
+                questionId: dbQuestion._id,
+                studentMarked: studentAnswer,
+                studentAnswer,
+                correctAnswer,
+                status: questionStatus,
+                omrStatus,
+                markedAlternatives,
                 debugStatus: answer.debugStatus || null,
                 reason: answer.reason || null,
                 confidence: answer.confidence ?? null,
                 isCorrect,
                 earnedPoints,
+                maxPoints: normalizedQuestionPoints,
             });
 
             persistableAnswers.push({
                 question_id: dbQuestion._id,
-                questionNumber: answer.question,
-                markedOption,
+                questionNumber,
+                markedOption: studentAnswer,
                 correctAnswer,
-                status: answer.status || 'ok',
+                status: omrStatus === 'marked' ? 'ok' : omrStatus,
+                omrStatus,
+                markedAlternatives,
                 debugStatus: answer.debugStatus || null,
                 reason: answer.reason || null,
                 confidence: answer.confidence ?? null,
                 isCorrect,
+                earnedPoints,
+                maxPoints: normalizedQuestionPoints,
             });
         }
+
+        const objectiveGrade = this._roundGrade(rawEarnedPoints * pointsPerRawPoint);
+        const totalGrade = objectiveGrade;
+        const detailsPayload = {
+            totalQuestions,
+            correctCount,
+            wrongCount,
+            blankCount,
+            multipleCount,
+            uncertainCount,
+            notDetectedCount,
+            studentAnswers,
+            answerKey,
+            questionResults,
+        };
 
         return {
             grade: totalGrade,
             objectiveGrade,
+            maxGrade,
+            totalQuestions,
+            correctCount,
+            wrongCount,
+            blankCount,
+            multipleCount,
+            uncertainCount,
+            notDetectedCount,
+            studentAnswers,
+            answerKey,
+            questionResults,
             correctionDetails,
+            correctionDetailsPayload: detailsPayload,
             persistableAnswers,
         };
     }
@@ -1122,12 +1260,124 @@ class ExamService {
         };
     }
 
+    _normalizePersistableSheetAnswers(payload = {}) {
+        const details = payload.correctionDetails || {};
+        const questionResults = Array.isArray(details.questionResults)
+            ? details.questionResults
+            : Array.isArray(payload.questionResults)
+                ? payload.questionResults
+                : null;
+        const sourceAnswers = questionResults || (Array.isArray(payload.answers) ? payload.answers : []);
+
+        return sourceAnswers
+            .map((answer) => {
+                const questionNumber = Number(
+                    answer.questionNumber ?? answer.question ?? answer.number ?? 0
+                );
+                if (!Number.isFinite(questionNumber) || questionNumber <= 0) {
+                    return null;
+                }
+
+                const rawStudentAnswer =
+                    answer.studentAnswer ??
+                    answer.markedOption ??
+                    answer.studentMarked ??
+                    answer.marked ??
+                    answer.selected ??
+                    answer.answer ??
+                    null;
+                const omrStatus = String(answer.omrStatus || answer.status || '').toLowerCase();
+                const markedOption = [
+                    'A',
+                    'B',
+                    'C',
+                    'D',
+                    'E',
+                    'MULTIPLE',
+                    'UNCERTAIN',
+                    'NOT_DETECTED',
+                ].includes(rawStudentAnswer)
+                    ? rawStudentAnswer
+                    : null;
+
+                let status = 'ok';
+                if (['blank', 'multiple', 'ambiguous', 'uncertain', 'not_detected'].includes(omrStatus)) {
+                    status = omrStatus;
+                } else if (answer.status === 'blank' || rawStudentAnswer === null) {
+                    status = 'blank';
+                } else if (answer.status === 'multiple' || rawStudentAnswer === 'MULTIPLE') {
+                    status = 'multiple';
+                } else if (answer.status === 'uncertain' || rawStudentAnswer === 'UNCERTAIN') {
+                    status = 'uncertain';
+                } else if (answer.status === 'not_detected' || rawStudentAnswer === 'NOT_DETECTED') {
+                    status = 'not_detected';
+                }
+
+                return {
+                    question_id: answer.question_id || answer.questionId || undefined,
+                    questionNumber,
+                    markedOption,
+                    correctAnswer: answer.correctAnswer ?? null,
+                    status,
+                    omrStatus: answer.omrStatus || null,
+                    markedAlternatives: Array.isArray(answer.markedAlternatives)
+                        ? answer.markedAlternatives
+                        : [],
+                    confidence: answer.confidence ?? null,
+                    isCorrect: Boolean(answer.isCorrect),
+                    earnedPoints: this._finiteNumber(answer.earnedPoints ?? answer.points) ?? 0,
+                    maxPoints: this._finiteNumber(answer.maxPoints) ?? null,
+                };
+            })
+            .filter(Boolean);
+    }
+
     async scanExamSheet(payload, schoolId) {
-        const { qrCodeUuid, grade, objectiveGrade, answers } = payload;
+        const {
+            qrCodeUuid,
+            grade,
+            objectiveGrade,
+            answers,
+            maxGrade,
+            totalQuestions,
+            correctCount,
+            wrongCount,
+            blankCount,
+            multipleCount,
+            uncertainCount,
+            notDetectedCount,
+            correctionDetails,
+        } = payload;
+        const normalizedAnswers = this._normalizePersistableSheetAnswers(payload);
+
+        const updateData = {
+            grade,
+            objectiveGrade,
+            answers: normalizedAnswers.length ? normalizedAnswers : answers,
+            status: 'SCANNED',
+        };
+
+        const optionalFields = {
+            maxGrade,
+            totalQuestions,
+            correctCount,
+            wrongCount,
+            blankCount,
+            multipleCount,
+            uncertainCount,
+            notDetectedCount,
+            correctionDetails,
+        };
+
+        for (const [key, value] of Object.entries(optionalFields)) {
+            if (value !== undefined) {
+                updateData[key] = value;
+            }
+        }
 
         const sheet = await ExamSheet.findOneAndUpdate(
             { qr_code_uuid: qrCodeUuid, school_id: schoolId },
-            { grade, objectiveGrade, answers, status: 'SCANNED' },
+            updateData,
             { new: true }
         );
 

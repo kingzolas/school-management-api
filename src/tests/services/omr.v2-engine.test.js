@@ -38,6 +38,167 @@ function parseLastJson(stdout) {
   return JSON.parse(line);
 }
 
+function buildExamFixture(totalQuestions, totalValue = 10) {
+  return {
+    correctionType: 'BUBBLE_SHEET',
+    totalValue,
+    questions: Array.from({ length: totalQuestions }, (_, index) => ({
+      _id: `question-${index + 1}`,
+      type: 'OBJECTIVE',
+      text: `Question ${index + 1}`,
+      correctAnswer: 'A',
+      weight: 1,
+    })),
+  };
+}
+
+function buildOmrAnswers(totalQuestions, correctCount) {
+  return Array.from({ length: totalQuestions }, (_, index) => ({
+    question: index + 1,
+    marked: index < correctCount ? 'A' : 'B',
+    status: 'ok',
+    debugStatus: 'marked',
+    confidence: 0.95,
+  }));
+}
+
+test('OMR v2 correction normalizes score to exam scale instead of returning correct count', () => {
+  const cases = [
+    { questions: 5, correct: 5, expectedGrade: 10 },
+    { questions: 5, correct: 4, expectedGrade: 8 },
+    { questions: 10, correct: 10, expectedGrade: 10 },
+    { questions: 10, correct: 7, expectedGrade: 7 },
+    { questions: 15, correct: 15, expectedGrade: 10 },
+    { questions: 15, correct: 12, expectedGrade: 8 },
+    { questions: 15, correct: 9, expectedGrade: 6 },
+    { questions: 40, correct: 40, expectedGrade: 10 },
+    { questions: 40, correct: 20, expectedGrade: 5 },
+  ];
+
+  for (const item of cases) {
+    const correction = examService.buildBubbleSheetCorrection(
+      buildExamFixture(item.questions),
+      buildOmrAnswers(item.questions, item.correct)
+    );
+
+    assert.equal(correction.correctCount, item.correct);
+    assert.equal(correction.totalQuestions, item.questions);
+    assert.equal(correction.grade, item.expectedGrade);
+    assert.equal(correction.objectiveGrade, item.expectedGrade);
+    assert.ok(correction.grade <= 10, `grade above 10 for ${item.questions}/${item.correct}`);
+  }
+});
+
+test('OMR v2 correction exposes question-level pedagogical details and counters', () => {
+  const exam = buildExamFixture(4);
+  const correction = examService.buildBubbleSheetCorrection(exam, [
+    { question: 1, marked: 'A', status: 'ok', debugStatus: 'marked', confidence: 0.94 },
+    { question: 2, marked: 'B', status: 'ok', debugStatus: 'marked', confidence: 0.91 },
+    { question: 3, marked: null, status: 'blank', debugStatus: 'blank', confidence: 0.88 },
+    {
+      question: 4,
+      marked: null,
+      status: 'multiple',
+      debugStatus: 'multiple',
+      markedAlternatives: ['A', 'C'],
+      confidence: 0.76,
+    },
+  ]);
+
+  assert.equal(correction.grade, 2.5);
+  assert.equal(correction.objectiveGrade, 2.5);
+  assert.equal(correction.correctCount, 1);
+  assert.equal(correction.wrongCount, 1);
+  assert.equal(correction.blankCount, 1);
+  assert.equal(correction.multipleCount, 1);
+  assert.equal(correction.uncertainCount, 0);
+  assert.equal(correction.notDetectedCount, 0);
+  assert.deepEqual(correction.studentAnswers, {
+    1: 'A',
+    2: 'B',
+    3: null,
+    4: 'MULTIPLE',
+  });
+  assert.deepEqual(correction.answerKey, {
+    1: 'A',
+    2: 'A',
+    3: 'A',
+    4: 'A',
+  });
+  assert.equal(correction.questionResults.length, 4);
+  assert.deepEqual(
+    correction.questionResults.map((question) => question.status),
+    ['correct', 'wrong', 'blank', 'multiple']
+  );
+  assert.equal(correction.correctionDetailsPayload.questionResults.length, 4);
+  assert.equal(
+    correction.questionResults.filter((question) => question.status === 'correct').length,
+    correction.correctCount
+  );
+  assert.equal(
+    correction.questionResults.filter((question) => question.status === 'wrong').length,
+    correction.wrongCount
+  );
+  assert.equal(
+    correction.questionResults.filter((question) => question.status === 'blank').length,
+    correction.blankCount
+  );
+  assert.equal(
+    correction.questionResults.filter((question) => question.status === 'multiple').length,
+    correction.multipleCount
+  );
+});
+
+test('OMR confirmation payload can persist answers from correctionDetails questionResults', () => {
+  const normalized = examService._normalizePersistableSheetAnswers({
+    correctionDetails: {
+      questionResults: [
+        {
+          questionNumber: 1,
+          correctAnswer: 'B',
+          studentAnswer: 'B',
+          isCorrect: true,
+          status: 'correct',
+          omrStatus: 'marked',
+          confidence: 0.94,
+          points: 2.5,
+          maxPoints: 2.5,
+        },
+        {
+          questionNumber: 2,
+          correctAnswer: 'C',
+          studentAnswer: 'MULTIPLE',
+          isCorrect: false,
+          status: 'multiple',
+          omrStatus: 'multiple',
+          markedAlternatives: ['A', 'C'],
+          confidence: 0.76,
+          points: 0,
+          maxPoints: 2.5,
+        },
+      ],
+    },
+  });
+
+  assert.equal(normalized.length, 2);
+  assert.deepEqual(normalized[0], {
+    question_id: undefined,
+    questionNumber: 1,
+    markedOption: 'B',
+    correctAnswer: 'B',
+    status: 'ok',
+    omrStatus: 'marked',
+    markedAlternatives: [],
+    confidence: 0.94,
+    isCorrect: true,
+    earnedPoints: 2.5,
+    maxPoints: 2.5,
+  });
+  assert.equal(normalized[1].markedOption, 'MULTIPLE');
+  assert.equal(normalized[1].status, 'multiple');
+  assert.deepEqual(normalized[1].markedAlternatives, ['A', 'C']);
+});
+
 test('OMR v2 exam layout supports dynamic question counts up to 40', () => {
   for (const count of [1, 5, 10, 20, 30, 40]) {
     const layout = examService._buildBubbleSheetOmrLayout({ objectiveQuestionsCount: count });

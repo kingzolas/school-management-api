@@ -6,7 +6,7 @@ const studentAnswerSchema = new Schema({
     questionNumber: { type: Number, required: true },
     markedOption: {
         type: String,
-        enum: ['A', 'B', 'C', 'D', 'E', null],
+        enum: ['A', 'B', 'C', 'D', 'E', 'MULTIPLE', 'UNCERTAIN', 'NOT_DETECTED', null],
         default: null
     },
     correctAnswer: {
@@ -16,9 +16,13 @@ const studentAnswerSchema = new Schema({
     },
     status: {
         type: String,
-        enum: ['ok', 'blank', 'multiple', 'ambiguous'],
+        enum: ['ok', 'blank', 'multiple', 'ambiguous', 'uncertain', 'not_detected'],
         default: 'ok'
     },
+    omrStatus: { type: String, default: null },
+    markedAlternatives: [{ type: String, enum: ['A', 'B', 'C', 'D', 'E'] }],
+    earnedPoints: { type: Number, default: 0 },
+    maxPoints: { type: Number, default: null },
     confidence: { type: Number, default: null },
     isCorrect: { type: Boolean, default: false }
 }, { _id: false });
@@ -34,8 +38,17 @@ const examSheetSchema = new Schema({
     grade: { type: Number, default: null },
     objectiveGrade: { type: Number, default: null },
     dissertativeGrade: { type: Number, default: null },
+    maxGrade: { type: Number, default: null },
+    totalQuestions: { type: Number, default: null },
+    correctCount: { type: Number, default: null },
+    wrongCount: { type: Number, default: null },
+    blankCount: { type: Number, default: null },
+    multipleCount: { type: Number, default: null },
+    uncertainCount: { type: Number, default: null },
+    notDetectedCount: { type: Number, default: null },
 
     answers: [studentAnswerSchema],
+    correctionDetails: { type: Schema.Types.Mixed, default: null },
 
     status: {
         type: String,
