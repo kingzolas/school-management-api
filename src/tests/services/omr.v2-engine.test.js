@@ -64,29 +64,49 @@ function buildOmrAnswers(totalQuestions, correctCount) {
 
 test('OMR v2 correction normalizes score to exam scale instead of returning correct count', () => {
   const cases = [
-    { questions: 5, correct: 5, expectedGrade: 10 },
-    { questions: 5, correct: 4, expectedGrade: 8 },
-    { questions: 10, correct: 10, expectedGrade: 10 },
-    { questions: 10, correct: 7, expectedGrade: 7 },
-    { questions: 15, correct: 15, expectedGrade: 10 },
-    { questions: 15, correct: 12, expectedGrade: 8 },
-    { questions: 15, correct: 9, expectedGrade: 6 },
-    { questions: 40, correct: 40, expectedGrade: 10 },
-    { questions: 40, correct: 20, expectedGrade: 5 },
+    { questions: 5, correct: 5, totalValue: 10, expectedGrade: 10 },
+    { questions: 5, correct: 4, totalValue: 10, expectedGrade: 8 },
+    { questions: 10, correct: 10, totalValue: 10, expectedGrade: 10 },
+    { questions: 10, correct: 7, totalValue: 10, expectedGrade: 7 },
+    { questions: 15, correct: 15, totalValue: 15, expectedGrade: 15 },
+    { questions: 15, correct: 12, totalValue: 15, expectedGrade: 12 },
+    { questions: 15, correct: 15, totalValue: 10, expectedGrade: 10 },
+    { questions: 15, correct: 9, totalValue: 10, expectedGrade: 6 },
+    { questions: 40, correct: 40, totalValue: 20, expectedGrade: 20 },
+    { questions: 40, correct: 20, totalValue: 20, expectedGrade: 10 },
   ];
 
   for (const item of cases) {
     const correction = examService.buildBubbleSheetCorrection(
-      buildExamFixture(item.questions),
+      buildExamFixture(item.questions, item.totalValue),
       buildOmrAnswers(item.questions, item.correct)
     );
 
     assert.equal(correction.correctCount, item.correct);
     assert.equal(correction.totalQuestions, item.questions);
+    assert.equal(correction.maxGrade, item.totalValue);
     assert.equal(correction.grade, item.expectedGrade);
     assert.equal(correction.objectiveGrade, item.expectedGrade);
-    assert.ok(correction.grade <= 10, `grade above 10 for ${item.questions}/${item.correct}`);
+    assert.ok(
+      correction.grade <= item.totalValue,
+      `grade above max grade for ${item.questions}/${item.correct}`
+    );
   }
+});
+
+test('OMR confirmation validates grades against the exam max score', () => {
+  const accepted = examService._validateGradeWithinMax({
+    grade: 15,
+    objectiveGrade: 15,
+    maxGrade: 15,
+  });
+
+  assert.deepEqual(accepted, { grade: 15, objectiveGrade: 15, maxGrade: 15 });
+
+  assert.throws(
+    () => examService._validateGradeWithinMax({ grade: 16, objectiveGrade: 16, maxGrade: 15 }),
+    /entre 0 e 15/
+  );
 });
 
 test('OMR v2 correction exposes question-level pedagogical details and counters', () => {
@@ -201,17 +221,20 @@ test('OMR confirmation payload can persist answers from correctionDetails questi
 
 test('OMR correction keeps legacy details list and structured summary separate', () => {
   const correction = examService.buildBubbleSheetCorrection(
-    buildExamFixture(15),
+    buildExamFixture(15, 15),
     buildOmrAnswers(15, 15)
   );
 
-  assert.equal(correction.grade, 10);
-  assert.equal(correction.objectiveGrade, 10);
+  assert.equal(correction.grade, 15);
+  assert.equal(correction.objectiveGrade, 15);
+  assert.equal(correction.maxGrade, 15);
   assert.equal(correction.correctCount, 15);
   assert.equal(correction.totalQuestions, 15);
   assert.ok(Array.isArray(correction.correctionDetails));
   assert.equal(correction.correctionDetails.length, 15);
   assert.equal(typeof correction.correctionDetailsPayload, 'object');
+  assert.equal(correction.correctionDetailsPayload.maxGrade, 15);
+  assert.equal(correction.correctionDetailsPayload.grade, 15);
   assert.equal(correction.correctionDetailsPayload.correctCount, 15);
   assert.equal(correction.correctionDetailsPayload.questionResults.length, 15);
 });

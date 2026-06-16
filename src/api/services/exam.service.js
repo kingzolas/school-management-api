@@ -431,10 +431,64 @@ class ExamService {
         return Math.round(number * 10000) / 10000;
     }
 
+    _resolveExamMaxGrade(exam, fallback = null) {
+        const examTotalValue = this._finiteNumber(exam?.totalValue);
+        if (examTotalValue !== null && examTotalValue > 0) {
+            return examTotalValue;
+        }
+
+        const questions = Array.isArray(exam?.questions) ? exam.questions : [];
+        const objectiveQuestions = questions.filter((question) => question?.type === 'OBJECTIVE');
+        const sourceQuestions = objectiveQuestions.length ? objectiveQuestions : questions;
+        const weightedTotal = sourceQuestions.reduce((sum, question) => {
+            const weight = this._finiteNumber(question?.weight);
+            return sum + (weight !== null && weight > 0 ? weight : 1);
+        }, 0);
+
+        if (weightedTotal > 0) {
+            return this._roundGrade(weightedTotal);
+        }
+
+        const fallbackValue = this._finiteNumber(fallback);
+        if (fallbackValue !== null && fallbackValue > 0) {
+            return fallbackValue;
+        }
+
+        return 10;
+    }
+
+    _validateGradeWithinMax({ grade, objectiveGrade = null, maxGrade }) {
+        const resolvedMaxGrade = this._finiteNumber(maxGrade);
+        const normalizedGrade = this._finiteNumber(grade);
+        const normalizedObjectiveGrade = this._finiteNumber(objectiveGrade);
+
+        if (resolvedMaxGrade === null || resolvedMaxGrade <= 0) {
+            throw new Error('Valor maximo da prova invalido.');
+        }
+
+        if (normalizedGrade === null || normalizedGrade < 0 || normalizedGrade > resolvedMaxGrade) {
+            throw new Error(`Digite uma nota valida entre 0 e ${this._roundGrade(resolvedMaxGrade)}.`);
+        }
+
+        if (
+            normalizedObjectiveGrade !== null &&
+            (normalizedObjectiveGrade < 0 || normalizedObjectiveGrade > resolvedMaxGrade)
+        ) {
+            throw new Error(`Digite uma nota objetiva valida entre 0 e ${this._roundGrade(resolvedMaxGrade)}.`);
+        }
+
+        return {
+            grade: this._roundGrade(normalizedGrade),
+            objectiveGrade:
+                normalizedObjectiveGrade === null ? null : this._roundGrade(normalizedObjectiveGrade),
+            maxGrade: this._roundGrade(resolvedMaxGrade),
+        };
+    }
+
     buildBubbleSheetCorrection(exam, omrAnswers) {
         const objectiveQuestions = this._ensureBubbleSheetSupport(exam);
 
-        const maxGrade = this._finiteNumber(exam?.totalValue) ?? 10;
+        const maxGrade = this._resolveExamMaxGrade(exam);
         const totalQuestions = objectiveQuestions.length;
         const totalPossiblePoints = objectiveQuestions.reduce((sum, question) => {
             const weight = this._finiteNumber(question?.weight);
@@ -561,6 +615,9 @@ class ExamService {
         const objectiveGrade = this._roundGrade(rawEarnedPoints * pointsPerRawPoint);
         const totalGrade = objectiveGrade;
         const detailsPayload = {
+            maxGrade,
+            grade: totalGrade,
+            objectiveGrade,
             totalQuestions,
             correctCount,
             wrongCount,
@@ -621,6 +678,9 @@ class ExamService {
             correctionType: exam.correctionType,
             examVersion: sheet.examVersion || 'STANDARD',
             examId: exam._id,
+            maxGrade: this._resolveExamMaxGrade(exam),
+            totalValue: this._resolveExamMaxGrade(exam),
+            maxScore: this._resolveExamMaxGrade(exam),
             hasOmrLayout: !!omrLayout,
             totalQuestions: omrLayout?.totalQuestions ?? objectiveQuestionsCount,
             totalOptionsPerQuestion: omrLayout?.totalOptionsPerQuestion ?? null,
@@ -1366,15 +1426,42 @@ class ExamService {
             ? (correctionSummary || correctionDetailsPayload || null)
             : (correctionDetails || correctionSummary || correctionDetailsPayload || null);
 
-        const updateData = {
+        const existingSheet = await ExamSheet.findOne({ qr_code_uuid: qrCodeUuid, school_id: schoolId });
+
+        if (!existingSheet) {
+            throw new Error('Folha da prova nao encontrada.');
+        }
+
+        const confirmationExam = await Exam.findOne({ _id: existingSheet.exam_id, school_id: schoolId })
+            .select('totalValue questions')
+            .lean();
+        const resolvedMaxGrade = this._resolveExamMaxGrade(
+            confirmationExam,
+            maxGrade ?? structuredCorrectionDetails?.maxGrade
+        );
+        const validatedGrades = this._validateGradeWithinMax({
             grade,
             objectiveGrade,
+            maxGrade: resolvedMaxGrade,
+        });
+
+        console.log('[OMR CONFIRM RECEIVED]', {
+            qrCodeUuid,
+            grade: validatedGrades.grade,
+            objectiveGrade: validatedGrades.objectiveGrade,
+            maxGrade: validatedGrades.maxGrade,
+            valid: true,
+        });
+
+        const updateData = {
+            grade: validatedGrades.grade,
+            objectiveGrade: validatedGrades.objectiveGrade ?? validatedGrades.grade,
             answers: normalizedAnswers.length ? normalizedAnswers : answers,
             status: 'SCANNED',
         };
 
         const optionalFields = {
-            maxGrade,
+            maxGrade: validatedGrades.maxGrade,
             totalQuestions: totalQuestions ?? structuredCorrectionDetails?.totalQuestions,
             correctCount: correctCount ?? structuredCorrectionDetails?.correctCount,
             wrongCount: wrongCount ?? structuredCorrectionDetails?.wrongCount,
@@ -1392,7 +1479,7 @@ class ExamService {
         }
 
         const sheet = await ExamSheet.findOneAndUpdate(
-            { qr_code_uuid: qrCodeUuid, school_id: schoolId },
+            { _id: existingSheet._id, school_id: schoolId },
             updateData,
             { new: true }
         );
@@ -1462,7 +1549,7 @@ class ExamService {
                     studentId: sheet.student_id,
                 },
                 {
-                    value: grade,
+                    value: validatedGrades.grade,
                     dateRecorded: new Date(),
                 },
                 { upsert: true }

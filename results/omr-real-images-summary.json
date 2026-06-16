@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-16T19:51:44.284Z",
+  "generatedAt": "2026-06-16T22:58:29.417Z",
   "strict": true,
   "sourceDirs": [
     "C:\\Users\\User\\Downloads\\Teste Gab OMR",
@@ -67,7 +67,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\01-Teste-Gab-OMR-10-32-34\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 380.23,
+        "processingMs": 637.77,
         "answers": {
           "1": "B",
           "2": "B",
@@ -125,7 +125,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\01-Teste-Gab-OMR-10-32-34\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1427.55,
+        "processingMs": 1725.77,
         "answers": {
           "1": "B",
           "2": "B",
@@ -197,7 +197,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\02-Teste-Gab-OMR-10-32-46\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 626.13,
+        "processingMs": 696.85,
         "answers": {
           "1": "C",
           "2": "UNCERTAIN",
@@ -255,7 +255,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\02-Teste-Gab-OMR-10-32-46\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2349.36,
+        "processingMs": 2610.42,
         "answers": {
           "1": "C",
           "2": "E",
@@ -338,7 +338,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\03-Teste-Gab-OMR-10-33-15\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 597.41,
+        "processingMs": 1292.64,
         "answers": {
           "1": "B",
           "2": "B",
@@ -396,7 +396,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\03-Teste-Gab-OMR-10-33-15\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 3023.53,
+        "processingMs": 4434.96,
         "answers": {
           "1": "B",
           "2": "B",
@@ -468,7 +468,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\04-Teste-Gab-OMR-10-33-28\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 704.99,
+        "processingMs": 1574.12,
         "answers": {
           "1": "B",
           "2": "B",
@@ -526,7 +526,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\04-Teste-Gab-OMR-10-33-28\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2663.04,
+        "processingMs": 3544.79,
         "answers": {
           "1": "B",
           "2": "B",
@@ -604,7 +604,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\05-Teste-Gab-OMR-10-33-41\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 773.32,
+        "processingMs": 843.24,
         "answers": {
           "1": "C",
           "2": null,
@@ -618,8 +618,8 @@
           "10": "UNCERTAIN"
         },
         "correction": {
-          "grade": 1,
-          "objectiveGrade": 1,
+          "grade": 0,
+          "objectiveGrade": 0,
           "correctionDetailsCount": 10,
           "persistableAnswersCount": 10
         }
@@ -662,7 +662,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\05-Teste-Gab-OMR-10-33-41\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1933.76,
+        "processingMs": 2522.84,
         "answers": {
           "1": "C",
           "2": "E",
@@ -755,7 +755,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\06-Teste-Gab-OMR-10-34-02\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 622.64,
+        "processingMs": 1135.74,
         "answers": {
           "1": "B",
           "2": null,
@@ -813,7 +813,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\06-Teste-Gab-OMR-10-34-02\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2105.5,
+        "processingMs": 2796.83,
         "answers": {
           "1": "B",
           "2": null,
@@ -906,7 +906,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\07-Teste-Gab-OMR-10-34-11\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 658.43,
+        "processingMs": 800.05,
         "answers": {
           "1": "D",
           "2": "UNCERTAIN",
@@ -964,7 +964,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\07-Teste-Gab-OMR-10-34-11\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2138.54,
+        "processingMs": 2661.35,
         "answers": {
           "1": "D",
           "2": "UNCERTAIN",
@@ -1042,7 +1042,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\08-Teste-Gab-OMR-10-34-47\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 626.02,
+        "processingMs": 703.49,
         "answers": {
           "1": "C",
           "2": "D",
@@ -1100,7 +1100,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\08-Teste-Gab-OMR-10-34-47\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2547.63,
+        "processingMs": 2653.65,
         "answers": {
           "1": "C",
           "2": "D",
@@ -1178,7 +1178,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\09-Teste-Gab-OMR-10-35-17\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 670.46,
+        "processingMs": 1007.17,
         "answers": {
           "1": "UNCERTAIN",
           "2": "UNCERTAIN",
@@ -1192,8 +1192,8 @@
           "10": "D"
         },
         "correction": {
-          "grade": 3,
-          "objectiveGrade": 3,
+          "grade": 2,
+          "objectiveGrade": 2,
           "correctionDetailsCount": 10,
           "persistableAnswersCount": 10
         }
@@ -1236,7 +1236,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\09-Teste-Gab-OMR-10-35-17\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2633.96,
+        "processingMs": 2537.4,
         "answers": {
           "1": "A",
           "2": "D",
@@ -1322,7 +1322,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\10-Teste-Gab-OMR-14-53-15\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 563.63,
+        "processingMs": 796.07,
         "answers": {
           "1": null,
           "2": null,
@@ -1370,7 +1370,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\10-Teste-Gab-OMR-14-53-15\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2017.39,
+        "processingMs": 2405.41,
         "answers": {
           "1": "C",
           "2": "B",
@@ -1466,7 +1466,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\11-Teste-Gab-OMR-14-53-16-1\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 642.6,
+        "processingMs": 790.35,
         "answers": {
           "1": null,
           "2": null,
@@ -1514,7 +1514,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\11-Teste-Gab-OMR-14-53-16-1\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2123.55,
+        "processingMs": 2831.84,
         "answers": {
           "1": "C",
           "2": "B",
@@ -1609,7 +1609,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\12-Teste-Gab-OMR-14-53-16-2\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 509.46,
+        "processingMs": 843.05,
         "answers": {
           "1": null,
           "2": null,
@@ -1657,7 +1657,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\12-Teste-Gab-OMR-14-53-16-2\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2270.04,
+        "processingMs": 2830.37,
         "answers": {
           "1": "A",
           "2": "B",
@@ -1752,7 +1752,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\13-Teste-Gab-OMR-14-53-16-3\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 744.49,
+        "processingMs": 825.53,
         "answers": {
           "1": "C",
           "2": "C",
@@ -1810,7 +1810,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\13-Teste-Gab-OMR-14-53-16-3\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1907.31,
+        "processingMs": 2412.56,
         "answers": {
           "1": "C",
           "2": "C",
@@ -1884,7 +1884,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\14-Teste-Gab-OMR-14-53-16-4\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 608.07,
+        "processingMs": 659.95,
         "answers": {
           "1": "C",
           "2": "B",
@@ -1942,7 +1942,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\14-Teste-Gab-OMR-14-53-16-4\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1992.78,
+        "processingMs": 2679.16,
         "answers": {
           "1": "C",
           "2": "B",
@@ -2017,7 +2017,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\15-Teste-Gab-OMR-14-53-16\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 635.77,
+        "processingMs": 1035.25,
         "answers": {
           "1": null,
           "2": null,
@@ -2065,7 +2065,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\15-Teste-Gab-OMR-14-53-16\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2133.09,
+        "processingMs": 2518.14,
         "answers": {
           "1": "C",
           "2": "B",
@@ -2160,7 +2160,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\16-Teste-Gab-OMR-14-53-17\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 599.91,
+        "processingMs": 899.58,
         "answers": {
           "1": "C",
           "2": "B",
@@ -2218,7 +2218,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\16-Teste-Gab-OMR-14-53-17\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2291.06,
+        "processingMs": 2636.05,
         "answers": {
           "1": "C",
           "2": "B",
@@ -2293,7 +2293,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\17-Teste-OMR-2-14-53-15\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 544.87,
+        "processingMs": 843.98,
         "answers": {
           "1": null,
           "2": null,
@@ -2341,7 +2341,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\17-Teste-OMR-2-14-53-15\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1988.22,
+        "processingMs": 2625.56,
         "answers": {
           "1": "C",
           "2": "B",
@@ -2437,7 +2437,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\18-Teste-OMR-2-14-53-16-1\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 557.71,
+        "processingMs": 746.49,
         "answers": {
           "1": null,
           "2": null,
@@ -2485,7 +2485,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\18-Teste-OMR-2-14-53-16-1\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2023.82,
+        "processingMs": 2568.53,
         "answers": {
           "1": "C",
           "2": "B",
@@ -2580,7 +2580,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\19-Teste-OMR-2-14-53-16-2\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 477.14,
+        "processingMs": 786.11,
         "answers": {
           "1": null,
           "2": null,
@@ -2628,7 +2628,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\19-Teste-OMR-2-14-53-16-2\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2219.52,
+        "processingMs": 2980.64,
         "answers": {
           "1": "A",
           "2": "B",
@@ -2723,7 +2723,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\20-Teste-OMR-2-14-53-16-3\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 583.33,
+        "processingMs": 1088.08,
         "answers": {
           "1": "C",
           "2": "C",
@@ -2781,7 +2781,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\20-Teste-OMR-2-14-53-16-3\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2006.92,
+        "processingMs": 2570.74,
         "answers": {
           "1": "C",
           "2": "C",
@@ -2855,7 +2855,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\21-Teste-OMR-2-14-53-16-4\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 606.28,
+        "processingMs": 949.06,
         "answers": {
           "1": "C",
           "2": "B",
@@ -2913,7 +2913,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\21-Teste-OMR-2-14-53-16-4\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1923.38,
+        "processingMs": 2739.21,
         "answers": {
           "1": "C",
           "2": "B",
@@ -2988,7 +2988,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\22-Teste-OMR-2-14-53-16\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 548.16,
+        "processingMs": 762.91,
         "answers": {
           "1": null,
           "2": null,
@@ -3036,7 +3036,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\22-Teste-OMR-2-14-53-16\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2009.39,
+        "processingMs": 2531.38,
         "answers": {
           "1": "C",
           "2": "B",
@@ -3131,7 +3131,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\23-Teste-OMR-2-14-53-17\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 769.25,
+        "processingMs": 836.8,
         "answers": {
           "1": "C",
           "2": "B",
@@ -3189,7 +3189,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\23-Teste-OMR-2-14-53-17\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 2114.22,
+        "processingMs": 2823.82,
         "answers": {
           "1": "C",
           "2": "B",
@@ -3263,7 +3263,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\24-Teste-OMR-2-16-00-38-1\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 532.87,
+        "processingMs": 745.83,
         "answers": {
           "1": "UNCERTAIN",
           "2": "D",
@@ -3277,8 +3277,8 @@
           "10": null
         },
         "correction": {
-          "grade": 2,
-          "objectiveGrade": 2,
+          "grade": 1,
+          "objectiveGrade": 1,
           "correctionDetailsCount": 10,
           "persistableAnswersCount": 10
         }
@@ -3321,7 +3321,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\24-Teste-OMR-2-16-00-38-1\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1646.61,
+        "processingMs": 1901.81,
         "answers": {
           "1": "UNCERTAIN",
           "2": "D",
@@ -3395,7 +3395,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\25-Teste-OMR-2-16-00-38-2\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 698.2,
+        "processingMs": 798.68,
         "answers": {
           "1": "UNCERTAIN",
           "2": "D",
@@ -3453,7 +3453,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\25-Teste-OMR-2-16-00-38-2\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1733.42,
+        "processingMs": 1986.06,
         "answers": {
           "1": "MULTIPLE",
           "2": "MULTIPLE",
@@ -3569,7 +3569,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\26-Teste-OMR-2-16-00-38-3\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 827.36,
+        "processingMs": 788.83,
         "answers": {
           "1": "MULTIPLE",
           "2": "D",
@@ -3627,7 +3627,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\26-Teste-OMR-2-16-00-38-3\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1574.68,
+        "processingMs": 1920.94,
         "answers": {
           "1": "MULTIPLE",
           "2": "D",
@@ -3713,7 +3713,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\27-Teste-OMR-2-16-00-38-4\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 424.24,
+        "processingMs": 734.31,
         "answers": {
           "1": null,
           "2": null,
@@ -3766,7 +3766,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\27-Teste-OMR-2-16-00-38-4\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1560.35,
+        "processingMs": 2180.29,
         "answers": {
           "1": "UNCERTAIN",
           "2": "MULTIPLE",
@@ -3882,7 +3882,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\28-Teste-OMR-2-16-00-38-5\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 473.42,
+        "processingMs": 707.9,
         "answers": {
           "1": "UNCERTAIN",
           "2": "MULTIPLE",
@@ -3896,8 +3896,8 @@
           "10": null
         },
         "correction": {
-          "grade": 2,
-          "objectiveGrade": 2,
+          "grade": 1,
+          "objectiveGrade": 1,
           "correctionDetailsCount": 10,
           "persistableAnswersCount": 10
         }
@@ -3940,7 +3940,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\28-Teste-OMR-2-16-00-38-5\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1762.86,
+        "processingMs": 1814.55,
         "answers": {
           "1": "UNCERTAIN",
           "2": "MULTIPLE",
@@ -4020,7 +4020,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\29-Teste-OMR-2-16-00-38-6\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 647.17,
+        "processingMs": 962,
         "answers": {
           "1": "UNCERTAIN",
           "2": "UNCERTAIN",
@@ -4034,8 +4034,8 @@
           "10": null
         },
         "correction": {
-          "grade": 1,
-          "objectiveGrade": 1,
+          "grade": 0,
+          "objectiveGrade": 0,
           "correctionDetailsCount": 10,
           "persistableAnswersCount": 10
         }
@@ -4078,7 +4078,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\29-Teste-OMR-2-16-00-38-6\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1774.24,
+        "processingMs": 2124.98,
         "answers": {
           "1": "MULTIPLE",
           "2": "UNCERTAIN",
@@ -4174,7 +4174,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\30-Teste-OMR-2-16-00-38-7\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 547.4,
+        "processingMs": 702.71,
         "answers": {
           "1": null,
           "2": null,
@@ -4227,7 +4227,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\30-Teste-OMR-2-16-00-38-7\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1240.75,
+        "processingMs": 1838.48,
         "answers": {
           "1": "UNCERTAIN",
           "2": "A",
@@ -4354,7 +4354,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\31-Teste-OMR-2-16-00-38\\legacy\\original-received.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 753.83,
+        "processingMs": 802.95,
         "answers": {
           "1": "UNCERTAIN",
           "2": "MULTIPLE",
@@ -4412,7 +4412,7 @@
           "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\debug\\omr-real-images\\31-Teste-OMR-2-16-00-38\\v2\\v2-threshold.jpg"
         ],
         "inputHashMatches": true,
-        "processingMs": 1714.33,
+        "processingMs": 2075.06,
         "answers": {
           "1": "UNCERTAIN",
           "2": "MULTIPLE",
