@@ -12,6 +12,7 @@ class BubbleReadResult:
     threshold_image: np.ndarray
     bubbles_overlay_image: np.ndarray
     questions_debug: List[Dict]
+    grid_calibration: Dict
 
 
 class AcademyHubBubbleReader:
@@ -37,6 +38,10 @@ class AcademyHubBubbleReader:
         debug = cv2.cvtColor(warped_machine_gray, cv2.COLOR_GRAY2BGR)
         bubbles_overlay = debug.copy()
         thresh = self._prepare_binary(warped_machine_gray)
+        calibrated_centers, grid_calibration = self._calibrate_grid(
+            gray=warped_machine_gray,
+            thresh=thresh,
+        )
 
         answers = []
         questions_debug = []
@@ -53,13 +58,29 @@ class AcademyHubBubbleReader:
                 if bubble is None:
                     detail = self._missing_bubble_detail(choice)
                 else:
+                    calibration_detail = calibrated_centers.get((q_number, choice), {})
+                    center = calibration_detail.get("center") or [bubble.x, bubble.y]
                     detail = self._measure_bubble(
                         thresh=thresh,
                         gray=warped_machine_gray,
-                        cx=bubble.x,
-                        cy=bubble.y,
+                        cx=center[0],
+                        cy=center[1],
                         radius=bubble.r,
                     )
+                    detail["theoreticalCenter"] = [
+                        round(float(bubble.x), 2),
+                        round(float(bubble.y), 2),
+                    ]
+                    detail["calibratedCenter"] = [
+                        round(float(center[0]), 2),
+                        round(float(center[1]), 2),
+                    ]
+                    detail["detectedCenter"] = calibration_detail.get("detectedCenter")
+                    detail["centerErrorPx"] = calibration_detail.get("centerErrorPx")
+                    detail["theoreticalOffsetPx"] = calibration_detail.get(
+                        "theoreticalOffsetPx"
+                    )
+                    detail["gridCalibrated"] = bool(calibration_detail.get("matched"))
 
                 option_details[choice] = detail
 
@@ -131,6 +152,7 @@ class AcademyHubBubbleReader:
                 debug=debug,
                 q_number=q_number,
                 question_bubbles=question_bubbles,
+                option_details=option_details,
                 scores=bubble_scores,
                 marked_idx=marked_idx,
                 status=status,
@@ -142,7 +164,232 @@ class AcademyHubBubbleReader:
             threshold_image=thresh,
             bubbles_overlay_image=bubbles_overlay,
             questions_debug=questions_debug,
+            grid_calibration=grid_calibration,
         )
+
+    def _calibrate_grid(
+        self,
+        gray: np.ndarray,
+        thresh: np.ndarray,
+    ):
+        expected_bubbles = list(self.layout.bubbles)
+        expected_count = len(expected_bubbles)
+        if not expected_bubbles:
+            return {}, {
+                "enabled": False,
+                "status": "not_available",
+                "detectedCircles": 0,
+                "expectedCircles": 0,
+            }
+
+        radius = float(np.median([bubble.r for bubble in expected_bubbles]))
+        detected_circles = self._detect_real_circles(gray=gray, radius=radius)
+        matches = self._match_detected_circles(
+            expected_bubbles=expected_bubbles,
+            detected_circles=detected_circles,
+            max_distance=max(8.0, radius * 0.9),
+        )
+
+        transform = self._fit_center_transform(matches)
+        calibrated = {}
+        residuals = []
+        theoretical_offsets = []
+
+        for bubble in expected_bubbles:
+            key = (bubble.question, bubble.option)
+            predicted = self._apply_center_transform(transform, bubble.x, bubble.y)
+            match = matches.get(key)
+
+            detail = {
+                "center": [float(predicted[0]), float(predicted[1])],
+                "matched": False,
+                "detectedCenter": None,
+                "centerErrorPx": None,
+                "theoreticalOffsetPx": None,
+            }
+
+            if match is not None:
+                detected = match["detected"]
+                residual = float(np.linalg.norm(np.array(predicted) - np.array(detected)))
+                theoretical_offset = float(
+                    np.linalg.norm(
+                        np.array([bubble.x, bubble.y], dtype=np.float32)
+                        - np.array(detected, dtype=np.float32)
+                    )
+                )
+                residuals.append(residual)
+                theoretical_offsets.append(theoretical_offset)
+                detail.update(
+                    {
+                        "matched": True,
+                        "detectedCenter": [
+                            round(float(detected[0]), 2),
+                            round(float(detected[1]), 2),
+                        ],
+                        "centerErrorPx": round(residual, 3),
+                        "theoreticalOffsetPx": round(theoretical_offset, 3),
+                    }
+                )
+
+            calibrated[key] = detail
+
+        row_drift = self._build_row_drift(expected_bubbles, matches)
+        mean_error = float(np.mean(residuals)) if residuals else None
+        max_error = float(np.max(residuals)) if residuals else None
+        matched_count = len(matches)
+        detection_ratio = matched_count / float(max(1, expected_count))
+
+        if detection_ratio < 0.60:
+            status = "insufficient"
+        elif (max_error is not None and max_error > 8.0) or (
+            mean_error is not None and mean_error > 4.0
+        ):
+            status = "review_required"
+        else:
+            status = "ok"
+
+        summary = {
+            "enabled": True,
+            "status": status,
+            "method": "hough-circles+affine-fit",
+            "detectedCircles": len(detected_circles),
+            "matchedCircles": matched_count,
+            "expectedCircles": expected_count,
+            "meanCenterErrorPx": round(mean_error, 3) if mean_error is not None else None,
+            "maxCenterErrorPx": round(max_error, 3) if max_error is not None else None,
+            "meanTheoreticalOffsetPx": (
+                round(float(np.mean(theoretical_offsets)), 3)
+                if theoretical_offsets
+                else None
+            ),
+            "maxTheoreticalOffsetPx": (
+                round(float(np.max(theoretical_offsets)), 3)
+                if theoretical_offsets
+                else None
+            ),
+            "rowDriftPx": row_drift,
+            "transform": {
+                "x": [round(float(value), 8) for value in transform[0]],
+                "y": [round(float(value), 8) for value in transform[1]],
+            },
+        }
+        return calibrated, summary
+
+    def _detect_real_circles(self, gray: np.ndarray, radius: float):
+        blurred = cv2.medianBlur(gray, 5)
+        min_radius = max(6, int(round(radius * 0.55)))
+        max_radius = max(min_radius + 2, int(round(radius * 1.35)))
+        min_dist = max(16, int(round(radius * 1.35)))
+
+        best = []
+        for accumulator_threshold in (34, 30, 26, 22, 18):
+            circles = cv2.HoughCircles(
+                blurred,
+                cv2.HOUGH_GRADIENT,
+                dp=1.2,
+                minDist=min_dist,
+                param1=80,
+                param2=accumulator_threshold,
+                minRadius=min_radius,
+                maxRadius=max_radius,
+            )
+            if circles is None:
+                continue
+            current = [
+                [float(circle[0]), float(circle[1]), float(circle[2])]
+                for circle in circles[0]
+            ]
+            if len(current) > len(best):
+                best = current
+            if len(current) >= len(self.layout.bubbles):
+                best = current
+                break
+        return best
+
+    def _match_detected_circles(
+        self,
+        expected_bubbles,
+        detected_circles,
+        max_distance: float,
+    ):
+        pairs = []
+        for bubble_index, bubble in enumerate(expected_bubbles):
+            for circle_index, circle in enumerate(detected_circles):
+                distance = float(np.hypot(circle[0] - bubble.x, circle[1] - bubble.y))
+                if distance <= max_distance:
+                    pairs.append((distance, bubble_index, circle_index))
+
+        pairs.sort(key=lambda item: item[0])
+        used_bubbles = set()
+        used_circles = set()
+        matches = {}
+        for distance, bubble_index, circle_index in pairs:
+            if bubble_index in used_bubbles or circle_index in used_circles:
+                continue
+            bubble = expected_bubbles[bubble_index]
+            circle = detected_circles[circle_index]
+            key = (bubble.question, bubble.option)
+            matches[key] = {
+                "distance": distance,
+                "detected": [float(circle[0]), float(circle[1])],
+                "radius": float(circle[2]),
+            }
+            used_bubbles.add(bubble_index)
+            used_circles.add(circle_index)
+        return matches
+
+    def _fit_center_transform(self, matches):
+        if len(matches) < 6:
+            return (
+                np.array([1.0, 0.0, 0.0], dtype=np.float32),
+                np.array([0.0, 1.0, 0.0], dtype=np.float32),
+            )
+
+        rows = []
+        target_x = []
+        target_y = []
+        for bubble in self.layout.bubbles:
+            match = matches.get((bubble.question, bubble.option))
+            if match is None:
+                continue
+            rows.append([float(bubble.x), float(bubble.y), 1.0])
+            target_x.append(float(match["detected"][0]))
+            target_y.append(float(match["detected"][1]))
+
+        design = np.array(rows, dtype=np.float32)
+        coeff_x, _, _, _ = np.linalg.lstsq(design, np.array(target_x, dtype=np.float32), rcond=None)
+        coeff_y, _, _, _ = np.linalg.lstsq(design, np.array(target_y, dtype=np.float32), rcond=None)
+        return coeff_x, coeff_y
+
+    @staticmethod
+    def _apply_center_transform(transform, x: float, y: float):
+        row = np.array([float(x), float(y), 1.0], dtype=np.float32)
+        return [float(np.dot(transform[0], row)), float(np.dot(transform[1], row))]
+
+    def _build_row_drift(self, expected_bubbles, matches):
+        rows = {}
+        for bubble in expected_bubbles:
+            match = matches.get((bubble.question, bubble.option))
+            if match is None:
+                continue
+            rows.setdefault(bubble.question, []).append(
+                float(
+                    np.linalg.norm(
+                        np.array([bubble.x, bubble.y], dtype=np.float32)
+                        - np.array(match["detected"], dtype=np.float32)
+                    )
+                )
+            )
+
+        if not rows:
+            return {"firstRow": None, "lastRow": None}
+
+        first_question = min(rows.keys())
+        last_question = max(rows.keys())
+        return {
+            "firstRow": round(float(np.mean(rows[first_question])), 3),
+            "lastRow": round(float(np.mean(rows[last_question])), 3),
+        }
 
     def _prepare_binary(self, gray: np.ndarray) -> np.ndarray:
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -152,7 +399,7 @@ class AcademyHubBubbleReader:
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV,
             31,
-            8,
+            4,
         )
 
     def _measure_bubble(
@@ -163,7 +410,7 @@ class AcademyHubBubbleReader:
         cy: float,
         radius: float,
     ) -> Dict:
-        measure_radius = int(round(radius * 0.72))
+        measure_radius = int(round(radius * 0.90))
         inner_radius = max(2, int(round(radius * 0.45)))
         cx = int(round(cx))
         cy = int(round(cy))
@@ -582,6 +829,7 @@ class AcademyHubBubbleReader:
         debug: np.ndarray,
         q_number: int,
         question_bubbles: Dict,
+        option_details: Dict[str, Dict],
         scores: List[float],
         marked_idx: Optional[int],
         status: str,
@@ -636,14 +884,23 @@ class AcademyHubBubbleReader:
             if bubble is None:
                 continue
 
-            cx = int(round(bubble.x))
-            bubble_cy = int(round(bubble.y))
+            detail = option_details.get(choice, {})
+            center = detail.get("center") or [bubble.x, bubble.y]
+            theoretical_center = detail.get("theoreticalCenter") or [bubble.x, bubble.y]
+            cx = int(round(center[0]))
+            bubble_cy = int(round(center[1]))
+            tx = int(round(theoretical_center[0]))
+            ty = int(round(theoretical_center[1]))
             radius = int(round(bubble.r))
 
             if marked_idx == idx and status in ("ok", "ambiguous"):
                 cv2.circle(debug, (cx, bubble_cy), radius, row_color, 3)
             else:
                 cv2.circle(debug, (cx, bubble_cy), radius, (255, 255, 0), 1)
+            cv2.circle(debug, (tx, ty), 3, (255, 0, 255), -1)
+            cv2.circle(debug, (cx, bubble_cy), 3, (0, 255, 0), -1)
+            if abs(cx - tx) > 1 or abs(bubble_cy - ty) > 1:
+                cv2.line(debug, (tx, ty), (cx, bubble_cy), (0, 255, 255), 1)
 
             cv2.putText(
                 debug,
@@ -672,6 +929,8 @@ class AcademyHubBubbleReader:
 
             x, y, w, h = [int(value) for value in bbox]
             cx, cy = [int(value) for value in center]
+            theoretical_center = detail.get("theoreticalCenter") or center
+            tx, ty = [int(round(value)) for value in theoretical_center]
             color = (0, 255, 255)
             if detail.get("outOfBounds"):
                 color = (0, 0, 255)
@@ -680,7 +939,10 @@ class AcademyHubBubbleReader:
             if inner_bbox:
                 ix, iy, iw, ih = [int(value) for value in inner_bbox]
                 cv2.rectangle(overlay, (ix, iy), (ix + iw, iy + ih), (0, 255, 0), 1)
-            cv2.circle(overlay, (cx, cy), 2, (255, 0, 255), -1)
+            cv2.circle(overlay, (tx, ty), 3, (255, 0, 255), -1)
+            cv2.circle(overlay, (cx, cy), 3, (0, 255, 0), -1)
+            if abs(cx - tx) > 1 or abs(cy - ty) > 1:
+                cv2.line(overlay, (tx, ty), (cx, cy), (0, 255, 255), 1)
             cv2.putText(
                 overlay,
                 f"{q_number}{choice}",

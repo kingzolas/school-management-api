@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-16T19:22:18.727Z",
+  "generatedAt": "2026-06-16T19:38:56.960Z",
   "expectedQuestions": 15,
   "passed": true,
   "answersEqual": true,
@@ -16,6 +16,34 @@
       "detectedQuestions": 15,
       "evaluatedQuestions": 15,
       "confidence": 0.66,
+      "gridCalibration": {
+        "enabled": true,
+        "status": "ok",
+        "method": "hough-circles+affine-fit",
+        "detectedCircles": 75,
+        "matchedCircles": 75,
+        "expectedCircles": 75,
+        "meanCenterErrorPx": 0.97,
+        "maxCenterErrorPx": 3.584,
+        "meanTheoreticalOffsetPx": 7.418,
+        "maxTheoreticalOffsetPx": 12.657,
+        "rowDriftPx": {
+          "firstRow": 4.035,
+          "lastRow": 10.6
+        },
+        "transform": {
+          "x": [
+            0.99043769,
+            0.00039371,
+            0.96734029
+          ],
+          "y": [
+            0.00026498,
+            0.98525488,
+            4.27652979
+          ]
+        }
+      },
       "answersMap": {
         "1": "B",
         "2": "C",
@@ -38,13 +66,13 @@
           "number": 1,
           "selected": "B",
           "status": "marked",
-          "confidence": 0.66,
+          "confidence": 1,
           "scores": {
             "A": {
               "final": 0
             },
             "B": {
-              "final": 0.24
+              "final": 0.5076
             },
             "C": {
               "final": 0
@@ -56,7 +84,7 @@
               "final": 0
             }
           },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
+          "warning": "inner fill above sure threshold and separated from second option"
         },
         {
           "number": 2,
@@ -110,6 +138,246 @@
           "number": 4,
           "selected": "C",
           "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0.6091
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 5,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.4467
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 6,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.3807
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 7,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.6142
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 8,
+          "selected": "C",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0.6853
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 9,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 0.7398,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.269
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 10,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.5431
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 11,
+          "selected": "E",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0.6294
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 12,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.4467
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 13,
+          "selected": "C",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0.4162
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 14,
+          "selected": "D",
+          "status": "marked",
           "confidence": 0.66,
           "scores": {
             "A": {
@@ -119,10 +387,10 @@
               "final": 0
             },
             "C": {
-              "final": 0.24
+              "final": 0
             },
             "D": {
-              "final": 0
+              "final": 0.24
             },
             "E": {
               "final": 0
@@ -131,7 +399,403 @@
           "warning": "weak mark contrast above sure threshold and separated from second option"
         },
         {
+          "number": 15,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 0.712,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.2589
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        }
+      ],
+      "warnings": []
+    },
+    "pencil": {
+      "label": "15 questions - pencil",
+      "dir": "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\omr_debug\\db39eb43-08fe-4967-9033-e5e8746210f7",
+      "apiPipelineDebugDir": "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\omr_debug\\15-real-pipeline-pencil",
+      "inputHashMatches": true,
+      "success": true,
+      "imageStatus": "accepted",
+      "requestedQuestions": 15,
+      "detectedQuestions": 15,
+      "evaluatedQuestions": 15,
+      "confidence": 0.66,
+      "gridCalibration": {
+        "enabled": true,
+        "status": "ok",
+        "method": "hough-circles+affine-fit",
+        "detectedCircles": 75,
+        "matchedCircles": 75,
+        "expectedCircles": 75,
+        "meanCenterErrorPx": 0.906,
+        "maxCenterErrorPx": 3.413,
+        "meanTheoreticalOffsetPx": 6.401,
+        "maxTheoreticalOffsetPx": 10.757,
+        "rowDriftPx": {
+          "firstRow": 4.075,
+          "lastRow": 9.785
+        },
+        "transform": {
+          "x": [
+            0.9924252,
+            0.00184743,
+            -0.86146438
+          ],
+          "y": [
+            0.00013249,
+            0.98908603,
+            2.68824291
+          ]
+        }
+      },
+      "answersMap": {
+        "1": "B",
+        "2": "C",
+        "3": "D",
+        "4": "C",
+        "5": "D",
+        "6": "D",
+        "7": "D",
+        "8": "C",
+        "9": "D",
+        "10": "D",
+        "11": "E",
+        "12": "D",
+        "13": "C",
+        "14": "D",
+        "15": "D"
+      },
+      "questions": [
+        {
+          "number": 1,
+          "selected": "B",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0.5533
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 2,
+          "selected": "C",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0.5076
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 3,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.4213
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 4,
+          "selected": "C",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0.4721
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
           "number": 5,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.4061
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 6,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 0.66,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.24
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "weak mark contrast above sure threshold and separated from second option"
+        },
+        {
+          "number": 7,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.6041
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 8,
+          "selected": "C",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0.5025
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 9,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.4416
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 10,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 0.9633,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.3503
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 11,
+          "selected": "E",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0.5381
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 12,
+          "selected": "D",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0
+            },
+            "D": {
+              "final": 0.4772
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 13,
+          "selected": "C",
+          "status": "marked",
+          "confidence": 1,
+          "scores": {
+            "A": {
+              "final": 0
+            },
+            "B": {
+              "final": 0
+            },
+            "C": {
+              "final": 0.4569
+            },
+            "D": {
+              "final": 0
+            },
+            "E": {
+              "final": 0
+            }
+          },
+          "warning": "inner fill above sure threshold and separated from second option"
+        },
+        {
+          "number": 14,
           "selected": "D",
           "status": "marked",
           "confidence": 1,
@@ -155,79 +819,7 @@
           "warning": "inner fill above sure threshold and separated from second option"
         },
         {
-          "number": 6,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 0.712,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.2589
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 7,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 0.8794,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.3198
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 8,
-          "selected": "C",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0.6954
-            },
-            "D": {
-              "final": 0
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 9,
+          "number": 15,
           "selected": "D",
           "status": "marked",
           "confidence": 1,
@@ -249,542 +841,6 @@
             }
           },
           "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 10,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.6548
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 11,
-          "selected": "E",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0.0102
-            },
-            "D": {
-              "final": 0.0203
-            },
-            "E": {
-              "final": 0.6954
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 12,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0.0152
-            },
-            "D": {
-              "final": 0.5482
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 13,
-          "selected": "C",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0.0051
-            },
-            "C": {
-              "final": 0.6802
-            },
-            "D": {
-              "final": 0.0406
-            },
-            "E": {
-              "final": 0.0102
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 14,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0.0051
-            },
-            "B": {
-              "final": 0.0508
-            },
-            "C": {
-              "final": 0.0914
-            },
-            "D": {
-              "final": 0.6954
-            },
-            "E": {
-              "final": 0.0609
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 15,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0.0152
-            },
-            "C": {
-              "final": 0.0457
-            },
-            "D": {
-              "final": 0.5838
-            },
-            "E": {
-              "final": 0.0203
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        }
-      ],
-      "warnings": []
-    },
-    "pencil": {
-      "label": "15 questions - pencil",
-      "dir": "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\omr_debug\\db39eb43-08fe-4967-9033-e5e8746210f7",
-      "apiPipelineDebugDir": "C:\\Users\\User\\Documents\\Projetos\\school-management-api\\omr_debug\\15-real-pipeline-pencil",
-      "inputHashMatches": true,
-      "success": true,
-      "imageStatus": "accepted",
-      "requestedQuestions": 15,
-      "detectedQuestions": 15,
-      "evaluatedQuestions": 15,
-      "confidence": 0.6498,
-      "answersMap": {
-        "1": "B",
-        "2": "C",
-        "3": "D",
-        "4": "C",
-        "5": "D",
-        "6": "D",
-        "7": "D",
-        "8": "C",
-        "9": "D",
-        "10": "D",
-        "11": "E",
-        "12": "D",
-        "13": "C",
-        "14": "D",
-        "15": "D"
-      },
-      "questions": [
-        {
-          "number": 1,
-          "selected": "B",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0.2044
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark and darkness are above row-relative thresholds"
-        },
-        {
-          "number": 2,
-          "selected": "C",
-          "status": "marked",
-          "confidence": 0.66,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0.24
-            },
-            "D": {
-              "final": 0
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
-        },
-        {
-          "number": 3,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.2024
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark and darkness are above row-relative thresholds"
-        },
-        {
-          "number": 4,
-          "selected": "C",
-          "status": "marked",
-          "confidence": 0.9911,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0.3604
-            },
-            "D": {
-              "final": 0
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 5,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 0.66,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.24
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
-        },
-        {
-          "number": 6,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 1,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.1759
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark and darkness are above row-relative thresholds"
-        },
-        {
-          "number": 7,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 0.66,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.24
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
-        },
-        {
-          "number": 8,
-          "selected": "C",
-          "status": "marked",
-          "confidence": 0.66,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0.24
-            },
-            "D": {
-              "final": 0
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
-        },
-        {
-          "number": 9,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 0.66,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.24
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
-        },
-        {
-          "number": 10,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 0.66,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.24
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
-        },
-        {
-          "number": 11,
-          "selected": "E",
-          "status": "marked",
-          "confidence": 0.9771,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0
-            },
-            "E": {
-              "final": 0.3553
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
-        },
-        {
-          "number": 12,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 0.66,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.24
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
-        },
-        {
-          "number": 13,
-          "selected": "C",
-          "status": "marked",
-          "confidence": 0.66,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0.24
-            },
-            "D": {
-              "final": 0
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
-        },
-        {
-          "number": 14,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 0.6498,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0.0051
-            },
-            "D": {
-              "final": 0.24
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "weak mark contrast above sure threshold and separated from second option"
-        },
-        {
-          "number": 15,
-          "selected": "D",
-          "status": "marked",
-          "confidence": 0.7398,
-          "scores": {
-            "A": {
-              "final": 0
-            },
-            "B": {
-              "final": 0
-            },
-            "C": {
-              "final": 0
-            },
-            "D": {
-              "final": 0.269
-            },
-            "E": {
-              "final": 0
-            }
-          },
-          "warning": "inner fill above sure threshold and separated from second option"
         }
       ],
       "warnings": []
@@ -795,7 +851,7 @@
       "question": 1,
       "pen": "B",
       "penStatus": "marked",
-      "penConfidence": 0.66,
+      "penConfidence": 1,
       "pencil": "B",
       "pencilStatus": "marked",
       "pencilConfidence": 1,
@@ -808,7 +864,7 @@
       "penConfidence": 0.66,
       "pencil": "C",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.66,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
@@ -825,10 +881,10 @@
       "question": 4,
       "pen": "C",
       "penStatus": "marked",
-      "penConfidence": 0.66,
+      "penConfidence": 1,
       "pencil": "C",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.9911,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
@@ -838,27 +894,27 @@
       "penConfidence": 1,
       "pencil": "D",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.66,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
       "question": 6,
       "pen": "D",
       "penStatus": "marked",
-      "penConfidence": 0.712,
+      "penConfidence": 1,
       "pencil": "D",
       "pencilStatus": "marked",
-      "pencilConfidence": 1,
+      "pencilConfidence": 0.66,
       "divergence": false
     },
     {
       "question": 7,
       "pen": "D",
       "penStatus": "marked",
-      "penConfidence": 0.8794,
+      "penConfidence": 1,
       "pencil": "D",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.66,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
@@ -868,17 +924,17 @@
       "penConfidence": 1,
       "pencil": "C",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.66,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
       "question": 9,
       "pen": "D",
       "penStatus": "marked",
-      "penConfidence": 1,
+      "penConfidence": 0.7398,
       "pencil": "D",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.66,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
@@ -888,7 +944,7 @@
       "penConfidence": 1,
       "pencil": "D",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.66,
+      "pencilConfidence": 0.9633,
       "divergence": false
     },
     {
@@ -898,7 +954,7 @@
       "penConfidence": 1,
       "pencil": "E",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.9771,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
@@ -908,7 +964,7 @@
       "penConfidence": 1,
       "pencil": "D",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.66,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
@@ -918,27 +974,27 @@
       "penConfidence": 1,
       "pencil": "C",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.66,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
       "question": 14,
       "pen": "D",
       "penStatus": "marked",
-      "penConfidence": 1,
+      "penConfidence": 0.66,
       "pencil": "D",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.6498,
+      "pencilConfidence": 1,
       "divergence": false
     },
     {
       "question": 15,
       "pen": "D",
       "penStatus": "marked",
-      "penConfidence": 1,
+      "penConfidence": 0.712,
       "pencil": "D",
       "pencilStatus": "marked",
-      "pencilConfidence": 0.7398,
+      "pencilConfidence": 1,
       "divergence": false
     }
   ]

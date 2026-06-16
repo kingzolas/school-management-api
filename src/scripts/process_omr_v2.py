@@ -300,6 +300,16 @@ def main():
             return
 
         image_status = result_image_status(normalized_answers, result.get("success", False))
+        grid_calibration = result.get("gridCalibration") or (
+            (result.get("debug") or {}).get("gridCalibration")
+        )
+        if (
+            image_status == "accepted"
+            and isinstance(grid_calibration, dict)
+            and grid_calibration.get("status") in ("review_required", "insufficient")
+        ):
+            image_status = "review_required"
+
         read_completed = is_completed_read(
             normalized_answers,
             result.get("success", False),
@@ -346,6 +356,7 @@ def main():
             "anchorsFound": result.get("anchorsFound"),
             "questionsCount": result.get("questionsCount"),
             "orientation": result.get("orientation") or (result.get("debug") or {}).get("orientation"),
+            "gridCalibration": grid_calibration,
             "captureHints": result.get("captureHints", []),
             "warnings": result.get("captureHints", []),
             "answersMap": build_answers_map(normalized_answers),

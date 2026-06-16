@@ -335,6 +335,7 @@ class AcademyHubOmrRunner:
             "questionsCount": layout.questions_count,
             "captureHints": detection.capture_hints,
             "answers": read_result.answers,
+            "gridCalibration": read_result.grid_calibration,
             "debug": AcademyHubOmrRunner._build_debug_payload(
                 debug_dir=debug_dir,
                 layout=layout,
@@ -632,6 +633,7 @@ class AcademyHubOmrRunner:
             "machineWidth": layout.machine_width,
             "machineHeight": layout.machine_height,
             "layoutDebug": layout.debug,
+            "gridCalibration": read_result.grid_calibration if read_result else None,
             "bubbleTemplate": bubble_template,
             "questions": read_result.questions_debug
             if read_result

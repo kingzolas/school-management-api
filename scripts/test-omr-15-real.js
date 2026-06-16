@@ -133,6 +133,19 @@ function validateResult(caseInfo, result) {
   if (!Array.isArray(result.questions) || result.questions.length !== EXPECTED_QUESTIONS) {
     errors.push(`${caseInfo.id}: questions.length=${result.questions?.length}`);
   }
+  const gridCalibration = result.gridCalibration || {};
+  if (gridCalibration.enabled !== true) {
+    errors.push(`${caseInfo.id}: gridCalibration nao habilitada`);
+  }
+  if (!['ok', 'review_required'].includes(gridCalibration.status)) {
+    errors.push(`${caseInfo.id}: gridCalibration.status=${gridCalibration.status}`);
+  }
+  if (Number(gridCalibration.expectedCircles) !== EXPECTED_QUESTIONS * 5) {
+    errors.push(`${caseInfo.id}: gridCalibration.expectedCircles=${gridCalibration.expectedCircles}`);
+  }
+  if (Number(gridCalibration.matchedCircles) !== EXPECTED_QUESTIONS * 5) {
+    errors.push(`${caseInfo.id}: gridCalibration.matchedCircles=${gridCalibration.matchedCircles}`);
+  }
 
   const badStatuses = (result.questions || []).filter((question) =>
     ['blank', 'multiple', 'not_detected'].includes(String(question.status || '').toLowerCase())
@@ -167,6 +180,15 @@ function writeReports(summary) {
     `- Answers equal: ${summary.answersEqual ? 'yes' : 'no'}`,
     `- Passed: ${summary.passed ? 'yes' : 'no'}`,
     '',
+    '## Grid Calibration',
+    '',
+    '| Caso | Status | Circulos detectados | Circulos casados | Erro medio px | Erro maximo px | Drift primeira linha | Drift ultima linha |',
+    '|---|---|---:|---:|---:|---:|---:|---:|',
+    ...['pen', 'pencil'].map((caseId) => {
+      const calibration = summary.cases[caseId].gridCalibration || {};
+      return `| ${caseId} | ${calibration.status ?? 'n/a'} | ${calibration.detectedCircles ?? 'n/a'} | ${calibration.matchedCircles ?? 'n/a'} / ${calibration.expectedCircles ?? 'n/a'} | ${calibration.meanCenterErrorPx ?? 'n/a'} | ${calibration.maxCenterErrorPx ?? 'n/a'} | ${calibration.rowDriftPx?.firstRow ?? 'n/a'} | ${calibration.rowDriftPx?.lastRow ?? 'n/a'} |`;
+    }),
+    '',
     '## Question Comparison',
     '',
     '| Questao | Caneta | Conf. Caneta | Lapis | Conf. Lapis | Divergencia |',
@@ -179,7 +201,9 @@ function writeReports(summary) {
     '',
     'Os dois artefatos vieram do fluxo real do AcademyHub Mobile Web. O problema observado antes da correcao era falso branco/baixa confianca no lapis quando a marca ficava clara ou fora do miolo da bolha. O layout de 15 questoes estava coerente: requestedQuestions, detectedQuestions e evaluatedQuestions permaneceram em 15.',
     '',
-    'A correcao usa evidencia complementar de marca fraca baseada em contraste local e preenchimento do ROI maior da bolha, preservando o innerFillRatio como sinal principal. Isso evita baixar thresholds globais e reduz o risco de transformar bordas, sombra ou sujeira em resposta.',
+    'A calibracao geometrica agora detecta os circulos reais da folha, ajusta os centros por transformacao afim e expõe erro medio/maximo de alinhamento. O overlay mostra centro teorico em magenta e centro recalibrado em verde.',
+    '',
+    'O threshold de leitura foi ajustado para preservar marcacoes a lapis que ficavam visiveis no grayscale mas sumiam no binario anterior. As regras de decisao e thresholds do weakMarkScore nao foram relaxados nesta rodada.',
     '',
   ];
 
@@ -208,6 +232,7 @@ async function main() {
       detectedQuestions: result.detectedQuestions,
       evaluatedQuestions: result.evaluatedQuestions,
       confidence: result.confidence,
+      gridCalibration: result.gridCalibration,
       answersMap: result.answersMap,
       questions: result.questions,
       warnings: result.warnings || [],
