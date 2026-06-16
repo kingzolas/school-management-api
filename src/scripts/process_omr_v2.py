@@ -13,6 +13,7 @@ from academyhub_omr_v2.omr_runner import AcademyHubOmrRunner
 MIN_QUESTIONS = 1
 MAX_QUESTIONS = 40
 CHOICES = ["A", "B", "C", "D", "E"]
+LOW_CONFIDENCE_REVIEW_THRESHOLD = 0.60
 
 
 def load_layout(layout_path: str):
@@ -137,6 +138,12 @@ def result_image_status(normalized_answers, python_success):
     if "not_detected" in statuses:
         return "recapture_required"
     if "multiple" in statuses or "uncertain" in statuses:
+        return "review_required"
+    if any(
+        normalize_status(answer.get("status")) == "marked"
+        and float(answer.get("confidence") or 0.0) < LOW_CONFIDENCE_REVIEW_THRESHOLD
+        for answer in normalized_answers
+    ):
         return "review_required"
     return "accepted"
 

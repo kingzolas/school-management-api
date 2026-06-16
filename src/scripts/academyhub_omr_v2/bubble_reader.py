@@ -26,6 +26,8 @@ class AcademyHubBubbleReader:
         "innerMultiple": 0.025,
         "darknessDelta": 35.0,
         "strongDarknessDelta": 55.0,
+        "weakMarkFill": 0.055,
+        "weakMarkDarknessDelta": 55.0,
     }
 
     def __init__(self, layout):
@@ -346,11 +348,19 @@ class AcademyHubBubbleReader:
             )
 
             inner_fill = float(detail.get("innerFillRatio", 0.0))
+            raw_fill = float(detail.get("fillRatio", 0.0))
             darkness_delta = (
                 0.0 if baseline_mean is None or current_mean is None
                 else float(baseline_mean) - float(current_mean)
             )
             inner_fill_delta = inner_fill - baseline_fill
+            weak_mark_score = self._weak_mark_score(
+                raw_fill=raw_fill,
+                inner_fill=inner_fill,
+                darkness_delta=darkness_delta,
+            )
+            decision_score = max(inner_fill, weak_mark_score)
+            decision_score_delta = decision_score - baseline_fill
 
             detail["rowInnerMeanMedian"] = (
                 round(row_inner_mean_median, 2)
@@ -363,8 +373,28 @@ class AcademyHubBubbleReader:
             detail["darknessDelta"] = round(float(darkness_delta), 2)
             detail["baselineInnerFillRatio"] = round(float(baseline_fill), 4)
             detail["innerFillDelta"] = round(float(inner_fill_delta), 4)
-            detail["decisionScore"] = round(float(inner_fill), 4)
+            detail["weakMarkScore"] = round(float(weak_mark_score), 4)
+            detail["weakMarkEvidence"] = bool(weak_mark_score > inner_fill)
+            detail["decisionScoreDelta"] = round(float(decision_score_delta), 4)
+            detail["decisionScore"] = round(float(decision_score), 4)
             detail["score"] = detail["decisionScore"]
+
+    def _weak_mark_score(
+        self,
+        raw_fill: float,
+        inner_fill: float,
+        darkness_delta: float,
+    ) -> float:
+        if raw_fill < self.THRESHOLDS["weakMarkFill"]:
+            return 0.0
+        if darkness_delta < self.THRESHOLDS["weakMarkDarknessDelta"]:
+            return 0.0
+
+        darkness_bonus = min(
+            0.08,
+            max(0.0, darkness_delta - self.THRESHOLDS["weakMarkDarknessDelta"]) / 250.0,
+        )
+        return min(0.24, max(inner_fill, (raw_fill * 1.25) + darkness_bonus))
 
     def _decide_answer(
         self,
@@ -413,7 +443,10 @@ class AcademyHubBubbleReader:
         second_raw_fill = float(second_detail.get("fillRatio", 0.0))
         top_darkness_delta = float(top_detail.get("darknessDelta", 0.0))
         second_darkness_delta = float(second_detail.get("darknessDelta", 0.0))
-        top_inner_fill_delta = float(top_detail.get("innerFillDelta", 0.0))
+        top_inner_fill_delta = float(
+            top_detail.get("decisionScoreDelta", top_detail.get("innerFillDelta", 0.0))
+        )
+        top_uses_weak_mark = bool(top_detail.get("weakMarkEvidence"))
 
         top_has_strong_contrast = (
             top_darkness_delta >= strong_darkness_threshold
@@ -463,7 +496,9 @@ class AcademyHubBubbleReader:
                 "ok",
                 confidence,
                 "marked",
-                "inner fill above sure threshold and separated from second option",
+                "weak mark contrast above sure threshold and separated from second option"
+                if top_uses_weak_mark
+                else "inner fill above sure threshold and separated from second option",
             )
 
         if top_has_strong_contrast:
@@ -489,7 +524,9 @@ class AcademyHubBubbleReader:
                 "ok",
                 confidence,
                 "marked",
-                "inner fill and darkness are above row-relative thresholds",
+                "weak mark and darkness are above row-relative thresholds"
+                if top_uses_weak_mark
+                else "inner fill and darkness are above row-relative thresholds",
             )
 
         confidence = min(
@@ -519,17 +556,21 @@ class AcademyHubBubbleReader:
         top_detail = option_details.get(top_choice, {}) if option_details else {}
         second_detail = option_details.get(second_choice, {}) if option_details else {}
         return {
-            "scoreMetric": "innerFillRatio",
+            "scoreMetric": "decisionScore",
             "topOption": top_choice,
             "topScore": round(float(top_score), 4),
             "topRawFillRatio": top_detail.get("fillRatio"),
             "topInnerFillRatio": top_detail.get("innerFillRatio"),
+            "topWeakMarkScore": top_detail.get("weakMarkScore"),
+            "topWeakMarkEvidence": top_detail.get("weakMarkEvidence"),
             "topInnerMean": top_detail.get("innerMean"),
             "topDarknessDelta": top_detail.get("darknessDelta"),
             "secondOption": second_choice,
             "secondScore": round(float(second_score), 4),
             "secondRawFillRatio": second_detail.get("fillRatio"),
             "secondInnerFillRatio": second_detail.get("innerFillRatio"),
+            "secondWeakMarkScore": second_detail.get("weakMarkScore"),
+            "secondWeakMarkEvidence": second_detail.get("weakMarkEvidence"),
             "secondInnerMean": second_detail.get("innerMean"),
             "secondDarknessDelta": second_detail.get("darknessDelta"),
             "diff": round(float(top_score - second_score), 4),

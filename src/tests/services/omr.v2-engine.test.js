@@ -172,6 +172,27 @@ print(json.dumps({
   assert.equal(result.completed, true);
 });
 
+test('OMR v2 low-confidence marked answers require review without dropping answers', () => {
+  const stdout = runPython(String.raw`
+import json
+from process_omr_v2 import is_completed_read, result_image_status
+
+answers = [
+  {"question": 1, "status": "ok", "confidence": 0.95},
+  {"question": 2, "status": "ok", "confidence": 0.58},
+]
+image_status = result_image_status(answers, True)
+print(json.dumps({
+  "imageStatus": image_status,
+  "completed": is_completed_read(answers, True, 2, 2, image_status),
+}))
+`);
+  const result = JSON.parse(stdout);
+
+  assert.equal(result.imageStatus, 'review_required');
+  assert.equal(result.completed, true);
+});
+
 test('OMR v2 empty Python result is not treated as accepted', () => {
   const stdout = runPython(String.raw`
 import json
