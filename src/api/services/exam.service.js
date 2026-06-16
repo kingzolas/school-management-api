@@ -1261,13 +1261,24 @@ class ExamService {
     }
 
     _normalizePersistableSheetAnswers(payload = {}) {
-        const details = payload.correctionDetails || {};
+        const legacyDetails = Array.isArray(payload.correctionDetails)
+            ? payload.correctionDetails
+            : null;
+        const details = legacyDetails
+            ? {}
+            : payload.correctionDetails ||
+            payload.correctionSummary ||
+            payload.correctionDetailsPayload ||
+            {};
         const questionResults = Array.isArray(details.questionResults)
             ? details.questionResults
             : Array.isArray(payload.questionResults)
                 ? payload.questionResults
                 : null;
-        const sourceAnswers = questionResults || (Array.isArray(payload.answers) ? payload.answers : []);
+        const sourceAnswers =
+            questionResults ||
+            legacyDetails ||
+            (Array.isArray(payload.answers) ? payload.answers : []);
 
         return sourceAnswers
             .map((answer) => {
@@ -1347,8 +1358,13 @@ class ExamService {
             uncertainCount,
             notDetectedCount,
             correctionDetails,
+            correctionSummary,
+            correctionDetailsPayload,
         } = payload;
         const normalizedAnswers = this._normalizePersistableSheetAnswers(payload);
+        const structuredCorrectionDetails = Array.isArray(correctionDetails)
+            ? (correctionSummary || correctionDetailsPayload || null)
+            : (correctionDetails || correctionSummary || correctionDetailsPayload || null);
 
         const updateData = {
             grade,
@@ -1359,14 +1375,14 @@ class ExamService {
 
         const optionalFields = {
             maxGrade,
-            totalQuestions,
-            correctCount,
-            wrongCount,
-            blankCount,
-            multipleCount,
-            uncertainCount,
-            notDetectedCount,
-            correctionDetails,
+            totalQuestions: totalQuestions ?? structuredCorrectionDetails?.totalQuestions,
+            correctCount: correctCount ?? structuredCorrectionDetails?.correctCount,
+            wrongCount: wrongCount ?? structuredCorrectionDetails?.wrongCount,
+            blankCount: blankCount ?? structuredCorrectionDetails?.blankCount,
+            multipleCount: multipleCount ?? structuredCorrectionDetails?.multipleCount,
+            uncertainCount: uncertainCount ?? structuredCorrectionDetails?.uncertainCount,
+            notDetectedCount: notDetectedCount ?? structuredCorrectionDetails?.notDetectedCount,
+            correctionDetails: structuredCorrectionDetails,
         };
 
         for (const [key, value] of Object.entries(optionalFields)) {

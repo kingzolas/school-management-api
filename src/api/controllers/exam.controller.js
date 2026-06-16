@@ -621,7 +621,9 @@ async function runOmrRequest(req, { persistResults, debugMode }) {
             answerKey: correction.answerKey,
             questionResults: correction.questionResults,
             persistableAnswers: correction.persistableAnswers,
-            correctionDetails: correction.correctionDetailsPayload,
+            correctionDetails: correction.correctionDetails,
+            correctionSummary: correction.correctionDetailsPayload,
+            correctionDetailsPayload: correction.correctionDetailsPayload,
             omrTechnicalDetails: {
                 confidence: result.confidence ?? null,
                 questions: result.questions || [],

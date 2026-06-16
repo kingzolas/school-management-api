@@ -199,6 +199,45 @@ test('OMR confirmation payload can persist answers from correctionDetails questi
   assert.deepEqual(normalized[1].markedAlternatives, ['A', 'C']);
 });
 
+test('OMR correction keeps legacy details list and structured summary separate', () => {
+  const correction = examService.buildBubbleSheetCorrection(
+    buildExamFixture(15),
+    buildOmrAnswers(15, 15)
+  );
+
+  assert.equal(correction.grade, 10);
+  assert.equal(correction.objectiveGrade, 10);
+  assert.equal(correction.correctCount, 15);
+  assert.equal(correction.totalQuestions, 15);
+  assert.ok(Array.isArray(correction.correctionDetails));
+  assert.equal(correction.correctionDetails.length, 15);
+  assert.equal(typeof correction.correctionDetailsPayload, 'object');
+  assert.equal(correction.correctionDetailsPayload.correctCount, 15);
+  assert.equal(correction.correctionDetailsPayload.questionResults.length, 15);
+});
+
+test('OMR confirmation payload can persist answers from legacy correctionDetails list', () => {
+  const normalized = examService._normalizePersistableSheetAnswers({
+    correctionDetails: [
+      {
+        questionNumber: 1,
+        correctAnswer: 'A',
+        studentMarked: 'A',
+        isCorrect: true,
+        status: 'correct',
+        confidence: 0.96,
+        earnedPoints: 1,
+        maxPoints: 1,
+      },
+    ],
+  });
+
+  assert.equal(normalized.length, 1);
+  assert.equal(normalized[0].markedOption, 'A');
+  assert.equal(normalized[0].status, 'ok');
+  assert.equal(normalized[0].isCorrect, true);
+});
+
 test('OMR v2 exam layout supports dynamic question counts up to 40', () => {
   for (const count of [1, 5, 10, 20, 30, 40]) {
     const layout = examService._buildBubbleSheetOmrLayout({ objectiveQuestionsCount: count });
