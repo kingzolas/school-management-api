@@ -22,6 +22,14 @@ const SchoolSchema = new mongoose.Schema(
       default: 'regular',
     },
 
+    academicSettings: {
+      regularWeeklyScheduleMode: {
+        type: String,
+        enum: ['period_specific', 'shared_across_periods'],
+        default: 'period_specific',
+      },
+    },
+
     // Novo campo para o Ato Autorizativo/Portaria
     authorizationProtocol: { type: String },
 

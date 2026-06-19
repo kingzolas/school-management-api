@@ -50,7 +50,40 @@ const horarioSchema = new Schema({
         required: true, 
         trim: true 
     },
-    room: { type: String, trim: true }
+    room: { type: String, trim: true },
+
+    scheduleOrigin: {
+        type: String,
+        enum: ['manual', 'copied', 'materialized_override'],
+        default: 'manual',
+        index: true
+    },
+    sourceTermId: {
+        type: Schema.Types.ObjectId,
+        ref: 'Periodo',
+        default: null,
+        index: true
+    },
+    sourceHorarioId: {
+        type: Schema.Types.ObjectId,
+        ref: 'Horario',
+        default: null
+    },
+    copyBatchId: {
+        type: String,
+        trim: true,
+        default: null,
+        index: true
+    },
+    materializedAt: {
+        type: Date,
+        default: null
+    },
+    materializedBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+    }
 }, { timestamps: true });
 
 // --- ÍNDICES CORRIGIDOS (ISOLAMENTO POR PERÍODO) ---

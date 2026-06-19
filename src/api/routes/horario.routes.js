@@ -7,6 +7,16 @@ const authMiddleware = require('../middlewares/auth.middleware');
 // --- Middleware para todas as rotas ---
 router.use(authMiddleware.verifyToken);
 
+router.post(
+    '/copy-period',
+    horarioController.copyPeriod
+);
+
+router.post(
+    '/materialize-period',
+    horarioController.materializePeriod
+);
+
 // Criar múltiplos horários (Lote)
 router.post(
     '/bulk',

@@ -2,6 +2,29 @@ const Periodo = require('../models/periodo.model');
 const AnoLetivo = require('../models/schoolyear.model'); 
 
 class PeriodoService {
+
+    async _assertNoOverlappingLetivo({ schoolId, schoolYearId, start, end, excludeId = null }) {
+        if (!start || !end || start > end) {
+            throw new Error('A data inicial do período não pode ser posterior à data final.');
+        }
+
+        const query = {
+            school_id: schoolId,
+            anoLetivoId: schoolYearId,
+            tipo: 'Letivo',
+            dataInicio: { $lte: end },
+            dataFim: { $gte: start },
+        };
+
+        if (excludeId) {
+            query._id = { $ne: excludeId };
+        }
+
+        const overlapping = await Periodo.findOne(query).select('titulo dataInicio dataFim');
+        if (overlapping) {
+            throw new Error(`O período informado sobrepõe o período letivo "${overlapping.titulo}". Ajuste as datas antes de salvar.`);
+        }
+    }
  
     async create(data, schoolId) {
         console.log('[PeriodoService.create] DADOS:', JSON.stringify(data, null, 2));
@@ -25,6 +48,15 @@ class PeriodoService {
 
             if (start < anoLetivo.startDate || end > anoLetivo.endDate) {
                  throw new Error('As datas do período devem estar dentro do intervalo do Ano Letivo.');
+            }
+
+            if ((data.tipo || 'Letivo') === 'Letivo') {
+                await this._assertNoOverlappingLetivo({
+                    schoolId,
+                    schoolYearId: data.schoolYearId,
+                    start,
+                    end,
+                });
             }
 
             // 3. Prepara o objeto para salvar
@@ -81,6 +113,11 @@ class PeriodoService {
     }
 
     async update(id, data, schoolId) {
+        const existingPeriodo = await Periodo.findOne({ _id: id, school_id: schoolId });
+        if (!existingPeriodo) {
+            throw new Error('Período não encontrado para atualização.');
+        }
+
         // Mapeamento dos campos que podem ser atualizados
         const dadosMapeados = {};
         if (data.titulo) dadosMapeados.titulo = data.titulo;
@@ -91,6 +128,33 @@ class PeriodoService {
         // mas se precisar, adicione aqui com validação extra.
 
         try {
+            const nextStart = new Date(dadosMapeados.dataInicio || existingPeriodo.dataInicio);
+            const nextEnd = new Date(dadosMapeados.dataFim || existingPeriodo.dataFim);
+            const nextTipo = dadosMapeados.tipo || existingPeriodo.tipo;
+
+            if (nextTipo === 'Letivo') {
+                const anoLetivo = await AnoLetivo.findOne({
+                    _id: existingPeriodo.anoLetivoId,
+                    school_id: schoolId,
+                });
+
+                if (!anoLetivo) {
+                    throw new Error('Ano Letivo não encontrado ou não pertence à sua escola.');
+                }
+
+                if (nextStart < anoLetivo.startDate || nextEnd > anoLetivo.endDate) {
+                    throw new Error('As datas do período devem estar dentro do intervalo do Ano Letivo.');
+                }
+
+                await this._assertNoOverlappingLetivo({
+                    schoolId,
+                    schoolYearId: existingPeriodo.anoLetivoId,
+                    start: nextStart,
+                    end: nextEnd,
+                    excludeId: id,
+                });
+            }
+
             const periodo = await Periodo.findOneAndUpdate(
                 { _id: id, school_id: schoolId }, // Query segura
                 dadosMapeados, 

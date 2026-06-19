@@ -4,6 +4,50 @@ const appEmitter = require('../../loaders/eventEmitter');
 
 class HorarioController {
 
+    async copyPeriod(req, res, next) {
+        try {
+            const schoolId = req.user.school_id;
+            const result = await HorarioService.copyPeriodSchedule(req.body, schoolId, req.user);
+
+            result.horarios.forEach(horario => {
+                appEmitter.emit('horario:created', horario);
+            });
+
+            res.status(200).json(result);
+        } catch (error) {
+            console.error('❌ ERRO [HorarioController.copyPeriod]:', error.message);
+            if (error.message.includes('não encontrado') || error.message.includes('não pertence')) {
+                return res.status(404).json({ message: error.message });
+            }
+            if (error.message.includes('Conflito') || error.message.includes('obrigatórios') || error.message.includes('mesmo ano letivo') || error.message.includes('diferentes')) {
+                return res.status(400).json({ message: error.message });
+            }
+            next(error);
+        }
+    }
+
+    async materializePeriod(req, res, next) {
+        try {
+            const schoolId = req.user.school_id;
+            const result = await HorarioService.materializePeriodSchedule(req.body, schoolId, req.user);
+
+            result.horarios.forEach(horario => {
+                appEmitter.emit('horario:created', horario);
+            });
+
+            res.status(200).json(result);
+        } catch (error) {
+            console.error('❌ ERRO [HorarioController.materializePeriod]:', error.message);
+            if (error.message.includes('não encontrado') || error.message.includes('não pertence')) {
+                return res.status(404).json({ message: error.message });
+            }
+            if (error.message.includes('Conflito') || error.message.includes('obrigatórios') || error.message.includes('mesmo ano letivo') || error.message.includes('diferentes')) {
+                return res.status(400).json({ message: error.message });
+            }
+            next(error);
+        }
+    }
+
     async createBulk(req, res, next) {
         const horariosData = req.body; 
         const schoolId = req.user.school_id; // [NOVO] Captura o schoolId
