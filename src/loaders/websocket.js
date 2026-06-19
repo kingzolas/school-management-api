@@ -283,6 +283,22 @@ function registerAppListeners() {
         );
     });
 
+    appEmitter.on('report-card:exam-imported', (payload) => {
+        console.log('Evento: report-card:exam-imported');
+        broadcast(
+            { type: 'REPORT_CARD_EXAM_IMPORTED', payload },
+            payload.schoolId || payload.school_id
+        );
+    });
+
+    appEmitter.on('report-card:updated', (payload) => {
+        console.log('Evento: report-card:updated');
+        broadcast(
+            { type: 'REPORT_CARD_UPDATED', payload },
+            payload.schoolId || payload.school_id
+        );
+    });
+
     // --- [NOVO] Notificações (Automação) ---
     appEmitter.on('notification:created', (log) => {
         // Quando entra na fila
@@ -336,7 +352,9 @@ function broadcast(data, targetSchoolId) {
     if (
         String(data.type || '').startsWith('official_document_') ||
         String(data.type || '').startsWith('absence_justification_') ||
-        data.type === 'exam:sheet-corrected'
+        data.type === 'exam:sheet-corrected' ||
+        data.type === 'REPORT_CARD_EXAM_IMPORTED' ||
+        data.type === 'REPORT_CARD_UPDATED'
     ) {
         console.log('[WebSocket] Broadcast notificacao desktop', {
             type: data.type,
@@ -346,6 +364,8 @@ function broadcast(data, targetSchoolId) {
             examId: data.payload?.examId || null,
             teacherId: data.payload?.teacherId || null,
             sheetId: data.payload?.sheetId || null,
+            importBatchId: data.payload?.importBatchId || null,
+            updatedCount: data.payload?.updatedCount ?? null,
             audience: data.payload?.audience || null,
             targetRoles: data.payload?.targetRoles || null,
             timestamp: new Date().toISOString(),

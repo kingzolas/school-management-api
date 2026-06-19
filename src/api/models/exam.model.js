@@ -37,6 +37,21 @@ const examSchema = new Schema({
     class_id: { type: Schema.Types.ObjectId, ref: 'Class', required: true },
     subject_id: { type: Schema.Types.ObjectId, ref: 'Subject', required: true },
     schoolyear_id: { type: Schema.Types.ObjectId, ref: 'SchoolYear' },
+    termId: { type: Schema.Types.ObjectId, ref: 'Periodo', default: null, index: true },
+    termResolution: {
+        status: {
+            type: String,
+            enum: ['explicit', 'inferred', 'missing', 'conflict'],
+            default: 'missing'
+        },
+        source: {
+            type: String,
+            enum: ['payload', 'applicationDate', 'current_period', 'legacy_inference', 'none'],
+            default: 'none'
+        },
+        resolvedAt: { type: Date, default: null },
+        message: { type: String, default: null }
+    },
 
     title: { type: String, required: true },
     applicationDate: { type: Date, required: true },

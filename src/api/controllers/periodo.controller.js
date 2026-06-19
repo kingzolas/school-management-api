@@ -32,6 +32,20 @@ class PeriodoController {
         }
     }
 
+    async getCurrent(req, res) {
+        try {
+            const schoolId = req.user.school_id || req.user.schoolId;
+            const result = await periodoService.findCurrent({
+                schoolId,
+                schoolYearId: req.query.schoolYearId || req.query.anoLetivoId || null,
+                date: req.query.date || req.query.referenceDate || new Date(),
+            });
+            res.status(200).json({ success: true, data: result });
+        } catch (error) {
+            res.status(400).json({ success: false, message: error.message });
+        }
+    }
+
     async update(req, res) {
         try {
             const schoolId = req.user.school_id;

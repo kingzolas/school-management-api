@@ -4,6 +4,7 @@ const Enrollment = require('../models/enrollment.model');
 const Evaluation = require('../models/evaluation.model');
 const ClassGrade = require('../models/grade.model');
 const Class = require('../models/class.model');
+const Periodo = require('../models/periodo.model');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const appEmitter = require('../../loaders/eventEmitter');
@@ -40,6 +41,7 @@ class ExamService {
             .populate('class_id', 'name school_id')
             .populate('subject_id', 'name')
             .populate('teacher_id', 'fullName name')
+            .populate('termId', 'titulo dataInicio dataFim anoLetivoId')
             .lean();
 
         if (!exam) {
@@ -216,6 +218,170 @@ class ExamService {
         if (value === null || value === undefined || value === '') return null;
         const number = Number(value);
         return Number.isFinite(number) ? number : null;
+    }
+
+    _isDateInsidePeriod(date, period) {
+        if (!date || !period?.dataInicio || !period?.dataFim) return true;
+        const referenceDate = new Date(date);
+        const startDate = new Date(period.dataInicio);
+        const endDate = new Date(period.dataFim);
+        if (
+            Number.isNaN(referenceDate.getTime()) ||
+            Number.isNaN(startDate.getTime()) ||
+            Number.isNaN(endDate.getTime())
+        ) {
+            return true;
+        }
+        return referenceDate >= startDate && referenceDate <= endDate;
+    }
+
+    _serializeTermContext(period, resolution) {
+        return {
+            termId: period?._id ? getObjectIdString(period._id) : null,
+            termName: period?.titulo || null,
+            termResolution: {
+                status: resolution?.status || 'missing',
+                source: resolution?.source || 'none',
+                resolvedAt: resolution?.resolvedAt || new Date(),
+                message: resolution?.message || null,
+            },
+        };
+    }
+
+    async _findPeriodByDate({ schoolId, applicationDate, schoolYearId = null }) {
+        const referenceDate = applicationDate ? new Date(applicationDate) : new Date();
+        if (Number.isNaN(referenceDate.getTime())) return null;
+
+        const query = {
+            school_id: schoolId,
+            tipo: 'Letivo',
+            dataInicio: { $lte: referenceDate },
+            dataFim: { $gte: referenceDate },
+        };
+
+        if (schoolYearId) {
+            query.anoLetivoId = schoolYearId;
+        }
+
+        return Periodo.findOne(query).sort({ dataInicio: -1 }).lean();
+    }
+
+    async resolveExamTermContext({
+        schoolId,
+        termId = null,
+        applicationDate = null,
+        schoolYearId = null,
+        legacy = false,
+    } = {}) {
+        const now = new Date();
+
+        if (termId) {
+            if (!mongoose.Types.ObjectId.isValid(termId)) {
+                throw createHttpError('termId invalido.', 400);
+            }
+
+            const explicitPeriod = await Periodo.findOne({
+                _id: termId,
+                school_id: schoolId,
+            }).lean();
+
+            if (!explicitPeriod) {
+                throw createHttpError('Periodo da prova nao encontrado.', 400);
+            }
+
+            const inferredByDate = applicationDate
+                ? await this._findPeriodByDate({ schoolId, applicationDate, schoolYearId })
+                : null;
+            const dateMatchesExplicit = this._isDateInsidePeriod(applicationDate, explicitPeriod);
+            const conflictsWithDate =
+                inferredByDate &&
+                getObjectIdString(inferredByDate._id) !== getObjectIdString(explicitPeriod._id);
+
+            return this._serializeTermContext(explicitPeriod, {
+                status: dateMatchesExplicit && !conflictsWithDate ? 'explicit' : 'conflict',
+                source: 'payload',
+                resolvedAt: now,
+                message:
+                    dateMatchesExplicit && !conflictsWithDate
+                        ? null
+                        : 'O periodo informado diverge da data de aplicacao da prova.',
+            });
+        }
+
+        const periodByApplicationDate = await this._findPeriodByDate({
+            schoolId,
+            applicationDate,
+            schoolYearId,
+        });
+
+        if (periodByApplicationDate) {
+            return this._serializeTermContext(periodByApplicationDate, {
+                status: 'inferred',
+                source: legacy ? 'legacy_inference' : 'applicationDate',
+                resolvedAt: now,
+                message: legacy
+                    ? 'Periodo inferido pela data de aplicacao de uma prova antiga.'
+                    : null,
+            });
+        }
+
+        if (legacy) {
+            return this._serializeTermContext(null, {
+                status: 'missing',
+                source: 'legacy_inference',
+                resolvedAt: now,
+                message: 'Nao foi possivel inferir o periodo da prova antiga pela data de aplicacao.',
+            });
+        }
+
+        const currentPeriod = await this._findPeriodByDate({
+            schoolId,
+            applicationDate: new Date(),
+            schoolYearId,
+        });
+
+        if (currentPeriod) {
+            return this._serializeTermContext(currentPeriod, {
+                status: 'inferred',
+                source: 'current_period',
+                resolvedAt: now,
+                message: 'Periodo resolvido pelo periodo letivo atual.',
+            });
+        }
+
+        return this._serializeTermContext(null, {
+            status: 'missing',
+            source: 'none',
+            resolvedAt: now,
+            message: 'Nao foi possivel resolver o periodo da prova.',
+        });
+    }
+
+    async _resolveStoredExamTermContext(exam, schoolId) {
+        const source = typeof exam?.toObject === 'function' ? exam.toObject() : exam;
+        const termId = source?.termId?._id || source?.termId || null;
+        const populatedTerm = source?.termId?._id ? source.termId : null;
+
+        if (termId && populatedTerm) {
+            const context = await this.resolveExamTermContext({
+                schoolId,
+                termId,
+                applicationDate: source.applicationDate,
+                schoolYearId: source.schoolyear_id,
+            });
+            return {
+                ...context,
+                termName: populatedTerm.titulo || context.termName,
+            };
+        }
+
+        return this.resolveExamTermContext({
+            schoolId,
+            termId,
+            applicationDate: source?.applicationDate,
+            schoolYearId: source?.schoolyear_id,
+            legacy: !termId,
+        });
     }
 
     _logInfo(message, meta = null) {
@@ -694,7 +860,19 @@ class ExamService {
             correctionType: data?.correctionType,
         });
 
-        const exam = new Exam({ ...data, school_id: schoolId });
+        const termContext = await this.resolveExamTermContext({
+            schoolId,
+            termId: data?.termId || data?.periodId || null,
+            applicationDate: data?.applicationDate,
+            schoolYearId: data?.schoolyear_id || data?.schoolYearId || null,
+        });
+
+        const exam = new Exam({
+            ...data,
+            school_id: schoolId,
+            termId: termContext.termId || null,
+            termResolution: termContext.termResolution,
+        });
         await this._attachOmrLayoutToExamIfNeeded(exam);
 
         const savedExam = await exam.save();
@@ -722,7 +900,7 @@ class ExamService {
             });
         }
 
-        return savedExam;
+        return await this.getExamByIdForResponse(savedExam._id, schoolId);
     }
 
     async updateExam(examId, updateData, schoolId) {
@@ -735,9 +913,28 @@ class ExamService {
         }
 
         Object.assign(exam, updateData);
+
+        if (
+            Object.prototype.hasOwnProperty.call(updateData, 'termId') ||
+            Object.prototype.hasOwnProperty.call(updateData, 'periodId') ||
+            Object.prototype.hasOwnProperty.call(updateData, 'applicationDate') ||
+            Object.prototype.hasOwnProperty.call(updateData, 'schoolyear_id') ||
+            Object.prototype.hasOwnProperty.call(updateData, 'schoolYearId')
+        ) {
+            const termContext = await this.resolveExamTermContext({
+                schoolId,
+                termId: updateData.termId || updateData.periodId || exam.termId || null,
+                applicationDate: exam.applicationDate,
+                schoolYearId: exam.schoolyear_id || updateData.schoolYearId || null,
+            });
+            exam.termId = termContext.termId || null;
+            exam.termResolution = termContext.termResolution;
+        }
+
         await this._attachOmrLayoutToExamIfNeeded(exam);
 
-        return await exam.save();
+        const savedExam = await exam.save();
+        return await this.getExamByIdForResponse(savedExam._id, schoolId);
     }
 
     async duplicateExam(examId, schoolId) {
@@ -853,6 +1050,15 @@ class ExamService {
         };
     }
 
+    async _serializeExamForResponse(exam, schoolId, { includeQuestions = true } = {}) {
+        if (!exam) return null;
+
+        return {
+            ...this._serializeExamForList(exam, { includeQuestions }),
+            ...(await this._resolveStoredExamTermContext(exam, schoolId)),
+        };
+    }
+
     async getExams(query, schoolId) {
         const filter = { school_id: schoolId };
 
@@ -875,9 +1081,12 @@ class ExamService {
 
         const exams = await Exam.find(filter)
             .sort({ applicationDate: -1, createdAt: -1 })
-            .populate('class_id subject_id teacher_id reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
+            .populate('class_id subject_id teacher_id termId reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
 
-        return exams.map((exam) => this._serializeExamForList(exam, { includeQuestions }));
+        return Promise.all(exams.map(async (exam) => ({
+            ...this._serializeExamForList(exam, { includeQuestions }),
+            ...(await this._resolveStoredExamTermContext(exam, schoolId)),
+        })));
     }
 
     async getReusableExams(query, schoolId) {
@@ -913,16 +1122,24 @@ class ExamService {
 
         const exams = await Exam.find(filter)
             .sort({ applicationDate: -1, createdAt: -1 })
-            .populate('class_id subject_id teacher_id reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
+            .populate('class_id subject_id teacher_id termId reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
 
-        return exams.map((exam) => this._serializeExamForList(exam, { includeQuestions }));
+        return Promise.all(exams.map(async (exam) => ({
+            ...this._serializeExamForList(exam, { includeQuestions }),
+            ...(await this._resolveStoredExamTermContext(exam, schoolId)),
+        })));
     }
 
     async getExamById(id, schoolId) {
         return await Exam.findOne({
             _id: id,
             school_id: schoolId,
-        }).populate('class_id subject_id teacher_id reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
+        }).populate('class_id subject_id teacher_id termId reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
+    }
+
+    async getExamByIdForResponse(id, schoolId) {
+        const exam = await this.getExamById(id, schoolId);
+        return this._serializeExamForResponse(exam, schoolId);
     }
 
     async reuseExamForClass(sourceExamId, targetClassId, schoolId, userId, reuseFromAnotherClass = false) {
@@ -958,6 +1175,13 @@ class ExamService {
             class_id: targetClass._id,
             subject_id: sourceExam.subject_id,
             schoolyear_id: sourceExam.schoolyear_id || null,
+            termId: sourceExam.termId || null,
+            termResolution: sourceExam.termResolution || {
+                status: 'missing',
+                source: 'none',
+                resolvedAt: null,
+                message: null,
+            },
             title: sourceExam.title,
             applicationDate: sourceExam.applicationDate || new Date(),
             totalValue: sourceExam.totalValue,
@@ -977,7 +1201,7 @@ class ExamService {
         await this._attachOmrLayoutToExamIfNeeded(reusedExam);
         await reusedExam.save();
 
-        return await this.getExamById(reusedExam._id, schoolId);
+        return await this.getExamByIdForResponse(reusedExam._id, schoolId);
     }
 
     async getExamResults(examId, schoolId, actor) {
@@ -1098,17 +1322,24 @@ class ExamService {
             .map((student) => student.score)
             .filter((score) => typeof score === 'number' && Number.isFinite(score));
         const insights = this._buildQuestionInsights(sheets, exam);
+        const termContext = await this._resolveStoredExamTermContext(exam, schoolId);
 
         return {
             exam: {
                 id: getObjectIdString(exam._id),
                 title: exam.title,
+                subjectId: getObjectIdString(exam.subject_id),
                 subject: exam.subject_id?.name || '',
                 classId,
                 className: exam.class_id?.name || '',
+                teacherId: getObjectIdString(exam.teacher_id),
                 applicationDate: exam.applicationDate || null,
+                termId: termContext.termId,
+                termName: termContext.termName,
+                termResolution: termContext.termResolution,
                 totalQuestions,
                 totalPoints: maxScore,
+                totalValue: maxScore,
                 status: exam.status,
                 correctionType: exam.correctionType,
             },
@@ -1492,7 +1723,8 @@ class ExamService {
             const [eventExam, eventSheet] = await Promise.all([
                 Exam.findOne({ _id: sheet.exam_id, school_id: schoolId })
                     .populate('class_id', 'name')
-                    .select('title totalValue correctionType teacher_id class_id')
+                    .populate('termId', 'titulo')
+                    .select('title totalValue correctionType teacher_id class_id termId')
                     .lean(),
                 ExamSheet.findOne({ _id: sheet._id, school_id: schoolId })
                     .populate('student_id', 'fullName name')
@@ -1509,6 +1741,8 @@ class ExamService {
                     className: eventExam.class_id?.name || '',
                     examId: getObjectIdString(eventExam._id),
                     examTitle: eventExam.title || 'Prova',
+                    termId: getObjectIdString(eventExam.termId),
+                    termName: eventExam.termId?.titulo || null,
                     studentId: getObjectIdString(eventSheet.student_id),
                     studentName:
                         eventSheet.student_id?.fullName ||

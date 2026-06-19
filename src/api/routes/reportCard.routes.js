@@ -19,6 +19,27 @@ router.get(
   reportCardController.getStudentReportCard
 );
 
+// Provas corrigidas disponiveis para importar no boletim
+router.get(
+  '/import/exams',
+  verifyToken,
+  reportCardController.listImportableExams
+);
+
+// Preview aluno a aluno antes de importar notas de prova
+router.get(
+  '/import/exams/:examId/preview',
+  verifyToken,
+  reportCardController.previewExamImport
+);
+
+// Commit da importacao de notas da prova para o boletim
+router.post(
+  '/import/exams/:examId/commit',
+  verifyToken,
+  reportCardController.commitExamImport
+);
+
 // Buscar boletim por ID
 router.get(
   '/:reportCardId',

@@ -112,6 +112,54 @@ class PeriodoService {
         }
     }
 
+    async findCurrent({ schoolId, schoolYearId = null, date = new Date() } = {}) {
+        if (!schoolId) {
+            throw new Error('schoolId e obrigatorio.');
+        }
+
+        const referenceDate = date ? new Date(date) : new Date();
+        if (Number.isNaN(referenceDate.getTime())) {
+            throw new Error('Data de referencia invalida.');
+        }
+
+        const query = {
+            school_id: schoolId,
+            tipo: 'Letivo',
+            dataInicio: { $lte: referenceDate },
+            dataFim: { $gte: referenceDate },
+        };
+
+        if (schoolYearId) {
+            query.anoLetivoId = schoolYearId;
+        }
+
+        const periodo = await Periodo.findOne(query)
+            .sort({ dataInicio: -1 })
+            .lean();
+
+        if (!periodo) {
+            return {
+                period: null,
+                termResolution: {
+                    status: 'missing',
+                    source: 'current_period',
+                    referenceDate,
+                    message: 'Nenhum periodo letivo encontrado para a data informada.',
+                },
+            };
+        }
+
+        return {
+            period: periodo,
+            termResolution: {
+                status: 'inferred',
+                source: 'current_period',
+                referenceDate,
+                message: null,
+            },
+        };
+    }
+
     async update(id, data, schoolId) {
         const existingPeriodo = await Periodo.findOne({ _id: id, school_id: schoolId });
         if (!existingPeriodo) {

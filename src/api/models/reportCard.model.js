@@ -32,6 +32,55 @@ const reportCardSubjectSchema = new Schema(
       max: 10,
       default: null,
     },
+    testScoreSource: {
+      type: {
+        type: String,
+        enum: ['exam_result_import'],
+        default: null,
+      },
+      examId: {
+        type: Schema.Types.ObjectId,
+        ref: 'Exam',
+        default: null,
+      },
+      examTitle: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+      sheetId: {
+        type: Schema.Types.ObjectId,
+        ref: 'ExamSheet',
+        default: null,
+      },
+      importBatchId: {
+        type: Schema.Types.ObjectId,
+        ref: 'ReportCardExamImport',
+        default: null,
+      },
+      importedBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+      },
+      importedAt: {
+        type: Date,
+        default: null,
+      },
+      originalGrade: {
+        type: Number,
+        default: null,
+      },
+      originalMaxGrade: {
+        type: Number,
+        default: null,
+      },
+      scoreMode: {
+        type: String,
+        enum: ['raw', 'normalize_to_component'],
+        default: null,
+      },
+    },
     activityScore: {
       type: Number,
       min: 0,

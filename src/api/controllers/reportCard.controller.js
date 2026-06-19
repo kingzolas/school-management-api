@@ -1,4 +1,5 @@
 const reportCardService = require('../services/reportCard.service');
+const reportCardExamImportService = require('../services/reportCardExamImport.service');
 
 class ReportCardController {
   async generateClassReportCards(req, res, next) {
@@ -168,6 +169,107 @@ class ReportCardController {
       return res.status(error.statusCode || 500).json({
         success: false,
         message: error.message || 'Erro interno ao recalcular o status do boletim.',
+        details: error.toString()
+      });
+    }
+  }
+
+  async listImportableExams(req, res, next) {
+    try {
+      const schoolId =
+        req.user?.school_id ||
+        req.user?.schoolId ||
+        req.school_id ||
+        req.schoolId ||
+        req.query.schoolId;
+
+      const result = await reportCardExamImportService.listImportableExams({
+        schoolId,
+        actor: req.user,
+        classId: req.query.classId,
+        subjectId: req.query.subjectId || null,
+        termId: req.query.termId || null,
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error('[ReportCardController.listImportableExams] Erro:', error);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        message: error.message || 'Erro interno ao listar provas disponiveis.',
+        details: error.toString()
+      });
+    }
+  }
+
+  async previewExamImport(req, res, next) {
+    try {
+      const schoolId =
+        req.user?.school_id ||
+        req.user?.schoolId ||
+        req.school_id ||
+        req.schoolId ||
+        req.query.schoolId;
+
+      const result = await reportCardExamImportService.previewExamImport({
+        schoolId,
+        actor: req.user,
+        examId: req.params.examId,
+        classId: req.query.classId,
+        subjectId: req.query.subjectId,
+        termId: req.query.termId,
+        scoreMode: req.query.scoreMode || 'raw',
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error('[ReportCardController.previewExamImport] Erro:', error);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        message: error.message || 'Erro interno ao preparar preview de importacao.',
+        details: error.toString()
+      });
+    }
+  }
+
+  async commitExamImport(req, res, next) {
+    try {
+      const schoolId =
+        req.user?.school_id ||
+        req.user?.schoolId ||
+        req.school_id ||
+        req.schoolId ||
+        req.body.schoolId;
+
+      const result = await reportCardExamImportService.commitExamImport({
+        schoolId,
+        actor: req.user,
+        examId: req.params.examId,
+        classId: req.body.classId,
+        subjectId: req.body.subjectId,
+        termId: req.body.termId,
+        selectedStudentIds: req.body.selectedStudentIds || null,
+        conflictDecisions: req.body.conflictDecisions || {},
+        reason: req.body.reason || '',
+        scoreMode: req.body.scoreMode || 'raw',
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Importacao de notas da prova concluida.',
+        data: result,
+      });
+    } catch (error) {
+      console.error('[ReportCardController.commitExamImport] Erro:', error);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        message: error.message || 'Erro interno ao importar notas da prova.',
         details: error.toString()
       });
     }

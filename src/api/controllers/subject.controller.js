@@ -58,6 +58,19 @@ class SubjectController {
         }
     }
 
+    async getManagementSummary(req, res, next) {
+        try {
+            const schoolId = req.user.school_id;
+            const subjects = await SubjectService.getManagementSummary(req.query, schoolId);
+            res.status(200).json({
+                success: true,
+                data: subjects,
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+
     async getById(req, res, next) {
         try {
             const schoolId = req.user.school_id;

@@ -26,6 +26,13 @@ router.get(
     subjectController.getAll
 );
 
+// VisÃ£o pedagÃ³gica agregada para gestÃ£o de disciplinas
+router.get(
+    '/management-summary',
+    [authMiddleware.verifyToken],
+    subjectController.getManagementSummary
+);
+
 // Obter detalhes de uma disciplina
 router.get(
     '/:id',

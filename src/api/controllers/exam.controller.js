@@ -790,7 +790,7 @@ class ExamController {
     async getById(req, res) {
         try {
             const schoolId = req.user.school_id;
-            const exam = await examService.getExamById(req.params.id, schoolId);
+            const exam = await examService.getExamByIdForResponse(req.params.id, schoolId);
             res.status(200).json(exam);
         } catch (error) {
             console.error('ERRO AO BUSCAR PROVA POR ID:', error);
