@@ -47,6 +47,12 @@ const clonePlain = (value) => {
   return JSON.parse(JSON.stringify(value));
 };
 
+const shouldLogExamImportDebug = () => {
+  return ['true', '1', 'yes', 'sim'].includes(
+    String(process.env.EXAM_IMPORT_DEBUG || '').toLowerCase()
+  );
+};
+
 class ReportCardExamImportService {
   _ensureObjectId(value, label) {
     if (!value || !mongoose.Types.ObjectId.isValid(value)) {
@@ -64,6 +70,17 @@ class ReportCardExamImportService {
       throw createHttpError('scoreMode invalido.', 400);
     }
     return normalized;
+  }
+
+  _resolveScoreModeForExam(exam, scoreMode) {
+    if (scoreMode && scoreMode !== 'auto') {
+      return this._normalizeScoreMode(scoreMode);
+    }
+
+    const examMaxScore = finiteNumber(exam?.totalValue);
+    return examMaxScore !== null && examMaxScore > 10
+      ? 'normalize_to_component'
+      : 'raw';
   }
 
   _buildIdempotencyKey(payload) {
@@ -328,6 +345,7 @@ class ReportCardExamImportService {
         !['missing', 'conflict'].includes(termContext.termResolution.status)
       ) {
         try {
+          const scoreMode = this._resolveScoreModeForExam(exam, 'auto');
           const preview = await this.previewExamImport({
             schoolId,
             actor,
@@ -335,7 +353,7 @@ class ReportCardExamImportService {
             classId,
             subjectId: getObjectIdString(exam.subject_id),
             termId: termContext.termId,
-            scoreMode: 'raw',
+            scoreMode,
           });
 
           importSummary = {
@@ -348,6 +366,7 @@ class ReportCardExamImportService {
             blockedCount: preview.summary.blockedCount,
             noopCount: preview.summary.noopCount,
             pendingCount: preview.summary.pendingCount,
+            scoreMode: preview.target.scoreMode,
           };
         } catch (error) {
           importSummary = {
@@ -384,6 +403,7 @@ class ReportCardExamImportService {
         blockedCount: importSummary.blockedCount,
         noopCount: importSummary.noopCount,
         pendingCount: importSummary.pendingCount,
+        scoreMode: importSummary.scoreMode || this._resolveScoreModeForExam(exam, 'auto'),
         importSummaryError: importSummary.importSummaryError || null,
         importBlocked:
           termContext.termResolution.status === 'missing' ||
@@ -406,9 +426,9 @@ class ReportCardExamImportService {
     this._ensureObjectId(classId, 'classId');
     this._ensureObjectId(subjectId, 'subjectId');
     this._ensureObjectId(termId, 'termId');
-    const normalizedScoreMode = this._normalizeScoreMode(scoreMode);
 
     const exam = await this._loadExam({ schoolId, examId, actor });
+    const normalizedScoreMode = this._resolveScoreModeForExam(exam, scoreMode);
     const examClassId = getObjectIdString(exam.class_id);
     const examSubjectId = getObjectIdString(exam.subject_id);
 
@@ -629,6 +649,39 @@ class ReportCardExamImportService {
       .sort((left, right) => left.studentName.localeCompare(right.studentName, 'pt-BR'));
 
     const summary = this._summarizePreview(items);
+
+    if (shouldLogExamImportDebug()) {
+      for (const item of items) {
+        const decision = item.status === 'will_fill'
+          ? 'importable'
+          : item.status === 'conflict_existing_test_score'
+            ? 'conflict'
+            : ['already_imported', 'already_same'].includes(item.status)
+              ? 'already_imported'
+              : 'blocked';
+        const checks = {
+          hasCorrectedSheet: item.correctionStatus === 'corrected',
+          hasNumericScore: item.examGrade !== null && item.examGrade !== undefined,
+          hasStudentLink: Boolean(item.studentId),
+          hasClassLink: Boolean(examClassId),
+          hasSubjectLink: Boolean(examSubjectId),
+          hasTermLink: Boolean(termContext.termId),
+          hasGradebookTarget: Boolean(item.reportCardId),
+          alreadyImported: ['already_imported', 'already_same'].includes(item.status),
+          hasConflict: item.status === 'conflict_existing_test_score',
+        };
+        console.log('[ExamImportAPI][EligibilityDecision]', {
+          examId: getObjectIdString(exam._id),
+          studentId: item.studentId,
+          score: item.examGrade,
+          proposedTestScore: item.proposedTestScore,
+          scoreMode: normalizedScoreMode,
+          decision,
+          reason: item.message || item.status,
+          checks,
+        });
+      }
+    }
 
     return {
       exam: {
