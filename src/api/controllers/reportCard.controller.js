@@ -221,6 +221,7 @@ class ReportCardController {
         classId: req.query.classId,
         subjectId: req.query.subjectId,
         termId: req.query.termId,
+        academicYearId: req.query.targetAcademicYearId || req.query.academicYearId || null,
         scoreMode: req.query.scoreMode || 'raw',
       });
 
@@ -254,6 +255,7 @@ class ReportCardController {
         classId: req.body.classId,
         subjectId: req.body.subjectId,
         termId: req.body.termId,
+        academicYearId: req.body.targetAcademicYearId || req.body.academicYearId || null,
         selectedStudentIds: req.body.selectedStudentIds || null,
         conflictDecisions: req.body.conflictDecisions || {},
         reason: req.body.reason || '',

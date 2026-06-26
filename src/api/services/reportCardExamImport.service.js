@@ -6,6 +6,9 @@ const ReportCardExamImport = require('../models/reportCardExamImport.model');
 const Exam = require('../models/exam.model');
 const ExamSheet = require('../models/exam-sheet.model');
 const Enrollment = require('../models/enrollment.model');
+const Periodo = require('../models/periodo.model');
+const ReportCardClass = require('../models/class.model');
+const Subject = require('../models/subject.model');
 const AuditLog = require('../models/auditLog.model');
 const reportCardService = require('./reportCard.service');
 const examService = require('./exam.service');
@@ -83,6 +86,115 @@ class ReportCardExamImportService {
       : 'raw';
   }
 
+  async _resolveTargetContext({ schoolId, classId, subjectId, termId, academicYearId = null }) {
+    const [targetClass, targetSubject, targetTerm] = await Promise.all([
+      ReportCardClass.findOne({ _id: classId, school_id: schoolId }).select('name').lean(),
+      Subject.findOne({ _id: subjectId, school_id: schoolId }).select('name').lean(),
+      Periodo.findOne({ _id: termId, school_id: schoolId })
+        .populate('anoLetivoId', 'year')
+        .select('titulo anoLetivoId')
+        .lean(),
+    ]);
+
+    if (!targetClass) {
+      throw createHttpError('Turma de destino nao encontrada.', 404);
+    }
+
+    if (!targetSubject) {
+      throw createHttpError('Disciplina de destino nao encontrada.', 404);
+    }
+
+    if (!targetTerm) {
+      throw createHttpError('Bimestre de destino nao encontrado.', 404);
+    }
+
+    const termAcademicYearId = getObjectIdString(targetTerm.anoLetivoId);
+    if (academicYearId && termAcademicYearId && String(academicYearId) !== termAcademicYearId) {
+      throw createHttpError('Ano letivo de destino diverge do bimestre selecionado.', 400);
+    }
+
+    const academicYearNumber = Number(targetTerm.anoLetivoId?.year);
+    if (!Number.isFinite(academicYearNumber)) {
+      throw createHttpError('Ano letivo do bimestre de destino nao foi encontrado.', 400);
+    }
+
+    return {
+      classId: String(classId),
+      className: targetClass.name || '',
+      subjectId: String(subjectId),
+      subjectName: targetSubject.name || '',
+      termId: String(termId),
+      termName: targetTerm.titulo || '',
+      academicYearId: termAcademicYearId || null,
+      academicYear: academicYearNumber,
+    };
+  }
+
+  async _diagnoseMissingReportCard({ schoolId, studentId, classId, termId, academicYear }) {
+    const [sameTermDifferentClass, sameClassDifferentTerm, sameClassTermDifferentYear, anyForStudent] =
+      await Promise.all([
+        ReportCard.findOne({
+          school_id: schoolId,
+          studentId,
+          termId,
+          classId: { $ne: classId },
+        }).select('_id classId termId schoolYear').lean(),
+        ReportCard.findOne({
+          school_id: schoolId,
+          studentId,
+          classId,
+          termId: { $ne: termId },
+        }).select('_id classId termId schoolYear').lean(),
+        ReportCard.findOne({
+          school_id: schoolId,
+          studentId,
+          classId,
+          termId,
+          schoolYear: { $ne: academicYear },
+        }).select('_id classId termId schoolYear').lean(),
+        ReportCard.findOne({
+          school_id: schoolId,
+          studentId,
+        }).select('_id classId termId schoolYear').lean(),
+      ]);
+
+    if (sameClassTermDifferentYear) return 'wrong_year';
+    if (sameTermDifferentClass) return 'wrong_class';
+    if (sameClassDifferentTerm) return 'wrong_term';
+    if (!anyForStudent) return 'student_not_found';
+    return 'missing_report_card';
+  }
+
+  _logResolveReportCard({
+    examId,
+    studentId,
+    studentName,
+    schoolId,
+    targetContext,
+    foundReportCard,
+    reportCardId = null,
+    reason,
+  }) {
+    if (!shouldLogExamImportDebug()) return;
+    console.log('[ExamImportAPI][ResolveReportCard]', {
+      examId,
+      studentId,
+      studentName,
+      schoolId: String(schoolId),
+      academicYearId: targetContext.academicYearId,
+      academicYear: targetContext.academicYear,
+      classId: targetContext.classId,
+      className: targetContext.className,
+      termId: targetContext.termId,
+      termName: targetContext.termName,
+      subjectId: targetContext.subjectId,
+      subjectName: targetContext.subjectName,
+      foundReportCard,
+      reportCardId,
+      reason,
+    });
+  }
+
   _buildIdempotencyKey(payload) {
     const selectedStudentIds = Array.isArray(payload.selectedStudentIds)
       ? [...payload.selectedStudentIds].map(String).sort()
@@ -100,6 +212,7 @@ class ReportCardExamImportService {
         classId: String(payload.classId),
         subjectId: String(payload.subjectId),
         termId: String(payload.termId),
+        academicYearId: payload.academicYearId ? String(payload.academicYearId) : null,
         scoreMode: payload.scoreMode || 'raw',
         selectedStudentIds,
         conflictDecisions: decisionEntries,
@@ -421,6 +534,7 @@ class ReportCardExamImportService {
     classId,
     subjectId,
     termId,
+    academicYearId = null,
     scoreMode = 'raw',
   }) {
     this._ensureObjectId(classId, 'classId');
@@ -440,13 +554,16 @@ class ReportCardExamImportService {
       throw createHttpError('A prova nao pertence a disciplina informada.', 400);
     }
 
+    const targetContext = await this._resolveTargetContext({
+      schoolId,
+      classId,
+      subjectId,
+      termId,
+      academicYearId,
+    });
+
     const termContext = await examService._resolveStoredExamTermContext(exam, schoolId);
-    const termMatches = String(termContext.termId || '') === String(termId);
-    const termBlocked =
-      !termContext.termId ||
-      termContext.termResolution.status === 'missing' ||
-      termContext.termResolution.status === 'conflict' ||
-      !termMatches;
+    const termBlocked = false;
 
     const enrollments = await Enrollment.find({
       class: classId,
@@ -474,6 +591,7 @@ class ReportCardExamImportService {
           school_id: schoolId,
           classId,
           termId,
+          schoolYear: targetContext.academicYear,
           studentId: { $in: studentIds },
         }).lean()
         : [],
@@ -538,14 +656,22 @@ class ReportCardExamImportService {
         };
 
         if (termBlocked) {
+          this._logResolveReportCard({
+            examId: getObjectIdString(exam._id),
+            studentId,
+            studentName: baseItem.studentName,
+            schoolId,
+            targetContext,
+            foundReportCard: Boolean(reportCard),
+            reportCardId: getObjectIdString(reportCard?._id) || null,
+            reason: 'wrong_term',
+          });
           return {
             ...baseItem,
             blocked: true,
             status: 'term_mismatch',
             suggestedAction: 'block',
-            message: !termContext.termId
-              ? 'Prova sem bimestre confiavel.'
-              : 'Bimestre da prova diverge do boletim selecionado.',
+            message: 'Destino de bimestre invalido para importacao.',
           };
         }
 
@@ -555,9 +681,21 @@ class ReportCardExamImportService {
             blocked: true,
             status: 'missing_report_card',
             suggestedAction: 'block',
-            message: 'Boletim do aluno nao encontrado para o bimestre.',
+            message: `Boletim nao encontrado para ${targetContext.className || 'a turma'} no ${targetContext.termName || 'bimestre selecionado'}.`,
+            missingReportCardDiagnosis: null,
           };
         }
+
+        this._logResolveReportCard({
+          examId: getObjectIdString(exam._id),
+          studentId,
+          studentName: baseItem.studentName,
+          schoolId,
+          targetContext,
+          foundReportCard: true,
+          reportCardId: getObjectIdString(reportCard._id),
+          reason: 'ok',
+        });
 
         if (this._isReportCardLocked(reportCard)) {
           return {
@@ -650,6 +788,28 @@ class ReportCardExamImportService {
 
     const summary = this._summarizePreview(items);
 
+    for (const item of items) {
+      if (item.status !== 'missing_report_card' || item.reportCardId) continue;
+      const diagnosis = await this._diagnoseMissingReportCard({
+        schoolId,
+        studentId: item.studentId,
+        classId,
+        termId,
+        academicYear: targetContext.academicYear,
+      });
+      item.missingReportCardDiagnosis = diagnosis;
+      this._logResolveReportCard({
+        examId: getObjectIdString(exam._id),
+        studentId: item.studentId,
+        studentName: item.studentName,
+        schoolId,
+        targetContext,
+        foundReportCard: false,
+        reportCardId: null,
+        reason: diagnosis,
+      });
+    }
+
     if (shouldLogExamImportDebug()) {
       for (const item of items) {
         const decision = item.status === 'will_fill'
@@ -674,10 +834,15 @@ class ReportCardExamImportService {
           examId: getObjectIdString(exam._id),
           studentId: item.studentId,
           score: item.examGrade,
+          normalizedScore: item.proposedTestScore,
           proposedTestScore: item.proposedTestScore,
           scoreMode: normalizedScoreMode,
           decision,
           reason: item.message || item.status,
+          targetReportCardId: item.reportCardId || null,
+          targetTermId: targetContext.termId,
+          targetClassId: targetContext.classId,
+          targetSubjectId: targetContext.subjectId,
           checks,
         });
       }
@@ -703,8 +868,13 @@ class ReportCardExamImportService {
       },
       target: {
         classId: String(classId),
+        className: targetContext.className,
         subjectId: String(subjectId),
+        subjectName: targetContext.subjectName,
         termId: String(termId),
+        termName: targetContext.termName,
+        academicYearId: targetContext.academicYearId,
+        academicYear: targetContext.academicYear,
         scoreMode: normalizedScoreMode,
       },
       canCommit: !termBlocked && items.some((item) => ['will_fill', 'already_same', 'already_imported', 'conflict_existing_test_score'].includes(item.status)),
@@ -753,6 +923,7 @@ class ReportCardExamImportService {
     classId,
     subjectId,
     termId,
+    academicYearId = null,
     selectedStudentIds = null,
     conflictDecisions = {},
     reason = '',
@@ -771,6 +942,7 @@ class ReportCardExamImportService {
       classId,
       subjectId,
       termId,
+      academicYearId,
       selectedStudentIds,
       conflictDecisions,
       scoreMode: normalizedScoreMode,
@@ -799,6 +971,7 @@ class ReportCardExamImportService {
       classId,
       subjectId,
       termId,
+      academicYearId,
       scoreMode: normalizedScoreMode,
     });
 
