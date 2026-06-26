@@ -22,7 +22,7 @@ class ReportCardController {
 
       return res.status(201).json({
         success: true,
-        message: 'Boletins da turma gerados com sucesso.',
+        message: 'Boletins da turma sincronizados com sucesso.',
         data: result,
       });
     } catch (error) {

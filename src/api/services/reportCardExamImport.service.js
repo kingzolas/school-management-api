@@ -562,6 +562,26 @@ class ReportCardExamImportService {
       academicYearId,
     });
 
+    const ensuredReportCards = await reportCardService.ensureReportCardsForClassTerm({
+      schoolId,
+      classId,
+      termId,
+      schoolYear: targetContext.academicYear,
+    });
+
+    if (shouldLogExamImportDebug()) {
+      console.log('[ExamImportAPI][EnsureReportCards]', {
+        examId: getObjectIdString(exam._id),
+        schoolId: String(schoolId),
+        classId: targetContext.classId,
+        className: targetContext.className,
+        termId: targetContext.termId,
+        termName: targetContext.termName,
+        academicYear: targetContext.academicYear,
+        totalEnsured: Array.isArray(ensuredReportCards) ? ensuredReportCards.length : null,
+      });
+    }
+
     const termContext = await examService._resolveStoredExamTermContext(exam, schoolId);
     const termBlocked = false;
 

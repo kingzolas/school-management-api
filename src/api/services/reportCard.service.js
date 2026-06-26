@@ -140,6 +140,7 @@ class ReportCardService {
         teacherNameSnapshot:
           existing.teacherNameSnapshot || generated.teacherNameSnapshot,
         testScore: existing.testScore !== undefined ? existing.testScore : null,
+        testScoreSource: existing.testScoreSource || null,
         activityScore: existing.activityScore !== undefined ? existing.activityScore : null,
         participationScore: existing.participationScore !== undefined ? existing.participationScore : null,
         score: mergedScore,
@@ -176,6 +177,13 @@ class ReportCardService {
     console.log(`\n--- [ReportCardService] Iniciando geração de boletins ---`);
     console.log(`Parâmetros recebidos -> Escola: ${schoolId}, Turma: ${classId}, Período: ${termId}, Ano: ${schoolYear}`);
 
+    console.log('[ReportCardsAPI][SyncStart]', {
+      schoolId: String(schoolId),
+      classId: String(classId),
+      termId: String(termId),
+      schoolYear: Number(schoolYear),
+    });
+
     const school = await School.findOne({ _id: schoolId });
     if (!school) {
       throw this._createError('Escola não encontrada.', 404);
@@ -191,6 +199,12 @@ class ReportCardService {
     }
 
     console.log(`Turma localizada: ${classData.name} (ID: ${classData._id})`);
+
+    console.log('[ReportCardsAPI][SyncClass]', {
+      classId: String(classData._id),
+      className: classData.name,
+      schoolYear: classData.schoolYear,
+    });
 
     const enrollments = await Enrollment.find({
       school_id: schoolId,
@@ -209,6 +223,12 @@ class ReportCardService {
 
     console.log(`Matrículas ativas encontradas: ${enrollments.length}`);
 
+    console.log('[ReportCardsAPI][SyncEnrollments]', {
+      classId: String(classId),
+      schoolYear: Number(schoolYear),
+      activeEnrollments: enrollments.length,
+    });
+
     let horarios = await Horario.find({
       school_id: schoolId,
       classId: classId, 
@@ -219,6 +239,11 @@ class ReportCardService {
 
     if (!horarios.length) {
       console.log(`[AVISO] Sem horário no período ${termId}. Buscando qualquer horário global da turma...`);
+      console.log('[ReportCardsAPI][SyncScheduleFallback]', {
+        classId: String(classId),
+        termId: String(termId),
+        reason: 'no_term_schedule',
+      });
       horarios = await Horario.find({
         school_id: schoolId,
         classId: classId,
@@ -247,12 +272,25 @@ class ReportCardService {
 
     console.log(`Disciplinas únicas extraídas do horário: ${generatedSubjects.length}`);
 
+    console.log('[ReportCardsAPI][SyncSubjects]', {
+      classId: String(classId),
+      termId: String(termId),
+      subjects: generatedSubjects.length,
+    });
+
     const results = [];
+    let existingCount = 0;
+    let createdCount = 0;
+    let updatedCount = 0;
+    let ignoredCount = 0;
 
     for (const enrollment of enrollments) {
       const student = enrollment.student;
 
-      if (!student?._id) continue;
+      if (!student?._id) {
+        ignoredCount += 1;
+        continue;
+      }
 
       // --- BUSCA DO NOME DO RESPONSÁVEL ---
       // Procura um tutor que tenha esse aluno na lista de filhos ('students')
@@ -297,9 +335,11 @@ class ReportCardService {
         });
 
         results.push(created);
+        createdCount += 1;
         continue;
       }
 
+      existingCount += 1;
       existingReportCard.minimumAverage = minimumAverage;
       // Atualiza o nome do responsável se estiver vazio ou caso o tutor tenha mudado
       existingReportCard.responsibleNameSnapshot = responsibleNameSnapshot;
@@ -316,7 +356,21 @@ class ReportCardService {
 
       await existingReportCard.save();
       results.push(existingReportCard);
+      updatedCount += 1;
     }
+
+    console.log('[ReportCardsAPI][SyncResult]', {
+      schoolId: String(schoolId),
+      classId: String(classId),
+      className: classData.name,
+      termId: String(termId),
+      schoolYear: Number(schoolYear),
+      existing: existingCount,
+      created: createdCount,
+      updated: updatedCount,
+      ignored: ignoredCount,
+      total: results.length,
+    });
 
     console.log(`--- [ReportCardService] Processamento concluído. Boletins gerados/atualizados: ${results.length} ---\n`);
 
@@ -324,6 +378,10 @@ class ReportCardService {
     return await ReportCard.populate(results, [
       { path: 'studentId', select: 'name fullName full_name' }
     ]);
+  }
+
+  async ensureReportCardsForClassTerm(payload) {
+    return this.generateClassReportCards(payload);
   }
 
   async getStudentReportCard({
