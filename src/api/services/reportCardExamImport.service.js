@@ -56,7 +56,38 @@ const shouldLogExamImportDebug = () => {
   );
 };
 
+const shouldLogExamPerf = (enabled = false) => {
+  return enabled || ['true', '1', 'yes', 'sim'].includes(
+    String(process.env.EXAM_PERF_DEBUG || '').toLowerCase()
+  );
+};
+
 class ReportCardExamImportService {
+  _logPerfStep({ enabled = false, requestId, endpoint, step, durationMs, count = null, extra = null }) {
+    if (!shouldLogExamPerf(enabled)) return;
+    console.log('[ExamPerfAPI][Step]', {
+      requestId,
+      endpoint,
+      step,
+      durationMs,
+      count,
+      ...(extra || {}),
+    });
+  }
+
+  async _measurePerfStep({ enabled = false, requestId, endpoint, step, countFromResult = null }, action) {
+    const stopwatch = Date.now();
+    const result = await action();
+    const durationMs = Date.now() - stopwatch;
+    const count = typeof countFromResult === 'function'
+      ? countFromResult(result)
+      : Array.isArray(result)
+        ? result.length
+        : countFromResult;
+    this._logPerfStep({ enabled, requestId, endpoint, step, durationMs, count });
+    return result;
+  }
+
   _ensureObjectId(value, label) {
     if (!value || !mongoose.Types.ObjectId.isValid(value)) {
       throw createHttpError(`${label} invalido.`, 400);
@@ -397,9 +428,18 @@ class ReportCardExamImportService {
     return exam;
   }
 
-  async listImportableExams({ schoolId, actor, classId, subjectId = null, termId = null }) {
+  async listImportableExams({
+    schoolId,
+    actor,
+    classId,
+    subjectId = null,
+    termId = null,
+    requestId = null,
+    perfEnabled = false,
+  }) {
     this._ensureObjectId(classId, 'classId');
     await ensureClassAccess(actor, schoolId, classId);
+    const endpoint = 'exam_list';
 
     const filter = {
       school_id: schoolId,
@@ -416,77 +456,194 @@ class ReportCardExamImportService {
       filter.teacher_id = actorId;
     }
 
-    const exams = await Exam.find(filter)
-      .sort({ applicationDate: -1, createdAt: -1 })
-      .populate('class_id', 'name')
-      .populate('subject_id', 'name')
-      .populate('teacher_id', 'fullName name')
-      .populate('termId', 'titulo dataInicio dataFim anoLetivoId')
-      .lean();
+    const exams = await this._measurePerfStep(
+      { enabled: perfEnabled, requestId, endpoint, step: 'load_exams' },
+      () => Exam.find(filter)
+        .sort({ applicationDate: -1, createdAt: -1 })
+        .populate('class_id', 'name')
+        .populate('subject_id', 'name')
+        .populate('teacher_id', 'fullName name')
+        .populate('termId', 'titulo dataInicio dataFim anoLetivoId')
+        .lean()
+    );
 
-    const results = [];
+    const termStopwatch = Date.now();
+    const examsWithTerm = [];
     for (const exam of exams) {
       const termContext = await examService._resolveStoredExamTermContext(exam, schoolId);
-      if (termId && String(termContext.termId || '') !== String(termId)) {
-        continue;
+      if (!termId || String(termContext.termId || '') === String(termId)) {
+        examsWithTerm.push({ exam, termContext });
       }
+    }
+    this._logPerfStep({
+      enabled: perfEnabled,
+      requestId,
+      endpoint,
+      step: 'resolve_terms',
+      durationMs: Date.now() - termStopwatch,
+      count: examsWithTerm.length,
+    });
 
-      const [totalSheets, correctedSheets] = await Promise.all([
-        ExamSheet.countDocuments({ school_id: schoolId, exam_id: exam._id }),
-        ExamSheet.countDocuments({
+    if (!examsWithTerm.length) {
+      this._logPerfStep({
+        enabled: perfEnabled,
+        requestId,
+        endpoint,
+        step: 'serialize',
+        durationMs: 0,
+        count: 0,
+      });
+      return [];
+    }
+
+    const examIds = examsWithTerm.map(({ exam }) => exam._id);
+    const examIdSet = new Set(examIds.map(getObjectIdString));
+    const termIds = [...new Set(
+      examsWithTerm
+        .map(({ termContext }) => termContext.termId)
+        .filter(Boolean)
+        .map(String)
+    )];
+
+    const [enrollments, sheets, reportCards] = await Promise.all([
+      this._measurePerfStep(
+        { enabled: perfEnabled, requestId, endpoint, step: 'load_students' },
+        () => Enrollment.find({
           school_id: schoolId,
-          exam_id: exam._id,
-          grade: { $type: 'number' },
-        }),
-      ]);
+          class: classId,
+          status: 'Ativa',
+        }).select('_id student').lean()
+      ),
+      this._measurePerfStep(
+        { enabled: perfEnabled, requestId, endpoint, step: 'load_sheets' },
+        () => ExamSheet.find({
+          school_id: schoolId,
+          exam_id: { $in: examIds },
+        }).select('_id exam_id student_id grade maxGrade status').lean()
+      ),
+      this._measurePerfStep(
+        { enabled: perfEnabled, requestId, endpoint, step: 'load_report_cards' },
+        () => termIds.length
+          ? ReportCard.find({
+            school_id: schoolId,
+            classId,
+            termId: { $in: termIds },
+          }).select('_id termId studentId subjects releasedForPrint status').lean()
+          : []
+      ),
+    ]);
 
-      let importSummary = {
+    const studentIds = new Set(enrollments.map((enrollment) => getObjectIdString(enrollment.student)).filter(Boolean));
+    const sheetsByExam = new Map();
+    for (const sheet of sheets) {
+      const examId = getObjectIdString(sheet.exam_id);
+      if (!examIdSet.has(examId)) continue;
+      if (!sheetsByExam.has(examId)) sheetsByExam.set(examId, []);
+      sheetsByExam.get(examId).push(sheet);
+    }
+
+    const reportCardByTermStudent = new Map();
+    for (const reportCard of reportCards) {
+      reportCardByTermStudent.set(
+        `${getObjectIdString(reportCard.termId)}::${getObjectIdString(reportCard.studentId)}`,
+        reportCard
+      );
+    }
+
+    const computeStopwatch = Date.now();
+    const results = [];
+    for (const { exam, termContext } of examsWithTerm) {
+      const examId = getObjectIdString(exam._id);
+      const examSheets = sheetsByExam.get(examId) || [];
+      const relevantSheets = examSheets.filter(
+        (sheet) => !studentIds.size || studentIds.has(getObjectIdString(sheet.student_id))
+      );
+      const totalSheets = relevantSheets.length;
+      const correctedSheets = relevantSheets.filter((sheet) => finiteNumber(sheet.grade) !== null).length;
+
+      const importSummary = {
         alreadyImportedCount: 0,
         conflictCount: 0,
         importableCount: 0,
         hasConflicts: false,
         blockedCount: termContext.termResolution.status === 'missing' ||
           termContext.termResolution.status === 'conflict'
-          ? 1
+          ? correctedSheets
           : 0,
         noopCount: 0,
         pendingCount: Math.max(totalSheets - correctedSheets, 0),
+        scoreMode: this._resolveScoreModeForExam(exam, 'auto'),
+        importSummaryError: null,
       };
 
       if (
         termContext.termId &&
         !['missing', 'conflict'].includes(termContext.termResolution.status)
       ) {
-        try {
-          const scoreMode = this._resolveScoreModeForExam(exam, 'auto');
-          const preview = await this.previewExamImport({
-            schoolId,
-            actor,
-            examId: getObjectIdString(exam._id),
-            classId,
-            subjectId: getObjectIdString(exam.subject_id),
-            termId: termContext.termId,
+        const subjectIdString = getObjectIdString(exam.subject_id);
+        const examMaxScore = finiteNumber(exam.totalValue);
+        const scoreMode = importSummary.scoreMode;
+
+        for (const sheet of relevantSheets) {
+          const sheetScore = finiteNumber(sheet.grade);
+          if (sheetScore === null) continue;
+
+          const studentId = getObjectIdString(sheet.student_id);
+          const reportCard = reportCardByTermStudent.get(`${String(termContext.termId)}::${studentId}`);
+          if (!reportCard) {
+            importSummary.blockedCount += 1;
+            continue;
+          }
+
+          if (this._isReportCardLocked(reportCard)) {
+            importSummary.blockedCount += 1;
+            continue;
+          }
+
+          const subjectEntry = this._findSubject(reportCard, subjectIdString, actor);
+          if (!subjectEntry || !this._canBaseWrite({ actor, exam, subjectEntry })) {
+            importSummary.blockedCount += 1;
+            continue;
+          }
+
+          const scoreProposal = this._calculateProposedScore({
+            sheetScore,
+            sheetMaxScore: finiteNumber(sheet.maxGrade),
+            examMaxScore,
+            scoreMode,
+          });
+          const scale = this._buildScaleStatus({
+            originalMaxGrade: scoreProposal.originalMaxGrade,
+            proposedTestScore: scoreProposal.proposedTestScore,
+            activityScore: subjectEntry.activityScore,
+            participationScore: subjectEntry.participationScore,
             scoreMode,
           });
 
-          importSummary = {
-            alreadyImportedCount: preview.items.filter(
-              (item) => item.status === 'already_imported' || item.status === 'already_same'
-            ).length,
-            conflictCount: preview.summary.conflictCount,
-            importableCount: preview.summary.importableCount,
-            hasConflicts: preview.summary.conflictCount > 0,
-            blockedCount: preview.summary.blockedCount,
-            noopCount: preview.summary.noopCount,
-            pendingCount: preview.summary.pendingCount,
-            scoreMode: preview.target.scoreMode,
-          };
-        } catch (error) {
-          importSummary = {
-            ...importSummary,
-            blockedCount: Math.max(importSummary.blockedCount, 1),
-            importSummaryError: error.message,
-          };
+          if (!scale.canApplyScale) {
+            importSummary.blockedCount += 1;
+            continue;
+          }
+
+          const currentTestScore = finiteNumber(subjectEntry.testScore);
+          if (currentTestScore !== null && sameScore(currentTestScore, scoreProposal.proposedTestScore)) {
+            importSummary.noopCount += 1;
+            importSummary.alreadyImportedCount += 1;
+            continue;
+          }
+
+          if (currentTestScore !== null) {
+            const canOverwrite = this._canOverwriteConflict({ actor, subjectEntry });
+            if (canOverwrite) {
+              importSummary.conflictCount += 1;
+              importSummary.hasConflicts = true;
+            } else {
+              importSummary.blockedCount += 1;
+            }
+            continue;
+          }
+
+          importSummary.importableCount += 1;
         }
       }
 
@@ -516,13 +673,30 @@ class ReportCardExamImportService {
         blockedCount: importSummary.blockedCount,
         noopCount: importSummary.noopCount,
         pendingCount: importSummary.pendingCount,
-        scoreMode: importSummary.scoreMode || this._resolveScoreModeForExam(exam, 'auto'),
+        scoreMode: importSummary.scoreMode,
         importSummaryError: importSummary.importSummaryError || null,
         importBlocked:
           termContext.termResolution.status === 'missing' ||
           termContext.termResolution.status === 'conflict',
       });
     }
+
+    this._logPerfStep({
+      enabled: perfEnabled,
+      requestId,
+      endpoint,
+      step: 'compute_import_status',
+      durationMs: Date.now() - computeStopwatch,
+      count: results.length,
+    });
+    this._logPerfStep({
+      enabled: perfEnabled,
+      requestId,
+      endpoint,
+      step: 'serialize',
+      durationMs: 0,
+      count: results.length,
+    });
 
     return results;
   }

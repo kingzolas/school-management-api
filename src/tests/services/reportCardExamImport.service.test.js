@@ -5,6 +5,11 @@ const mongoose = require('mongoose');
 const reportCardExamImportService = require('../../api/services/reportCardExamImport.service');
 const examService = require('../../api/services/exam.service');
 const Periodo = require('../../api/models/periodo.model');
+const Class = require('../../api/models/class.model');
+const Exam = require('../../api/models/exam.model');
+const ExamSheet = require('../../api/models/exam-sheet.model');
+const Enrollment = require('../../api/models/enrollment.model');
+const ReportCard = require('../../api/models/reportCard.model');
 
 function mockFindOne(result) {
   return {
@@ -12,6 +17,27 @@ function mockFindOne(result) {
       return this;
     },
     lean: async () => result,
+  };
+}
+
+function mockFindMany(result) {
+  return {
+    sort() {
+      return this;
+    },
+    populate() {
+      return this;
+    },
+    select() {
+      return this;
+    },
+    lean: async () => result,
+  };
+}
+
+function mockFindOneSelectable(result) {
+  return {
+    select: async () => result,
   };
 }
 
@@ -178,4 +204,110 @@ test('idempotency key is stable for repeated commit payloads regardless of selec
     reportCardExamImportService._buildIdempotencyKey(base),
     reportCardExamImportService._buildIdempotencyKey(reordered)
   );
+});
+
+test('importable exam list computes card summary without calling preview or ensuring report cards', async () => {
+  const schoolId = new mongoose.Types.ObjectId();
+  const classId = new mongoose.Types.ObjectId();
+  const subjectId = new mongoose.Types.ObjectId();
+  const teacherId = new mongoose.Types.ObjectId();
+  const termId = new mongoose.Types.ObjectId();
+  const studentId = new mongoose.Types.ObjectId();
+  const examId = new mongoose.Types.ObjectId();
+  const sheetId = new mongoose.Types.ObjectId();
+  const reportCardId = new mongoose.Types.ObjectId();
+
+  const originals = {
+    classFindOne: Class.findOne,
+    examFind: Exam.find,
+    examSheetFind: ExamSheet.find,
+    enrollmentFind: Enrollment.find,
+    reportCardFind: ReportCard.find,
+    resolveStoredExamTermContext: examService._resolveStoredExamTermContext,
+    previewExamImport: reportCardExamImportService.previewExamImport,
+  };
+
+  Class.findOne = () => mockFindOneSelectable({ _id: classId, school_id: schoolId, name: '1oB' });
+  Exam.find = () => mockFindMany([
+    {
+      _id: examId,
+      title: 'Prova de Linguagem 15q',
+      class_id: { _id: classId, name: '1oB' },
+      subject_id: { _id: subjectId, name: 'Linguagem' },
+      teacher_id: { _id: teacherId, fullName: 'Professor' },
+      termId: { _id: termId, titulo: '2o Bimestre' },
+      applicationDate: new Date('2026-06-16T12:00:00.000Z'),
+      status: 'PUBLISHED',
+      correctionType: 'BUBBLE_SHEET',
+      totalValue: 15,
+    },
+  ]);
+  ExamSheet.find = () => mockFindMany([
+    {
+      _id: sheetId,
+      exam_id: examId,
+      student_id: studentId,
+      grade: 15,
+      maxGrade: 15,
+      status: 'SCANNED',
+    },
+  ]);
+  Enrollment.find = () => mockFindMany([
+    {
+      _id: new mongoose.Types.ObjectId(),
+      student: studentId,
+    },
+  ]);
+  ReportCard.find = () => mockFindMany([
+    {
+      _id: reportCardId,
+      termId,
+      studentId,
+      releasedForPrint: false,
+      status: 'Rascunho',
+      subjects: [
+        {
+          subjectId,
+          teacherId,
+          testScore: null,
+          activityScore: 0,
+          participationScore: 0,
+        },
+      ],
+    },
+  ]);
+  examService._resolveStoredExamTermContext = async () => ({
+    termId: String(termId),
+    termName: '2o Bimestre',
+    termResolution: { status: 'explicit', source: 'payload' },
+  });
+  reportCardExamImportService.previewExamImport = async () => {
+    throw new Error('previewExamImport should not be called by listImportableExams');
+  };
+
+  try {
+    const result = await reportCardExamImportService.listImportableExams({
+      schoolId,
+      actor: { role: 'ADMIN' },
+      classId: String(classId),
+      termId: String(termId),
+    });
+
+    assert.equal(result.length, 1);
+    assert.equal(result[0].totalSheets, 1);
+    assert.equal(result[0].correctedSheets, 1);
+    assert.equal(result[0].importableCount, 1);
+    assert.equal(result[0].alreadyImportedCount, 0);
+    assert.equal(result[0].conflictCount, 0);
+    assert.equal(result[0].blockedCount, 0);
+    assert.equal(result[0].scoreMode, 'normalize_to_component');
+  } finally {
+    Class.findOne = originals.classFindOne;
+    Exam.find = originals.examFind;
+    ExamSheet.find = originals.examSheetFind;
+    Enrollment.find = originals.enrollmentFind;
+    ReportCard.find = originals.reportCardFind;
+    examService._resolveStoredExamTermContext = originals.resolveStoredExamTermContext;
+    reportCardExamImportService.previewExamImport = originals.previewExamImport;
+  }
 });

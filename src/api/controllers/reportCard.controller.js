@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const reportCardService = require('../services/reportCard.service');
 const reportCardExamImportService = require('../services/reportCardExamImport.service');
 
@@ -175,6 +176,9 @@ class ReportCardController {
   }
 
   async listImportableExams(req, res, next) {
+    const startedAt = Date.now();
+    const requestId = req.headers['x-request-id'] || req.query.requestId || crypto.randomUUID();
+    const perfEnabled = ['true', '1', 'yes', 'sim'].includes(String(req.query.perf || process.env.EXAM_PERF_DEBUG || '').toLowerCase());
     try {
       const schoolId =
         req.user?.school_id ||
@@ -182,6 +186,21 @@ class ReportCardController {
         req.school_id ||
         req.schoolId ||
         req.query.schoolId;
+
+      if (perfEnabled) {
+        console.log('[ExamPerfAPI][RequestStart]', {
+          requestId,
+          method: req.method,
+          path: req.path,
+          query: {
+            classId: req.query.classId,
+            termId: req.query.termId,
+            subjectId: req.query.subjectId || null,
+          },
+          schoolId: String(schoolId || ''),
+          teacherId: String(req.user?._id || req.user?.id || ''),
+        });
+      }
 
       const result = await reportCardExamImportService.listImportableExams({
         schoolId,
@@ -189,23 +208,52 @@ class ReportCardController {
         classId: req.query.classId,
         subjectId: req.query.subjectId || null,
         termId: req.query.termId || null,
+        requestId,
+        perfEnabled,
       });
 
-      return res.status(200).json({
+      const payload = {
         success: true,
         data: result,
-      });
+      };
+      if (perfEnabled) {
+        console.log('[ExamPerfAPI][RequestEnd]', {
+          requestId,
+          method: req.method,
+          path: req.path,
+          status: 200,
+          durationMs: Date.now() - startedAt,
+          responseBytes: Buffer.byteLength(JSON.stringify(payload)),
+        });
+      }
+
+      return res.status(200).json(payload);
     } catch (error) {
       console.error('[ReportCardController.listImportableExams] Erro:', error);
-      return res.status(error.statusCode || 500).json({
+      const status = error.statusCode || 500;
+      const payload = {
         success: false,
         message: error.message || 'Erro interno ao listar provas disponiveis.',
         details: error.toString()
-      });
+      };
+      if (perfEnabled) {
+        console.log('[ExamPerfAPI][RequestEnd]', {
+          requestId,
+          method: req.method,
+          path: req.path,
+          status,
+          durationMs: Date.now() - startedAt,
+          responseBytes: Buffer.byteLength(JSON.stringify(payload)),
+        });
+      }
+      return res.status(status).json(payload);
     }
   }
 
   async previewExamImport(req, res, next) {
+    const startedAt = Date.now();
+    const requestId = req.headers['x-request-id'] || req.query.requestId || crypto.randomUUID();
+    const perfEnabled = ['true', '1', 'yes', 'sim'].includes(String(req.query.perf || process.env.EXAM_PERF_DEBUG || '').toLowerCase());
     try {
       const schoolId =
         req.user?.school_id ||
@@ -213,6 +261,23 @@ class ReportCardController {
         req.school_id ||
         req.schoolId ||
         req.query.schoolId;
+
+      if (perfEnabled) {
+        console.log('[ExamPerfAPI][RequestStart]', {
+          requestId,
+          method: req.method,
+          path: req.path,
+          query: {
+            examId: req.params.examId,
+            classId: req.query.classId,
+            termId: req.query.termId,
+            subjectId: req.query.subjectId,
+            scoreMode: req.query.scoreMode || 'raw',
+          },
+          schoolId: String(schoolId || ''),
+          teacherId: String(req.user?._id || req.user?.id || ''),
+        });
+      }
 
       const result = await reportCardExamImportService.previewExamImport({
         schoolId,
@@ -225,17 +290,41 @@ class ReportCardController {
         scoreMode: req.query.scoreMode || 'raw',
       });
 
-      return res.status(200).json({
+      const payload = {
         success: true,
         data: result,
-      });
+      };
+      if (perfEnabled) {
+        console.log('[ExamPerfAPI][RequestEnd]', {
+          requestId,
+          method: req.method,
+          path: req.path,
+          status: 200,
+          durationMs: Date.now() - startedAt,
+          responseBytes: Buffer.byteLength(JSON.stringify(payload)),
+        });
+      }
+
+      return res.status(200).json(payload);
     } catch (error) {
       console.error('[ReportCardController.previewExamImport] Erro:', error);
-      return res.status(error.statusCode || 500).json({
+      const status = error.statusCode || 500;
+      const payload = {
         success: false,
         message: error.message || 'Erro interno ao preparar preview de importacao.',
         details: error.toString()
-      });
+      };
+      if (perfEnabled) {
+        console.log('[ExamPerfAPI][RequestEnd]', {
+          requestId,
+          method: req.method,
+          path: req.path,
+          status,
+          durationMs: Date.now() - startedAt,
+          responseBytes: Buffer.byteLength(JSON.stringify(payload)),
+        });
+      }
+      return res.status(status).json(payload);
     }
   }
 
