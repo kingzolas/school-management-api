@@ -39,6 +39,7 @@ const periodoSchema = new Schema({
 // Índice composto: 
 // Garante que não existam dois "1º Bimestre" no mesmo Ano Letivo da mesma Escola.
 periodoSchema.index({ anoLetivoId: 1, titulo: 1, school_id: 1 }, { unique: true });
+periodoSchema.index({ school_id: 1, tipo: 1, dataInicio: 1, dataFim: 1 });
 
 const Periodo = mongoose.model('Periodo', periodoSchema);
 module.exports = Periodo;

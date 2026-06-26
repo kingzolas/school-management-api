@@ -82,4 +82,9 @@ const examSchema = new Schema({
     }
 }, { timestamps: true });
 
+examSchema.index({ school_id: 1, class_id: 1, applicationDate: -1, createdAt: -1 });
+examSchema.index({ school_id: 1, class_id: 1, teacher_id: 1, applicationDate: -1, createdAt: -1 });
+examSchema.index({ school_id: 1, class_id: 1, subject_id: 1, applicationDate: -1, createdAt: -1 });
+examSchema.index({ school_id: 1, class_id: 1, termId: 1, applicationDate: -1, createdAt: -1 });
+
 module.exports = mongoose.model('Exam', examSchema);

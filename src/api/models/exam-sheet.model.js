@@ -60,5 +60,6 @@ const examSheetSchema = new Schema({
 }, { timestamps: true });
 
 examSheetSchema.index({ exam_id: 1, student_id: 1 }, { unique: true });
+examSheetSchema.index({ school_id: 1, exam_id: 1, student_id: 1 });
 
 module.exports = mongoose.model('ExamSheet', examSheetSchema);

@@ -63,6 +63,10 @@ const shouldLogExamPerf = (enabled = false) => {
 };
 
 class ReportCardExamImportService {
+  constructor() {
+    this._previewEnsureCache = new Map();
+  }
+
   _logPerfStep({ enabled = false, requestId, endpoint, step, durationMs, count = null, extra = null }) {
     if (!shouldLogExamPerf(enabled)) return;
     console.log('[ExamPerfAPI][Step]', {
@@ -297,6 +301,139 @@ class ReportCardExamImportService {
     return !ownerId || ownerId === actorId;
   }
 
+  _isDateInsidePeriod(date, period) {
+    if (!date || !period?.dataInicio || !period?.dataFim) return false;
+    const value = new Date(date).getTime();
+    const start = new Date(period.dataInicio).getTime();
+    const end = new Date(period.dataFim).getTime();
+    if (![value, start, end].every(Number.isFinite)) return false;
+    return value >= start && value <= end;
+  }
+
+  _findPeriodByDateInMemory(periods, applicationDate, schoolYearId = null) {
+    if (!applicationDate) return null;
+    const candidates = periods
+      .filter((period) => {
+        if (schoolYearId && getObjectIdString(period.anoLetivoId) !== getObjectIdString(schoolYearId)) {
+          return false;
+        }
+        return this._isDateInsidePeriod(applicationDate, period);
+      })
+      .sort((left, right) => new Date(right.dataInicio).getTime() - new Date(left.dataInicio).getTime());
+    return candidates[0] || null;
+  }
+
+  _serializeListTermContext(period, resolution) {
+    if (!period) {
+      return {
+        termId: null,
+        termName: null,
+        termResolution: resolution,
+        academicYear: null,
+      };
+    }
+
+    return {
+      termId: getObjectIdString(period._id),
+      termName: period.titulo || null,
+      termResolution: resolution,
+      academicYear: finiteNumber(period.anoLetivoId?.year),
+    };
+  }
+
+  _resolveListTermContextFromPeriods({ exam, periods, periodById }) {
+    const termId = getObjectIdString(exam?.termId);
+    const populatedTerm = exam?.termId?._id ? exam.termId : null;
+    const explicitPeriod = termId ? (periodById.get(termId) || populatedTerm) : null;
+    const schoolYearId = exam?.schoolyear_id || explicitPeriod?.anoLetivoId?._id || explicitPeriod?.anoLetivoId || null;
+    const inferredByDate = this._findPeriodByDateInMemory(periods, exam?.applicationDate, schoolYearId);
+    const now = new Date();
+
+    if (termId && explicitPeriod) {
+      const dateMatchesExplicit = this._isDateInsidePeriod(exam?.applicationDate, explicitPeriod);
+      const conflictsWithDate =
+        inferredByDate &&
+        getObjectIdString(inferredByDate._id) !== getObjectIdString(explicitPeriod._id);
+
+      return this._serializeListTermContext(explicitPeriod, {
+        status: dateMatchesExplicit && !conflictsWithDate ? 'explicit' : 'conflict',
+        source: 'payload',
+        resolvedAt: now,
+        message:
+          dateMatchesExplicit && !conflictsWithDate
+            ? null
+            : 'O periodo informado diverge da data de aplicacao da prova.',
+      });
+    }
+
+    if (inferredByDate) {
+      return this._serializeListTermContext(inferredByDate, {
+        status: 'inferred',
+        source: 'legacy_inference',
+        resolvedAt: now,
+        message: 'Periodo inferido pela data de aplicacao de uma prova antiga.',
+      });
+    }
+
+    const currentPeriod = this._findPeriodByDateInMemory(periods, now, schoolYearId);
+    if (currentPeriod) {
+      return this._serializeListTermContext(currentPeriod, {
+        status: 'inferred',
+        source: 'current_period',
+        resolvedAt: now,
+        message: 'Periodo resolvido pelo periodo letivo atual.',
+      });
+    }
+
+    return this._serializeListTermContext(null, {
+      status: 'missing',
+      source: termId ? 'payload' : 'legacy_inference',
+      resolvedAt: now,
+      message: 'Nao foi possivel resolver o periodo da prova.',
+    });
+  }
+
+  async _ensureReportCardsForPreview({ schoolId, classId, termId, schoolYear, requestId, perfEnabled }) {
+    const key = [schoolId, classId, termId, schoolYear].map(String).join('::');
+    const cached = this._previewEnsureCache.get(key);
+    const now = Date.now();
+    if (cached && now - cached.createdAt < 120000) {
+      this._logPerfStep({
+        enabled: perfEnabled,
+        requestId,
+        endpoint: 'exam_preview',
+        step: 'ensure_report_cards',
+        durationMs: 0,
+        count: cached.count,
+        extra: { cached: true },
+      });
+      return cached.value;
+    }
+
+    const value = await this._measurePerfStep(
+      {
+        enabled: perfEnabled,
+        requestId,
+        endpoint: 'exam_preview',
+        step: 'ensure_report_cards',
+        countFromResult: (result) => Array.isArray(result) ? result.length : null,
+      },
+      () => reportCardService.ensureReportCardsForClassTerm({
+        schoolId,
+        classId,
+        termId,
+        schoolYear,
+      })
+    );
+
+    this._previewEnsureCache.set(key, {
+      createdAt: now,
+      count: Array.isArray(value) ? value.length : null,
+      value,
+    });
+    return value;
+  }
+
   _calculateProposedScore({ sheetScore, sheetMaxScore, examMaxScore, scoreMode }) {
     const originalGrade = finiteNumber(sheetScore);
     const originalMaxGrade = finiteNumber(sheetMaxScore) ?? finiteNumber(examMaxScore);
@@ -467,10 +604,22 @@ class ReportCardExamImportService {
         .lean()
     );
 
+    const periods = await this._measurePerfStep(
+      { enabled: perfEnabled, requestId, endpoint, step: 'load_terms' },
+      () => Periodo.find({
+        school_id: schoolId,
+        tipo: 'Letivo',
+      })
+        .populate('anoLetivoId', 'year')
+        .select('_id titulo dataInicio dataFim anoLetivoId')
+        .lean()
+    );
+    const periodById = new Map(periods.map((period) => [getObjectIdString(period._id), period]));
+
     const termStopwatch = Date.now();
     const examsWithTerm = [];
     for (const exam of exams) {
-      const termContext = await examService._resolveStoredExamTermContext(exam, schoolId);
+      const termContext = this._resolveListTermContextFromPeriods({ exam, periods, periodById });
       if (!termId || String(termContext.termId || '') === String(termId)) {
         examsWithTerm.push({ exam, termContext });
       }
@@ -504,36 +653,65 @@ class ReportCardExamImportService {
         .filter(Boolean)
         .map(String)
     )];
+    const academicYears = [...new Set(
+      examsWithTerm
+        .map(({ termContext }) => finiteNumber(termContext.academicYear))
+        .filter((year) => year !== null)
+    )];
 
-    const [enrollments, sheets, reportCards] = await Promise.all([
+    const enrollments = await this._measurePerfStep(
+      { enabled: perfEnabled, requestId, endpoint, step: 'load_students' },
+      () => Enrollment.find({
+        school_id: schoolId,
+        class: classId,
+        status: 'Ativa',
+      }).select('_id student').lean()
+    );
+    const studentIds = new Set(enrollments.map((enrollment) => getObjectIdString(enrollment.student)).filter(Boolean));
+
+    const [sheets, reportCards] = await Promise.all([
       this._measurePerfStep(
-        { enabled: perfEnabled, requestId, endpoint, step: 'load_students' },
-        () => Enrollment.find({
-          school_id: schoolId,
-          class: classId,
-          status: 'Ativa',
-        }).select('_id student').lean()
-      ),
-      this._measurePerfStep(
-        { enabled: perfEnabled, requestId, endpoint, step: 'load_sheets' },
+        { enabled: perfEnabled, requestId, endpoint, step: 'load_sheets_grouped' },
         () => ExamSheet.find({
           school_id: schoolId,
           exam_id: { $in: examIds },
         }).select('_id exam_id student_id grade maxGrade status').lean()
       ),
       this._measurePerfStep(
-        { enabled: perfEnabled, requestId, endpoint, step: 'load_report_cards' },
-        () => termIds.length
-          ? ReportCard.find({
+        { enabled: perfEnabled, requestId, endpoint, step: 'load_report_cards_grouped' },
+        () => {
+          if (!termIds.length || !studentIds.size) return [];
+          const reportCardFilter = {
             school_id: schoolId,
             classId,
             termId: { $in: termIds },
-          }).select('_id termId studentId subjects releasedForPrint status').lean()
-          : []
+            studentId: { $in: [...studentIds] },
+          };
+          if (academicYears.length === 1) {
+            reportCardFilter.schoolYear = academicYears[0];
+          } else if (academicYears.length > 1) {
+            reportCardFilter.schoolYear = { $in: academicYears };
+          }
+          return ReportCard.find(reportCardFilter)
+            .select([
+              '_id',
+              'termId',
+              'studentId',
+              'releasedForPrint',
+              'status',
+              'subjects.subjectId',
+              'subjects.teacherId',
+              'subjects.testScore',
+              'subjects.testScoreSource',
+              'subjects.activityScore',
+              'subjects.participationScore',
+              'subjects.filledBy',
+            ].join(' '))
+            .lean();
+        }
       ),
     ]);
 
-    const studentIds = new Set(enrollments.map((enrollment) => getObjectIdString(enrollment.student)).filter(Boolean));
     const sheetsByExam = new Map();
     for (const sheet of sheets) {
       const examId = getObjectIdString(sheet.exam_id);
@@ -685,7 +863,7 @@ class ReportCardExamImportService {
       enabled: perfEnabled,
       requestId,
       endpoint,
-      step: 'compute_import_status',
+      step: 'compute_summary',
       durationMs: Date.now() - computeStopwatch,
       count: results.length,
     });
@@ -710,12 +888,17 @@ class ReportCardExamImportService {
     termId,
     academicYearId = null,
     scoreMode = 'raw',
+    requestId = null,
+    perfEnabled = false,
   }) {
     this._ensureObjectId(classId, 'classId');
     this._ensureObjectId(subjectId, 'subjectId');
     this._ensureObjectId(termId, 'termId');
 
-    const exam = await this._loadExam({ schoolId, examId, actor });
+    const exam = await this._measurePerfStep(
+      { enabled: perfEnabled, requestId, endpoint: 'exam_preview', step: 'load_exam', countFromResult: 1 },
+      () => this._loadExam({ schoolId, examId, actor })
+    );
     const normalizedScoreMode = this._resolveScoreModeForExam(exam, scoreMode);
     const examClassId = getObjectIdString(exam.class_id);
     const examSubjectId = getObjectIdString(exam.subject_id);
@@ -728,19 +911,24 @@ class ReportCardExamImportService {
       throw createHttpError('A prova nao pertence a disciplina informada.', 400);
     }
 
-    const targetContext = await this._resolveTargetContext({
-      schoolId,
-      classId,
-      subjectId,
-      termId,
-      academicYearId,
-    });
+    const targetContext = await this._measurePerfStep(
+      { enabled: perfEnabled, requestId, endpoint: 'exam_preview', step: 'resolve_target', countFromResult: 1 },
+      () => this._resolveTargetContext({
+        schoolId,
+        classId,
+        subjectId,
+        termId,
+        academicYearId,
+      })
+    );
 
-    const ensuredReportCards = await reportCardService.ensureReportCardsForClassTerm({
+    const ensuredReportCards = await this._ensureReportCardsForPreview({
       schoolId,
       classId,
       termId,
       schoolYear: targetContext.academicYear,
+      requestId,
+      perfEnabled,
     });
 
     if (shouldLogExamImportDebug()) {
@@ -756,39 +944,68 @@ class ReportCardExamImportService {
       });
     }
 
-    const termContext = await examService._resolveStoredExamTermContext(exam, schoolId);
+    const termContext = await this._measurePerfStep(
+      { enabled: perfEnabled, requestId, endpoint: 'exam_preview', step: 'resolve_term', countFromResult: 1 },
+      () => examService._resolveStoredExamTermContext(exam, schoolId)
+    );
     const termBlocked = false;
 
-    const enrollments = await Enrollment.find({
-      class: classId,
-      school_id: schoolId,
-      status: 'Ativa',
-    })
-      .populate('student', 'fullName name')
-      .select('_id student status')
-      .lean();
+    const enrollments = await this._measurePerfStep(
+      { enabled: perfEnabled, requestId, endpoint: 'exam_preview', step: 'load_students' },
+      () => Enrollment.find({
+        class: classId,
+        school_id: schoolId,
+        status: 'Ativa',
+      })
+        .populate('student', 'fullName name')
+        .select('_id student status')
+        .lean()
+    );
 
     const studentIds = enrollments
       .map((enrollment) => getObjectIdString(enrollment.student))
       .filter(Boolean);
 
     const [sheets, reportCards] = await Promise.all([
-      studentIds.length
-        ? ExamSheet.find({
-          school_id: schoolId,
-          exam_id: exam._id,
-          student_id: { $in: studentIds },
-        }).lean()
-        : [],
-      studentIds.length
-        ? ReportCard.find({
-          school_id: schoolId,
-          classId,
-          termId,
-          schoolYear: targetContext.academicYear,
-          studentId: { $in: studentIds },
-        }).lean()
-        : [],
+      this._measurePerfStep(
+        { enabled: perfEnabled, requestId, endpoint: 'exam_preview', step: 'load_sheets' },
+        () => studentIds.length
+          ? ExamSheet.find({
+            school_id: schoolId,
+            exam_id: exam._id,
+            student_id: { $in: studentIds },
+          })
+            .select('_id exam_id student_id grade maxGrade status updatedAt createdAt')
+            .lean()
+          : []
+      ),
+      this._measurePerfStep(
+        { enabled: perfEnabled, requestId, endpoint: 'exam_preview', step: 'load_report_cards' },
+        () => studentIds.length
+          ? ReportCard.find({
+            school_id: schoolId,
+            classId,
+            termId,
+            schoolYear: targetContext.academicYear,
+            studentId: { $in: studentIds },
+          })
+            .select([
+              '_id',
+              'termId',
+              'studentId',
+              'releasedForPrint',
+              'status',
+              'subjects.subjectId',
+              'subjects.teacherId',
+              'subjects.testScore',
+              'subjects.testScoreSource',
+              'subjects.activityScore',
+              'subjects.participationScore',
+              'subjects.filledBy',
+            ].join(' '))
+            .lean()
+          : []
+      ),
     ]);
 
     const sheetByStudent = new Map(sheets.map((sheet) => [getObjectIdString(sheet.student_id), sheet]));
@@ -797,6 +1014,7 @@ class ReportCardExamImportService {
     );
     const examMaxScore = finiteNumber(exam.totalValue);
 
+    const computeStopwatch = Date.now();
     const items = enrollments
       .map((enrollment) => {
         const studentId = getObjectIdString(enrollment.student);
@@ -979,6 +1197,14 @@ class ReportCardExamImportService {
         return baseItem;
       })
       .sort((left, right) => left.studentName.localeCompare(right.studentName, 'pt-BR'));
+    this._logPerfStep({
+      enabled: perfEnabled,
+      requestId,
+      endpoint: 'exam_preview',
+      step: 'compute_eligibility',
+      durationMs: Date.now() - computeStopwatch,
+      count: items.length,
+    });
 
     const summary = this._summarizePreview(items);
 

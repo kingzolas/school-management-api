@@ -223,11 +223,21 @@ test('importable exam list computes card summary without calling preview or ensu
     examSheetFind: ExamSheet.find,
     enrollmentFind: Enrollment.find,
     reportCardFind: ReportCard.find,
+    periodoFind: Periodo.find,
     resolveStoredExamTermContext: examService._resolveStoredExamTermContext,
     previewExamImport: reportCardExamImportService.previewExamImport,
   };
 
   Class.findOne = () => mockFindOneSelectable({ _id: classId, school_id: schoolId, name: '1oB' });
+  Periodo.find = () => mockFindMany([
+    {
+      _id: termId,
+      titulo: '2o Bimestre',
+      dataInicio: new Date('2026-04-01T00:00:00.000Z'),
+      dataFim: new Date('2026-06-30T23:59:59.000Z'),
+      anoLetivoId: { _id: new mongoose.Types.ObjectId(), year: 2026 },
+    },
+  ]);
   Exam.find = () => mockFindMany([
     {
       _id: examId,
@@ -307,6 +317,7 @@ test('importable exam list computes card summary without calling preview or ensu
     ExamSheet.find = originals.examSheetFind;
     Enrollment.find = originals.enrollmentFind;
     ReportCard.find = originals.reportCardFind;
+    Periodo.find = originals.periodoFind;
     examService._resolveStoredExamTermContext = originals.resolveStoredExamTermContext;
     reportCardExamImportService.previewExamImport = originals.previewExamImport;
   }

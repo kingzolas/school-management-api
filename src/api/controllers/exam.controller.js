@@ -799,16 +799,56 @@ class ExamController {
     }
 
     async getResults(req, res) {
+        const startedAt = Date.now();
+        const requestId = req.headers['x-request-id'] || req.query.requestId || crypto.randomUUID();
+        const perfEnabled = ['true', '1', 'yes', 'sim'].includes(String(req.query.perf || process.env.EXAM_PERF_DEBUG || '').toLowerCase());
         try {
             const schoolId = req.user.school_id || req.user.schoolId;
+            if (perfEnabled) {
+                console.log('[ExamPerfAPI][RequestStart]', {
+                    requestId,
+                    endpoint: 'exam_results',
+                    method: req.method,
+                    path: req.path,
+                    query: { examId: req.params.examId },
+                    schoolId: String(schoolId || ''),
+                    teacherId: String(req.user?._id || req.user?.id || ''),
+                });
+            }
             const result = await examService.getExamResults(
                 req.params.examId,
                 schoolId,
-                req.user
+                req.user,
+                { requestId, perfEnabled }
             );
+            if (perfEnabled) {
+                console.log('[ExamPerfAPI][RequestEnd]', {
+                    requestId,
+                    endpoint: 'exam_results',
+                    method: req.method,
+                    path: req.path,
+                    status: 200,
+                    durationMs: Date.now() - startedAt,
+                    responseBytes: Buffer.byteLength(JSON.stringify(result)),
+                    students: Array.isArray(result?.students) ? result.students.length : null,
+                });
+            }
             return res.status(200).json(result);
         } catch (error) {
-            return res.status(error.statusCode || 400).json({ message: error.message });
+            const status = error.statusCode || 400;
+            const payload = { message: error.message };
+            if (perfEnabled) {
+                console.log('[ExamPerfAPI][RequestEnd]', {
+                    requestId,
+                    endpoint: 'exam_results',
+                    method: req.method,
+                    path: req.path,
+                    status,
+                    durationMs: Date.now() - startedAt,
+                    responseBytes: Buffer.byteLength(JSON.stringify(payload)),
+                });
+            }
+            return res.status(status).json(payload);
         }
     }
 

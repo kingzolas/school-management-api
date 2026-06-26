@@ -190,6 +190,7 @@ class ReportCardController {
       if (perfEnabled) {
         console.log('[ExamPerfAPI][RequestStart]', {
           requestId,
+          endpoint: 'exam_list',
           method: req.method,
           path: req.path,
           query: {
@@ -219,11 +220,13 @@ class ReportCardController {
       if (perfEnabled) {
         console.log('[ExamPerfAPI][RequestEnd]', {
           requestId,
+          endpoint: 'exam_list',
           method: req.method,
           path: req.path,
           status: 200,
           durationMs: Date.now() - startedAt,
           responseBytes: Buffer.byteLength(JSON.stringify(payload)),
+          examCount: Array.isArray(result) ? result.length : null,
         });
       }
 
@@ -239,6 +242,7 @@ class ReportCardController {
       if (perfEnabled) {
         console.log('[ExamPerfAPI][RequestEnd]', {
           requestId,
+          endpoint: 'exam_list',
           method: req.method,
           path: req.path,
           status,
@@ -265,6 +269,7 @@ class ReportCardController {
       if (perfEnabled) {
         console.log('[ExamPerfAPI][RequestStart]', {
           requestId,
+          endpoint: 'exam_preview',
           method: req.method,
           path: req.path,
           query: {
@@ -288,6 +293,8 @@ class ReportCardController {
         termId: req.query.termId,
         academicYearId: req.query.targetAcademicYearId || req.query.academicYearId || null,
         scoreMode: req.query.scoreMode || 'raw',
+        requestId,
+        perfEnabled,
       });
 
       const payload = {
@@ -297,6 +304,7 @@ class ReportCardController {
       if (perfEnabled) {
         console.log('[ExamPerfAPI][RequestEnd]', {
           requestId,
+          endpoint: 'exam_preview',
           method: req.method,
           path: req.path,
           status: 200,
@@ -317,6 +325,7 @@ class ReportCardController {
       if (perfEnabled) {
         console.log('[ExamPerfAPI][RequestEnd]', {
           requestId,
+          endpoint: 'exam_preview',
           method: req.method,
           path: req.path,
           status,

@@ -392,6 +392,39 @@ class ExamService {
         console.log(`[EXAM SERVICE] ${message}`);
     }
 
+    _logExamPerfStep({ enabled = false, requestId, endpoint, step, durationMs, count = null, extra = null }) {
+        if (!enabled && !['true', '1', 'yes', 'sim'].includes(String(process.env.EXAM_PERF_DEBUG || '').toLowerCase())) {
+            return;
+        }
+        console.log('[ExamPerfAPI][Step]', {
+            requestId,
+            endpoint,
+            step,
+            durationMs,
+            count,
+            ...(extra || {}),
+        });
+    }
+
+    async _measureExamPerfStep({ enabled = false, requestId, endpoint, step, countFromResult = null }, action) {
+        const startedAt = Date.now();
+        const result = await action();
+        const count = typeof countFromResult === 'function'
+            ? countFromResult(result)
+            : Array.isArray(result)
+                ? result.length
+                : countFromResult;
+        this._logExamPerfStep({
+            enabled,
+            requestId,
+            endpoint,
+            step,
+            durationMs: Date.now() - startedAt,
+            count,
+        });
+        return result;
+    }
+
     _logWarn(message, meta = null) {
         if (meta) {
             console.warn(`[EXAM SERVICE WARN] ${message}`, meta);
@@ -1204,30 +1237,44 @@ class ExamService {
         return await this.getExamByIdForResponse(reusedExam._id, schoolId);
     }
 
-    async getExamResults(examId, schoolId, actor) {
-        const exam = await this._getReadableExam(examId, schoolId, actor);
+    async getExamResults(examId, schoolId, actor, options = {}) {
+        const requestId = options.requestId || null;
+        const perfEnabled = Boolean(options.perfEnabled);
+        const endpoint = 'exam_results';
+        const exam = await this._measureExamPerfStep(
+            { enabled: perfEnabled, requestId, endpoint, step: 'load_exam', countFromResult: 1 },
+            () => this._getReadableExam(examId, schoolId, actor)
+        );
         const classId = getObjectIdString(exam.class_id);
 
-        const enrollments = await Enrollment.find({
-            class: classId,
-            school_id: schoolId,
-            status: 'Ativa',
-        })
-            .populate('student', 'fullName name')
-            .select('_id student status')
-            .lean();
+        const enrollments = await this._measureExamPerfStep(
+            { enabled: perfEnabled, requestId, endpoint, step: 'load_students' },
+            () => Enrollment.find({
+                class: classId,
+                school_id: schoolId,
+                status: 'Ativa',
+            })
+                .populate('student', 'fullName name')
+                .select('_id student status')
+                .lean()
+        );
 
         const studentIds = enrollments
             .map((enrollment) => getObjectIdString(enrollment.student))
             .filter(Boolean);
 
-        const sheets = studentIds.length > 0
-            ? await ExamSheet.find({
-                exam_id: exam._id,
-                school_id: schoolId,
-                student_id: { $in: studentIds },
-            }).lean()
-            : [];
+        const sheets = await this._measureExamPerfStep(
+            { enabled: perfEnabled, requestId, endpoint, step: 'load_sheets' },
+            () => studentIds.length > 0
+                ? ExamSheet.find({
+                    exam_id: exam._id,
+                    school_id: schoolId,
+                    student_id: { $in: studentIds },
+                })
+                    .select('_id exam_id student_id status grade maxGrade answers updatedAt createdAt')
+                    .lean()
+                : []
+        );
 
         const sheetByStudent = new Map(
             sheets.map((sheet) => [getObjectIdString(sheet.student_id), sheet])
@@ -1236,21 +1283,27 @@ class ExamService {
         const gradeByStudent = new Map();
         const evaluationId = getObjectIdString(exam.settings?.evaluationId);
         if (evaluationId && studentIds.length > 0) {
-            const evaluation = await Evaluation.findOne({
-                _id: evaluationId,
-                school: schoolId,
-                classInfo: classId,
-            })
-                .select('_id')
-                .lean();
+                const evaluation = await this._measureExamPerfStep(
+                    { enabled: perfEnabled, requestId, endpoint, step: 'load_evaluation', countFromResult: 1 },
+                    () => Evaluation.findOne({
+                        _id: evaluationId,
+                        school: schoolId,
+                        classInfo: classId,
+                    })
+                        .select('_id')
+                        .lean()
+                );
 
-            if (evaluation) {
-                const grades = await ClassGrade.find({
-                    evaluation: evaluation._id,
-                    student: { $in: studentIds },
-                })
-                    .select('_id student enrollment value updatedAt')
-                    .lean();
+                if (evaluation) {
+                const grades = await this._measureExamPerfStep(
+                    { enabled: perfEnabled, requestId, endpoint, step: 'load_gradebook_grades' },
+                    () => ClassGrade.find({
+                        evaluation: evaluation._id,
+                        student: { $in: studentIds },
+                    })
+                        .select('_id student enrollment value updatedAt')
+                        .lean()
+                );
 
                 for (const grade of grades) {
                     gradeByStudent.set(getObjectIdString(grade.student), grade);
@@ -1261,6 +1314,7 @@ class ExamService {
         const maxScore = this._finiteNumber(exam.totalValue);
         const totalQuestions = Array.isArray(exam.questions) ? exam.questions.length : 0;
 
+        const computeStopwatch = Date.now();
         const students = enrollments
             .map((enrollment) => {
                 const studentId = getObjectIdString(enrollment.student);
@@ -1317,12 +1371,32 @@ class ExamService {
                 };
             })
             .sort((left, right) => left.studentName.localeCompare(right.studentName, 'pt-BR'));
+        this._logExamPerfStep({
+            enabled: perfEnabled,
+            requestId,
+            endpoint,
+            step: 'compute_results',
+            durationMs: Date.now() - computeStopwatch,
+            count: students.length,
+        });
 
         const correctedScores = students
             .map((student) => student.score)
             .filter((score) => typeof score === 'number' && Number.isFinite(score));
+        const insightsStopwatch = Date.now();
         const insights = this._buildQuestionInsights(sheets, exam);
-        const termContext = await this._resolveStoredExamTermContext(exam, schoolId);
+        this._logExamPerfStep({
+            enabled: perfEnabled,
+            requestId,
+            endpoint,
+            step: 'compute_insights',
+            durationMs: Date.now() - insightsStopwatch,
+            count: insights?.questions?.length || 0,
+        });
+        const termContext = await this._measureExamPerfStep(
+            { enabled: perfEnabled, requestId, endpoint, step: 'resolve_term', countFromResult: 1 },
+            () => this._resolveStoredExamTermContext(exam, schoolId)
+        );
 
         return {
             exam: {

@@ -100,5 +100,6 @@ const enrollmentSchema = new Schema({
 
 // Garante que um aluno só pode estar matriculado uma vez por ano letivo NESTA ESCOLA
 enrollmentSchema.index({ student: 1, academicYear: 1, school_id: 1 }, { unique: true });
+enrollmentSchema.index({ school_id: 1, class: 1, status: 1 });
 
 module.exports = mongoose.model('Enrollment', enrollmentSchema);
