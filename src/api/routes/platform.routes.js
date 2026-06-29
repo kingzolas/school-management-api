@@ -29,8 +29,16 @@ const USER_ROLE_ALIASES = {
   coordenador: 'Coordenador',
   coordinator: 'Coordenador',
   admin: 'Admin',
+  gestor: 'Admin',
+  manager: 'Admin',
+  financeiro: 'Staff',
+  finance: 'Staff',
+  secretaria: 'Staff',
+  secretary: 'Staff',
   staff: 'Staff',
 };
+
+const USER_ROLES = ['Professor', 'Coordenador', 'Admin', 'Staff'];
 
 function asyncRoute(handler) {
   return async (req, res) => {
@@ -132,7 +140,7 @@ function normalizeUserRoleFilter(value) {
 
   const normalized = raw.toLowerCase();
   const role = USER_ROLE_ALIASES[normalized] || raw;
-  if (!['Professor', 'Coordenador', 'Admin', 'Staff'].includes(role)) {
+  if (!USER_ROLES.includes(role)) {
     const error = new Error('Perfil de usuario invalido.');
     error.status = 400;
     error.code = 'INVALID_USER_ROLE';
@@ -153,6 +161,32 @@ function normalizeUserStatusFilter(value) {
   error.status = 400;
   error.code = 'INVALID_USER_STATUS';
   throw error;
+}
+
+function normalizeUserRoleForCreate(value) {
+  const role = normalizeUserRoleFilter(value);
+  if (!role) {
+    const error = new Error('Perfil de usuario e obrigatorio.');
+    error.status = 400;
+    error.code = 'USER_ROLE_REQUIRED';
+    throw error;
+  }
+  return role;
+}
+
+function normalizeUserStatusForCreate(value) {
+  if (value === undefined || value === null || value === '') return 'Ativo';
+  return normalizeUserStatusFilter(value);
+}
+
+function buildUsernameFromEmail(email) {
+  const username = normalizeText(email)
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '.')
+    .replace(/^[_.-]+|[_.-]+$/g, '')
+    .slice(0, 80);
+
+  return username || `user.${Date.now()}`;
 }
 
 function normalizeBillingDay(value, fallback = 10) {
@@ -433,7 +467,7 @@ function normalizePlatformUserResponse(user) {
     email: item.email || '',
     role: roles[0] || null,
     roles,
-    phone: item.phoneNumber || item.phoneFixed || null,
+    phone: item.phoneNumber === 'Nao informado' ? null : (item.phoneNumber || item.phoneFixed || null),
     status: status.status,
     rawStatus: status.rawStatus,
     isActive: status.isActive,
@@ -1032,6 +1066,89 @@ router.get('/schools/:schoolId/users', asyncRoute(async (req, res) => {
     total,
     page,
     limit,
+  });
+}));
+
+router.post('/schools/:schoolId/users', asyncRoute(async (req, res) => {
+  ensureValidObjectId(req.params.schoolId, 'Escola invalida.', 'INVALID_SCHOOL_ID');
+
+  const school = await School.findById(req.params.schoolId).select('_id').lean();
+  if (!school) return res.status(404).json({ message: 'Escola nao encontrada.', code: 'SCHOOL_NOT_FOUND' });
+
+  const name = normalizeText(req.body.name || req.body.fullName);
+  const email = normalizeEmail(req.body.email);
+  const phone = normalizeText(req.body.phone || req.body.phoneNumber);
+  const role = normalizeUserRoleForCreate(req.body.role);
+  const status = normalizeUserStatusForCreate(req.body.status);
+  const password = normalizeText(req.body.password);
+  const usernameBase = normalizeText(req.body.username) || buildUsernameFromEmail(email);
+
+  if (!name) {
+    return res.status(400).json({ message: 'Nome e obrigatorio.', code: 'USER_NAME_REQUIRED' });
+  }
+
+  if (!email) {
+    return res.status(400).json({ message: 'Email e obrigatorio.', code: 'USER_EMAIL_REQUIRED' });
+  }
+
+  if (!/\S+@\S+\.\S+/.test(email)) {
+    return res.status(400).json({ message: 'Email invalido.', code: 'INVALID_USER_EMAIL' });
+  }
+
+  if (!password) {
+    return res.status(400).json({ message: 'Senha provisoria e obrigatoria.', code: 'USER_PASSWORD_REQUIRED' });
+  }
+
+  if (password.length < 8) {
+    return res.status(400).json({
+      message: 'A senha provisoria deve ter pelo menos 8 caracteres.',
+      code: 'INVALID_PASSWORD',
+    });
+  }
+
+  const existingUser = await User.findOne({ email }).select('_id').lean();
+  if (existingUser) {
+    return res.status(409).json({ message: 'Ja existe um usuario com este email.', code: 'USER_EMAIL_ALREADY_EXISTS' });
+  }
+
+  let username = usernameBase;
+  for (let suffix = 2; await User.exists({ username }); suffix += 1) {
+    username = `${usernameBase.slice(0, 72)}.${suffix}`;
+  }
+
+  let user;
+  try {
+    user = await User.create({
+      fullName: name,
+      cpf: `platform-${new mongoose.Types.ObjectId()}`,
+      email,
+      username,
+      password,
+      phoneNumber: phone || 'Nao informado',
+      roles: [role],
+      status,
+      school_id: req.params.schoolId,
+    });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({
+        message: 'Ja existe um usuario com este email.',
+        code: 'USER_EMAIL_ALREADY_EXISTS',
+      });
+    }
+    throw error;
+  }
+
+  const createdUser = await User.findById(user._id)
+    .select('fullName email roles status phoneNumber phoneFixed createdAt updatedAt school_id')
+    .lean();
+
+  return res.status(201).json({
+    success: true,
+    data: {
+      ...normalizePlatformUserResponse(createdUser),
+      schoolId: String(createdUser.school_id),
+    },
   });
 }));
 
