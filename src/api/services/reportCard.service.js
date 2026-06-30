@@ -8,6 +8,16 @@ const Subject = require('../models/subject.model');
 const Horario = require('../models/horario.model');
 const School = require('../models/school.model');
 const Tutor = require('../models/tutor.model'); // Adicionado o model de Tutor
+const {
+  evaluationModeForClass,
+} = require('../utils/reportCardEvaluationMode.helper');
+
+const DEVELOPMENTAL_STATUSES = new Set([
+  'autonomy',
+  'support',
+  'developing',
+  'not_worked',
+]);
 
 class ReportCardService {
   _createError(message, statusCode = 400) {
@@ -101,7 +111,7 @@ class ReportCardService {
       : 'Abaixo da Média';
   }
 
-  _calculateReportCardStatus(subjects = []) {
+  _calculateNumericReportCardStatus(subjects = []) {
     if (!subjects.length) return 'Rascunho';
 
     const filledCount = subjects.filter(
@@ -111,6 +121,54 @@ class ReportCardService {
     if (filledCount === 0) return 'Rascunho';
     if (filledCount < subjects.length) return 'Parcial';
     return 'Completo';
+  }
+
+  _calculateDevelopmentalAssessmentCompletion(criteria = []) {
+    if (!criteria.length) return 'Pendente';
+
+    const filledCount = criteria.filter(
+      (item) =>
+        item.status !== null &&
+        item.status !== undefined &&
+        item.status !== ''
+    ).length;
+
+    if (filledCount === 0) return 'Pendente';
+    if (filledCount < criteria.length) return 'Em preenchimento';
+    return 'Concluído';
+  }
+
+  _calculateDevelopmentalReportCardStatus(assessments = [], subjectCount = 0) {
+    const expectedCount = subjectCount || assessments.length;
+    if (!expectedCount || !assessments.length) return 'Rascunho';
+
+    const startedCount = assessments.filter((item) => {
+      const status = this._calculateDevelopmentalAssessmentCompletion(
+        item.criteria || []
+      );
+      return status === 'Em preenchimento' || status === 'Concluído';
+    }).length;
+
+    const completedCount = assessments.filter(
+      (item) =>
+        this._calculateDevelopmentalAssessmentCompletion(item.criteria || []) ===
+        'Concluído'
+    ).length;
+
+    if (startedCount === 0) return 'Rascunho';
+    if (completedCount < expectedCount) return 'Parcial';
+    return 'Completo';
+  }
+
+  _calculateReportCardStatus(reportCard) {
+    if (reportCard?.evaluationMode === 'developmental') {
+      return this._calculateDevelopmentalReportCardStatus(
+        reportCard.developmentalAssessments || [],
+        (reportCard.subjects || []).length
+      );
+    }
+
+    return this._calculateNumericReportCardStatus(reportCard?.subjects || []);
   }
 
   _mergeSubjects(existingSubjects = [], generatedSubjects = [], minimumAverage = 7) {
@@ -148,6 +206,89 @@ class ReportCardService {
         observation: existing.observation || '',
         filledBy: existing.filledBy || null,
         filledAt: existing.filledAt || null,
+      };
+    });
+  }
+
+  _mergeDevelopmentalAssessments(existingAssessments = [], generatedSubjects = []) {
+    const existingMap = new Map();
+
+    for (const item of existingAssessments || []) {
+      const key = `${String(item.subjectId)}::${String(item.teacherId)}`;
+      existingMap.set(key, item);
+    }
+
+    return generatedSubjects.map((generated) => {
+      const key = `${String(generated.subjectId)}::${String(generated.teacherId)}`;
+      const existing = existingMap.get(key);
+
+      if (!existing) {
+        return {
+          subjectId: generated.subjectId,
+          subjectName: generated.subjectNameSnapshot,
+          teacherId: generated.teacherId,
+          teacherName: generated.teacherNameSnapshot || '',
+          criteria: [],
+          generalObservation: '',
+          completionStatus: 'Pendente',
+          filledBy: null,
+          filledAt: null,
+        };
+      }
+
+      return {
+        subjectId: generated.subjectId,
+        subjectName: existing.subjectName || generated.subjectNameSnapshot,
+        teacherId: generated.teacherId,
+        teacherName: existing.teacherName || generated.teacherNameSnapshot || '',
+        criteria: existing.criteria || [],
+        generalObservation: existing.generalObservation || '',
+        completionStatus: this._calculateDevelopmentalAssessmentCompletion(
+          existing.criteria || []
+        ),
+        filledBy: existing.filledBy || null,
+        filledAt: existing.filledAt || null,
+      };
+    });
+  }
+
+  _normalizeDevelopmentalCriteria(criteria = []) {
+    if (!Array.isArray(criteria)) {
+      throw this._createError('criteria deve ser uma lista.', 400);
+    }
+
+    const seenIds = new Set();
+
+    return criteria.map((criterion) => {
+      const criterionId = String(criterion?.criterionId || '').trim();
+      const description = String(criterion?.description || '').trim();
+      const rawStatus =
+        criterion?.status === null || criterion?.status === undefined
+          ? ''
+          : String(criterion.status).trim();
+
+      if (!criterionId) {
+        throw this._createError('Todo criterio precisa de criterionId.', 400);
+      }
+
+      if (seenIds.has(criterionId)) {
+        throw this._createError(`criterionId duplicado: ${criterionId}.`, 400);
+      }
+      seenIds.add(criterionId);
+
+      if (!description) {
+        throw this._createError('Todo criterio precisa de description.', 400);
+      }
+
+      if (rawStatus && !DEVELOPMENTAL_STATUSES.has(rawStatus)) {
+        throw this._createError(`Status invalido para criterio: ${rawStatus}.`, 400);
+      }
+
+      return {
+        criterionId,
+        description,
+        status: rawStatus,
+        updatedAt: rawStatus ? new Date() : null,
       };
     });
   }
@@ -262,6 +403,7 @@ class ReportCardService {
 
     const minimumAverage = this._normalizeMinimumAverage(school);
     const generatedSubjects = this._dedupeSubjectsFromHorario(horarios);
+    const evaluationMode = evaluationModeForClass(classData);
 
     if (!generatedSubjects.length) {
       throw this._createError(
@@ -327,11 +469,17 @@ class ReportCardService {
           classId,
           studentId: student._id,
           enrollmentId: enrollment._id,
-          gradingType: 'numeric',
+          gradingType: evaluationMode,
+          evaluationMode,
           minimumAverage,
-          status: this._calculateReportCardStatus(subjects),
+          status: evaluationMode === 'developmental'
+            ? 'Rascunho'
+            : this._calculateNumericReportCardStatus(subjects),
           responsibleNameSnapshot, // Salva o nome localizado!
           subjects,
+          developmentalAssessments: evaluationMode === 'developmental'
+            ? this._mergeDevelopmentalAssessments([], subjects)
+            : [],
         });
 
         results.push(created);
@@ -341,6 +489,8 @@ class ReportCardService {
 
       existingCount += 1;
       existingReportCard.minimumAverage = minimumAverage;
+      existingReportCard.gradingType = evaluationMode;
+      existingReportCard.evaluationMode = evaluationMode;
       // Atualiza o nome do responsável se estiver vazio ou caso o tutor tenha mudado
       existingReportCard.responsibleNameSnapshot = responsibleNameSnapshot;
 
@@ -350,9 +500,15 @@ class ReportCardService {
         minimumAverage
       );
 
-      existingReportCard.status = this._calculateReportCardStatus(
-        existingReportCard.subjects
-      );
+      existingReportCard.developmentalAssessments =
+        evaluationMode === 'developmental'
+          ? this._mergeDevelopmentalAssessments(
+              existingReportCard.developmentalAssessments || [],
+              existingReportCard.subjects || []
+            )
+          : [];
+
+      existingReportCard.status = this._calculateReportCardStatus(existingReportCard);
 
       await existingReportCard.save();
       results.push(existingReportCard);
@@ -543,11 +699,126 @@ class ReportCardService {
       reportCard.minimumAverage
     );
 
-    reportCard.status = this._calculateReportCardStatus(reportCard.subjects);
+    reportCard.evaluationMode = 'numeric';
+    reportCard.gradingType = 'numeric';
+    reportCard.status = this._calculateReportCardStatus(reportCard);
 
     await reportCard.save();
 
     return reportCard;
+  }
+
+  async updateTeacherSubjectDevelopmentalAssessment({
+    schoolId,
+    reportCardId,
+    subjectId,
+    teacherUserId,
+    criteria,
+    generalObservation,
+  }) {
+    if (!schoolId || !reportCardId || !subjectId || !teacherUserId) {
+      throw this._createError(
+        'schoolId, reportCardId, subjectId e teacherUserId sao obrigatorios.',
+        400
+      );
+    }
+
+    const normalizedCriteria = this._normalizeDevelopmentalCriteria(criteria);
+
+    const reportCard = await ReportCard.findOne({
+      _id: reportCardId,
+      school_id: schoolId,
+    });
+
+    if (!reportCard) {
+      throw this._createError('Boletim nao encontrado.', 404);
+    }
+
+    const [classData, student, subject] = await Promise.all([
+      ClassModel.findOne({ _id: reportCard.classId, school_id: schoolId }),
+      Student.findOne({ _id: reportCard.studentId, school_id: schoolId }),
+      Subject.findOne({ _id: subjectId, school_id: schoolId }),
+    ]);
+
+    if (!classData) {
+      throw this._createError('Turma nao encontrada para esta escola.', 404);
+    }
+    if (!student) {
+      throw this._createError('Aluno nao encontrado para esta escola.', 404);
+    }
+    if (!subject) {
+      throw this._createError('Disciplina nao encontrada para esta escola.', 404);
+    }
+
+    if (evaluationModeForClass(classData) !== 'developmental') {
+      throw this._createError(
+        'Esta turma usa boletim numerico. Use o endpoint de notas.',
+        400
+      );
+    }
+
+    const subjectIndex = reportCard.subjects.findIndex(
+      (item) =>
+        String(item.subjectId) === String(subjectId) &&
+        String(item.teacherId) === String(teacherUserId)
+    );
+
+    if (subjectIndex === -1) {
+      throw this._createError(
+        'Disciplina nao encontrada ou voce nao tem permissao para avalia-la neste boletim.',
+        404
+      );
+    }
+
+    reportCard.evaluationMode = 'developmental';
+    reportCard.gradingType = 'developmental';
+
+    const subjectEntry = reportCard.subjects[subjectIndex];
+    const completionStatus = this._calculateDevelopmentalAssessmentCompletion(
+      normalizedCriteria
+    );
+    const now = new Date();
+
+    const assessment = {
+      subjectId: subjectEntry.subjectId,
+      subjectName: subjectEntry.subjectNameSnapshot || subject.name,
+      teacherId: subjectEntry.teacherId,
+      teacherName: subjectEntry.teacherNameSnapshot || '',
+      criteria: normalizedCriteria,
+      generalObservation: String(generalObservation || '').trim(),
+      completionStatus,
+      filledBy: teacherUserId,
+      filledAt: now,
+    };
+
+    const assessmentIndex = (reportCard.developmentalAssessments || []).findIndex(
+      (item) =>
+        String(item.subjectId) === String(subjectId) &&
+        String(item.teacherId) === String(teacherUserId)
+    );
+
+    if (assessmentIndex === -1) {
+      reportCard.developmentalAssessments.push(assessment);
+    } else {
+      reportCard.developmentalAssessments[assessmentIndex] = assessment;
+    }
+    reportCard.markModified('developmentalAssessments');
+
+    reportCard.subjects[subjectIndex].observation = assessment.generalObservation;
+    reportCard.subjects[subjectIndex].filledBy = teacherUserId;
+    reportCard.subjects[subjectIndex].filledAt = now;
+    reportCard.subjects[subjectIndex].status =
+      completionStatus === 'Concluído'
+        ? 'Preenchido'
+        : completionStatus === 'Em preenchimento'
+          ? 'Em Revisão'
+          : 'Pendente';
+
+    reportCard.status = this._calculateReportCardStatus(reportCard);
+
+    await reportCard.save();
+
+    return this.getReportCardById({ reportCardId, schoolId });
   }
 
   async recalculateReportCardStatus({ reportCardId, schoolId }) {
@@ -564,15 +835,26 @@ class ReportCardService {
       throw this._createError('Boletim não encontrado.', 404);
     }
 
-    reportCard.subjects = (reportCard.subjects || []).map((item) => ({
-      ...item.toObject ? item.toObject() : item,
-      status: this._calculateSubjectStatus(
-        item.score,
-        reportCard.minimumAverage
-      ),
-    }));
+    if (reportCard.evaluationMode === 'developmental') {
+      reportCard.developmentalAssessments = (
+        reportCard.developmentalAssessments || []
+      ).map((item) => ({
+        ...(item.toObject ? item.toObject() : item),
+        completionStatus: this._calculateDevelopmentalAssessmentCompletion(
+          item.criteria || []
+        ),
+      }));
+    } else {
+      reportCard.subjects = (reportCard.subjects || []).map((item) => ({
+        ...(item.toObject ? item.toObject() : item),
+        status: this._calculateSubjectStatus(
+          item.score,
+          reportCard.minimumAverage
+        ),
+      }));
+    }
 
-    reportCard.status = this._calculateReportCardStatus(reportCard.subjects);
+    reportCard.status = this._calculateReportCardStatus(reportCard);
 
     await reportCard.save();
 

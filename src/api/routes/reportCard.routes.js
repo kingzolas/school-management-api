@@ -54,6 +54,13 @@ router.patch(
   reportCardController.updateTeacherSubjectScore
 );
 
+// Professor salva/atualiza a avaliacao descritiva infantil da sua area
+router.patch(
+  '/:reportCardId/subjects/:subjectId/developmental-assessment',
+  verifyToken,
+  reportCardController.updateTeacherSubjectDevelopmentalAssessment
+);
+
 // Recalcular status geral do boletim
 router.patch(
   '/:reportCardId/recalculate-status',

@@ -134,6 +134,82 @@ const reportCardSubjectSchema = new Schema(
   { _id: false }
 );
 
+const developmentalCriterionSchema = new Schema(
+  {
+    criterionId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    description: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 500,
+    },
+    status: {
+      type: String,
+      enum: ['', 'autonomy', 'support', 'developing', 'not_worked'],
+      default: '',
+    },
+    updatedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const developmentalAssessmentSchema = new Schema(
+  {
+    subjectId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Subject',
+      required: true,
+    },
+    subjectName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    teacherId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    teacherName: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    criteria: {
+      type: [developmentalCriterionSchema],
+      default: [],
+    },
+    generalObservation: {
+      type: String,
+      trim: true,
+      maxlength: 1000,
+      default: '',
+    },
+    completionStatus: {
+      type: String,
+      enum: ['Pendente', 'Em preenchimento', 'Concluido', 'Concluído'],
+      default: 'Pendente',
+    },
+    filledBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    filledAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
 const reportCardSchema = new Schema(
   {
     school_id: {
@@ -179,9 +255,17 @@ const reportCardSchema = new Schema(
 
     gradingType: {
       type: String,
-      enum: ['numeric'],
+      enum: ['numeric', 'developmental'],
       default: 'numeric',
       required: true,
+    },
+
+    evaluationMode: {
+      type: String,
+      enum: ['numeric', 'developmental'],
+      default: 'numeric',
+      required: true,
+      index: true,
     },
 
     minimumAverage: {
@@ -222,6 +306,11 @@ const reportCardSchema = new Schema(
 
     subjects: {
       type: [reportCardSubjectSchema],
+      default: [],
+    },
+
+    developmentalAssessments: {
+      type: [developmentalAssessmentSchema],
       default: [],
     },
 

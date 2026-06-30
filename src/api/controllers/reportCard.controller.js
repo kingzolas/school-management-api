@@ -144,6 +144,54 @@ class ReportCardController {
     }
   }
 
+  async updateTeacherSubjectDevelopmentalAssessment(req, res, next) {
+    try {
+      const schoolId =
+        req.user?.school_id ||
+        req.user?.schoolId ||
+        req.school_id ||
+        req.schoolId ||
+        req.body.schoolId;
+
+      const teacherUserId =
+        req.user?._id ||
+        req.user?.id ||
+        req.user?.userId ||
+        req.user?.user_id;
+
+      const { reportCardId, subjectId } = req.params;
+      const { criteria, generalObservation } = req.body;
+
+      const result =
+        await reportCardService.updateTeacherSubjectDevelopmentalAssessment({
+          schoolId,
+          reportCardId,
+          subjectId,
+          teacherUserId,
+          criteria,
+          generalObservation,
+        });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Avaliacao descritiva salva com sucesso.',
+        data: result,
+      });
+    } catch (error) {
+      console.error(
+        '[ReportCardController.updateTeacherSubjectDevelopmentalAssessment] Erro:',
+        error
+      );
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        message:
+          error.message ||
+          'Erro interno ao salvar a avaliacao descritiva do boletim.',
+        details: error.toString()
+      });
+    }
+  }
+
   async recalculateReportCardStatus(req, res, next) {
     try {
       const schoolId =
