@@ -4,9 +4,14 @@ const Schema = mongoose.Schema;
 const reportCardSubjectSchema = new Schema(
   {
     subjectId: {
-      type: Schema.Types.ObjectId,
+      type: Schema.Types.Mixed,
       ref: 'Subject',
-      required: true,
+      default: null,
+    },
+    areaId: {
+      type: String,
+      trim: true,
+      default: '',
     },
     subjectNameSnapshot: {
       type: String,
@@ -15,9 +20,9 @@ const reportCardSubjectSchema = new Schema(
     },
 
     teacherId: {
-      type: Schema.Types.ObjectId,
+      type: Schema.Types.Mixed,
       ref: 'User',
-      required: true,
+      default: null,
     },
     teacherNameSnapshot: {
       type: String,
@@ -149,8 +154,8 @@ const developmentalCriterionSchema = new Schema(
     },
     status: {
       type: String,
-      enum: ['', 'autonomy', 'support', 'developing', 'not_worked'],
-      default: '',
+      enum: [null, '', 'autonomy', 'support', 'developing', 'not_worked'],
+      default: null,
     },
     updatedAt: {
       type: Date,
@@ -163,9 +168,14 @@ const developmentalCriterionSchema = new Schema(
 const developmentalAssessmentSchema = new Schema(
   {
     subjectId: {
-      type: Schema.Types.ObjectId,
+      type: Schema.Types.Mixed,
       ref: 'Subject',
       required: true,
+    },
+    areaId: {
+      type: String,
+      trim: true,
+      default: '',
     },
     subjectName: {
       type: String,
@@ -173,9 +183,9 @@ const developmentalAssessmentSchema = new Schema(
       trim: true,
     },
     teacherId: {
-      type: Schema.Types.ObjectId,
+      type: Schema.Types.Mixed,
       ref: 'User',
-      required: true,
+      default: null,
     },
     teacherName: {
       type: String,
@@ -194,8 +204,16 @@ const developmentalAssessmentSchema = new Schema(
     },
     completionStatus: {
       type: String,
-      enum: ['Pendente', 'Em preenchimento', 'Concluido', 'Concluído'],
-      default: 'Pendente',
+      enum: [
+        'pending',
+        'in_progress',
+        'completed',
+        'Pendente',
+        'Em preenchimento',
+        'Concluido',
+        'Concluído',
+      ],
+      default: 'pending',
     },
     filledBy: {
       type: Schema.Types.ObjectId,

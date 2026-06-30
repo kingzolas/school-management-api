@@ -11,6 +11,12 @@ const Tutor = require('../models/tutor.model'); // Adicionado o model de Tutor
 const {
   evaluationModeForClass,
 } = require('../utils/reportCardEvaluationMode.helper');
+const {
+  getCriteriaForSubjectName,
+  getDefaultEarlyChildhoodArea,
+  getDefaultEarlyChildhoodAreas,
+  isDefaultEarlyChildhoodAreaId,
+} = require('../utils/earlyChildhoodCriteria.helper');
 
 const DEVELOPMENTAL_STATUSES = new Set([
   'autonomy',
@@ -96,6 +102,33 @@ class ReportCardService {
     return Array.from(uniqueMap.values());
   }
 
+  _buildDefaultEarlyChildhoodSubjects() {
+    return getDefaultEarlyChildhoodAreas().map((area) => ({
+      subjectId: area.areaId,
+      areaId: area.areaId,
+      subjectNameSnapshot: area.subjectName,
+      teacherId: null,
+      teacherNameSnapshot: '',
+      testScore: null,
+      activityScore: null,
+      participationScore: null,
+      score: null,
+      status: 'Pendente',
+      observation: '',
+      filledBy: null,
+      filledAt: null,
+    }));
+  }
+
+  _criteriaWithPendingStatus(criteria = []) {
+    return criteria.map((criterion) => ({
+      criterionId: criterion.criterionId,
+      description: criterion.description,
+      status: null,
+      updatedAt: null,
+    }));
+  }
+
   _calculateSubjectStatus(score, minimumAverage) {
     if (score === null || score === undefined || score === '') {
       return 'Pendente';
@@ -124,7 +157,7 @@ class ReportCardService {
   }
 
   _calculateDevelopmentalAssessmentCompletion(criteria = []) {
-    if (!criteria.length) return 'Pendente';
+    if (!criteria.length) return 'pending';
 
     const filledCount = criteria.filter(
       (item) =>
@@ -133,9 +166,9 @@ class ReportCardService {
         item.status !== ''
     ).length;
 
-    if (filledCount === 0) return 'Pendente';
-    if (filledCount < criteria.length) return 'Em preenchimento';
-    return 'Concluído';
+    if (filledCount === 0) return 'pending';
+    if (filledCount < criteria.length) return 'in_progress';
+    return 'completed';
   }
 
   _calculateDevelopmentalReportCardStatus(assessments = [], subjectCount = 0) {
@@ -146,13 +179,13 @@ class ReportCardService {
       const status = this._calculateDevelopmentalAssessmentCompletion(
         item.criteria || []
       );
-      return status === 'Em preenchimento' || status === 'Concluído';
+      return status === 'in_progress' || status === 'completed';
     }).length;
 
     const completedCount = assessments.filter(
       (item) =>
         this._calculateDevelopmentalAssessmentCompletion(item.criteria || []) ===
-        'Concluído'
+        'completed'
     ).length;
 
     if (startedCount === 0) return 'Rascunho';
@@ -192,6 +225,7 @@ class ReportCardService {
 
       return {
         subjectId: generated.subjectId,
+        areaId: existing.areaId || generated.areaId || '',
         subjectNameSnapshot:
           existing.subjectNameSnapshot || generated.subjectNameSnapshot,
         teacherId: generated.teacherId,
@@ -214,38 +248,47 @@ class ReportCardService {
     const existingMap = new Map();
 
     for (const item of existingAssessments || []) {
-      const key = `${String(item.subjectId)}::${String(item.teacherId)}`;
+      const key = `${String(item.areaId || item.subjectId)}::${String(item.teacherId || '')}`;
       existingMap.set(key, item);
     }
 
     return generatedSubjects.map((generated) => {
-      const key = `${String(generated.subjectId)}::${String(generated.teacherId)}`;
+      const areaId = generated.areaId || String(generated.subjectId || '');
+      const key = `${String(areaId)}::${String(generated.teacherId || '')}`;
       const existing = existingMap.get(key);
+      const defaultArea = getDefaultEarlyChildhoodArea(areaId);
+      const defaultCriteria = defaultArea
+        ? defaultArea.criteria
+        : getCriteriaForSubjectName(generated.subjectNameSnapshot);
 
       if (!existing) {
         return {
           subjectId: generated.subjectId,
+          areaId,
           subjectName: generated.subjectNameSnapshot,
-          teacherId: generated.teacherId,
+          teacherId: generated.teacherId || null,
           teacherName: generated.teacherNameSnapshot || '',
-          criteria: [],
+          criteria: this._criteriaWithPendingStatus(defaultCriteria),
           generalObservation: '',
-          completionStatus: 'Pendente',
+          completionStatus: 'pending',
           filledBy: null,
           filledAt: null,
         };
       }
 
+      const criteria = (existing.criteria && existing.criteria.length)
+        ? existing.criteria
+        : this._criteriaWithPendingStatus(defaultCriteria);
+
       return {
-        subjectId: generated.subjectId,
+        subjectId: existing.subjectId || generated.subjectId,
+        areaId,
         subjectName: existing.subjectName || generated.subjectNameSnapshot,
-        teacherId: generated.teacherId,
+        teacherId: existing.teacherId || generated.teacherId || null,
         teacherName: existing.teacherName || generated.teacherNameSnapshot || '',
-        criteria: existing.criteria || [],
+        criteria,
         generalObservation: existing.generalObservation || '',
-        completionStatus: this._calculateDevelopmentalAssessmentCompletion(
-          existing.criteria || []
-        ),
+        completionStatus: this._calculateDevelopmentalAssessmentCompletion(criteria),
         filledBy: existing.filledBy || null,
         filledAt: existing.filledAt || null,
       };
@@ -264,7 +307,7 @@ class ReportCardService {
       const description = String(criterion?.description || '').trim();
       const rawStatus =
         criterion?.status === null || criterion?.status === undefined
-          ? ''
+          ? null
           : String(criterion.status).trim();
 
       if (!criterionId) {
@@ -287,7 +330,7 @@ class ReportCardService {
       return {
         criterionId,
         description,
-        status: rawStatus,
+        status: rawStatus || null,
         updatedAt: rawStatus ? new Date() : null,
       };
     });
@@ -370,6 +413,8 @@ class ReportCardService {
       activeEnrollments: enrollments.length,
     });
 
+    const evaluationMode = evaluationModeForClass(classData);
+
     let horarios = await Horario.find({
       school_id: schoolId,
       classId: classId, 
@@ -393,7 +438,7 @@ class ReportCardService {
         .populate('teacherId');
     }
 
-    if (!horarios.length) {
+    if (!horarios.length && evaluationMode !== 'developmental') {
       console.log(`[ERRO] A grade horária está completamente vazia para a turma ${classData.name}.`);
       throw this._createError(
         `Nenhuma disciplina vinculada à turma "${classData.name}" foi encontrada. Acesse 'Gestão Acadêmica > Horários' e certifique-se de que existem aulas cadastradas para esta turma.`,
@@ -402,8 +447,11 @@ class ReportCardService {
     }
 
     const minimumAverage = this._normalizeMinimumAverage(school);
-    const generatedSubjects = this._dedupeSubjectsFromHorario(horarios);
-    const evaluationMode = evaluationModeForClass(classData);
+    let generatedSubjects = this._dedupeSubjectsFromHorario(horarios);
+
+    if (evaluationMode === 'developmental' && !generatedSubjects.length) {
+      generatedSubjects = this._buildDefaultEarlyChildhoodSubjects();
+    }
 
     if (!generatedSubjects.length) {
       throw this._createError(
@@ -564,7 +612,6 @@ class ReportCardService {
       .populate('studentId')
       .populate('classId')
       .populate('termId')
-      .populate('subjects.subjectId')
       .populate('subjects.teacherId')
       .populate('releasedBy');
 
@@ -587,7 +634,6 @@ class ReportCardService {
       .populate('studentId')
       .populate('classId')
       .populate('termId')
-      .populate('subjects.subjectId')
       .populate('subjects.teacherId')
       .populate('releasedBy');
 
@@ -734,10 +780,15 @@ class ReportCardService {
       throw this._createError('Boletim nao encontrado.', 404);
     }
 
+    const isRealSubjectId = mongoose.Types.ObjectId.isValid(subjectId);
+    const defaultArea = getDefaultEarlyChildhoodArea(subjectId);
+
     const [classData, student, subject] = await Promise.all([
       ClassModel.findOne({ _id: reportCard.classId, school_id: schoolId }),
       Student.findOne({ _id: reportCard.studentId, school_id: schoolId }),
-      Subject.findOne({ _id: subjectId, school_id: schoolId }),
+      isRealSubjectId
+        ? Subject.findOne({ _id: subjectId, school_id: schoolId })
+        : Promise.resolve(null),
     ]);
 
     if (!classData) {
@@ -746,10 +797,6 @@ class ReportCardService {
     if (!student) {
       throw this._createError('Aluno nao encontrado para esta escola.', 404);
     }
-    if (!subject) {
-      throw this._createError('Disciplina nao encontrada para esta escola.', 404);
-    }
-
     if (evaluationModeForClass(classData) !== 'developmental') {
       throw this._createError(
         'Esta turma usa boletim numerico. Use o endpoint de notas.',
@@ -757,11 +804,21 @@ class ReportCardService {
       );
     }
 
-    const subjectIndex = reportCard.subjects.findIndex(
-      (item) =>
-        String(item.subjectId) === String(subjectId) &&
-        String(item.teacherId) === String(teacherUserId)
-    );
+    if (!subject && !defaultArea) {
+      throw this._createError('Disciplina ou area infantil nao encontrada.', 404);
+    }
+
+    if (!isRealSubjectId && !isDefaultEarlyChildhoodAreaId(subjectId)) {
+      throw this._createError('Area infantil invalida.', 400);
+    }
+
+    const subjectIndex = reportCard.subjects.findIndex((item) => {
+      const sameArea =
+        String(item.areaId || '') === String(subjectId) ||
+        String(item.subjectId || '') === String(subjectId);
+      const teacherId = item.teacherId ? String(item.teacherId) : '';
+      return sameArea && (!teacherId || teacherId === String(teacherUserId));
+    });
 
     if (subjectIndex === -1) {
       throw this._createError(
@@ -778,11 +835,14 @@ class ReportCardService {
       normalizedCriteria
     );
     const now = new Date();
+    const areaId = subjectEntry.areaId || defaultArea?.areaId || '';
 
     const assessment = {
-      subjectId: subjectEntry.subjectId,
-      subjectName: subjectEntry.subjectNameSnapshot || subject.name,
-      teacherId: subjectEntry.teacherId,
+      subjectId: subjectEntry.subjectId || null,
+      areaId,
+      subjectName:
+        subjectEntry.subjectNameSnapshot || subject?.name || defaultArea?.subjectName,
+      teacherId: subjectEntry.teacherId || null,
       teacherName: subjectEntry.teacherNameSnapshot || '',
       criteria: normalizedCriteria,
       generalObservation: String(generalObservation || '').trim(),
@@ -792,9 +852,13 @@ class ReportCardService {
     };
 
     const assessmentIndex = (reportCard.developmentalAssessments || []).findIndex(
-      (item) =>
-        String(item.subjectId) === String(subjectId) &&
-        String(item.teacherId) === String(teacherUserId)
+      (item) => {
+        const itemKey = item.areaId || item.subjectId;
+        const assessmentKey = areaId || subjectId;
+        const sameArea = String(itemKey || '') === String(assessmentKey || '');
+        const teacherId = item.teacherId ? String(item.teacherId) : '';
+        return sameArea && (!teacherId || teacherId === String(teacherUserId));
+      }
     );
 
     if (assessmentIndex === -1) {
@@ -808,9 +872,9 @@ class ReportCardService {
     reportCard.subjects[subjectIndex].filledBy = teacherUserId;
     reportCard.subjects[subjectIndex].filledAt = now;
     reportCard.subjects[subjectIndex].status =
-      completionStatus === 'Concluído'
+      completionStatus === 'completed'
         ? 'Preenchido'
-        : completionStatus === 'Em preenchimento'
+        : completionStatus === 'in_progress'
           ? 'Em Revisão'
           : 'Pendente';
 
