@@ -1,0 +1,141 @@
+[
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.30.jpeg",
+    "className": "MATERNAL B",
+    "area": "NATUREZA E SOCIEDADE",
+    "developmentalKey": "early_nature_society",
+    "pagePart": 2,
+    "expectedStudents": 5
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.31 (1).jpeg",
+    "className": "MATERNAL B",
+    "area": "MATEMÁTICA",
+    "developmentalKey": "early_math",
+    "pagePart": 2,
+    "expectedStudents": 5
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.31 (2).jpeg",
+    "className": "MATERNAL B",
+    "area": "MATEMÁTICA",
+    "developmentalKey": "early_math",
+    "pagePart": 1,
+    "expectedStudents": 11
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.31 (3).jpeg",
+    "className": "MATERNAL B",
+    "area": "ENSINO RELIGIOSO / VALORES",
+    "developmentalKey": "early_values_religion",
+    "pagePart": 2,
+    "expectedStudents": 5
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.31 (4).jpeg",
+    "className": "MATERNAL B",
+    "area": "ENSINO RELIGIOSO / VALORES",
+    "developmentalKey": "early_values_religion",
+    "pagePart": 1,
+    "expectedStudents": 11
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.31.jpeg",
+    "className": "MATERNAL B",
+    "area": "NATUREZA E SOCIEDADE",
+    "developmentalKey": "early_nature_society",
+    "pagePart": 1,
+    "expectedStudents": 11
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.32 (1).jpeg",
+    "className": "MATERNAL B",
+    "area": "ARTE",
+    "developmentalKey": "early_art",
+    "pagePart": 1,
+    "expectedStudents": 11
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.32 (2).jpeg",
+    "className": "MATERNAL B",
+    "area": "LINGUAGEM / PORTUGUÊS",
+    "developmentalKey": "early_language_portuguese",
+    "pagePart": 2,
+    "expectedStudents": 5
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.32 (3).jpeg",
+    "className": "MATERNAL B",
+    "area": "LINGUAGEM / PORTUGUÊS",
+    "developmentalKey": "early_language_portuguese",
+    "pagePart": 1,
+    "expectedStudents": 11
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.32 (4).jpeg",
+    "className": "MATERNAL",
+    "area": "MATEMÁTICA",
+    "developmentalKey": "early_math",
+    "pagePart": 1,
+    "expectedStudents": 7
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.32.jpeg",
+    "className": "MATERNAL B",
+    "area": "ARTE",
+    "developmentalKey": "early_art",
+    "pagePart": 2,
+    "expectedStudents": 5
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.33 (1).jpeg",
+    "className": "MATERNAL",
+    "area": "ARTE",
+    "developmentalKey": "early_art",
+    "pagePart": 1,
+    "expectedStudents": 7
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.33 (2).jpeg",
+    "className": "MATERNAL",
+    "area": "NATUREZA E SOCIEDADE",
+    "developmentalKey": "early_nature_society",
+    "pagePart": 1,
+    "expectedStudents": 7
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.33.jpeg",
+    "className": "MATERNAL",
+    "area": "ENSINO RELIGIOSO / VALORES",
+    "developmentalKey": "early_values_religion",
+    "pagePart": 1,
+    "expectedStudents": 7
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.34 (1).jpeg",
+    "className": "MATERNAL",
+    "area": "LINGUAGEM / PORTUGUÊS",
+    "developmentalKey": "early_language_portuguese",
+    "pagePart": 1,
+    "expectedStudents": 7,
+    "skip": true,
+    "notes": "Foto duplicada da mesma ficha registrada em 13.39.34.jpeg; ignorada para não duplicar avaliações."
+  },
+  {
+    "file": "WhatsApp Image 2026-06-30 at 13.39.34.jpeg",
+    "className": "MATERNAL",
+    "area": "LINGUAGEM / PORTUGUÊS",
+    "developmentalKey": "early_language_portuguese",
+    "pagePart": 1,
+    "expectedStudents": 7,
+    "notes": "Imagem escolhida entre as duas fotos duplicadas por apresentar melhor enquadramento.",
+    "forceReview": [
+      {
+        "studentName": "Zyan Do Carmo Vieira",
+        "criterion": "C4",
+        "candidateOptions": ["ED"],
+        "reason": "Dúvida identificada e preservada desde o primeiro teste OMR."
+      }
+    ]
+  }
+]

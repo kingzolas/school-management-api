@@ -103,30 +103,39 @@ class ReportCardController {
     try {
       const schoolId =
         req.user?.school_id ||
-        req.user?.schoolId ||
-        req.school_id ||
-        req.schoolId ||
-        req.body.schoolId;
-
-      const teacherUserId =
-        req.user?._id ||
-        req.user?.id ||
-        req.user?.userId ||
-        req.user?.user_id;
+        req.user?.schoolId;
 
       const { reportCardId, subjectId } = req.params;
-      const { score, testScore, activityScore, participationScore, observation } = req.body;
-
-      const result = await reportCardService.updateTeacherSubjectScore({
-        schoolId,
-        reportCardId,
-        subjectId,
-        teacherUserId,
+      const {
         score,
         testScore,
         activityScore,
         participationScore,
         observation,
+        expectedTermId,
+        expectedSchoolYear,
+        expectedClassId,
+        expectedStudentId,
+        expectedTeacherId,
+      } = req.body;
+
+      const result = await reportCardService.updateTeacherSubjectScore({
+        schoolId,
+        reportCardId,
+        subjectId,
+        actor: req.user,
+        score,
+        testScore,
+        activityScore,
+        participationScore,
+        observation,
+        expectedContext: {
+          expectedTermId,
+          expectedSchoolYear,
+          expectedClassId,
+          expectedStudentId,
+          expectedTeacherId,
+        },
       });
 
       return res.status(200).json({
@@ -148,28 +157,34 @@ class ReportCardController {
     try {
       const schoolId =
         req.user?.school_id ||
-        req.user?.schoolId ||
-        req.school_id ||
-        req.schoolId ||
-        req.body.schoolId;
-
-      const teacherUserId =
-        req.user?._id ||
-        req.user?.id ||
-        req.user?.userId ||
-        req.user?.user_id;
+        req.user?.schoolId;
 
       const { reportCardId, subjectId } = req.params;
-      const { criteria, generalObservation } = req.body;
+      const {
+        criteria,
+        generalObservation,
+        expectedTermId,
+        expectedSchoolYear,
+        expectedClassId,
+        expectedStudentId,
+        expectedTeacherId,
+      } = req.body;
 
       const result =
         await reportCardService.updateTeacherSubjectDevelopmentalAssessment({
           schoolId,
           reportCardId,
           subjectId,
-          teacherUserId,
+          actor: req.user,
           criteria,
           generalObservation,
+          expectedContext: {
+            expectedTermId,
+            expectedSchoolYear,
+            expectedClassId,
+            expectedStudentId,
+            expectedTeacherId,
+          },
         });
 
       return res.status(200).json({
@@ -196,16 +211,14 @@ class ReportCardController {
     try {
       const schoolId =
         req.user?.school_id ||
-        req.user?.schoolId ||
-        req.school_id ||
-        req.schoolId ||
-        req.body.schoolId;
+        req.user?.schoolId;
 
       const { reportCardId } = req.params;
 
       const result = await reportCardService.recalculateReportCardStatus({
         reportCardId,
         schoolId,
+        actor: req.user,
       });
 
       return res.status(200).json({

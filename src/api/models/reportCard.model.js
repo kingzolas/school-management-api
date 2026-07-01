@@ -135,6 +135,25 @@ const reportCardSubjectSchema = new Schema(
       type: Date,
       default: null,
     },
+    lastEditedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    lastEditedAt: {
+      type: Date,
+      default: null,
+    },
+    lastEditedRole: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    lastEditedSource: {
+      type: String,
+      trim: true,
+      default: '',
+    },
   },
   { _id: false }
 );
@@ -223,6 +242,25 @@ const developmentalAssessmentSchema = new Schema(
     filledAt: {
       type: Date,
       default: null,
+    },
+    lastEditedBy: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    lastEditedAt: {
+      type: Date,
+      default: null,
+    },
+    lastEditedRole: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    lastEditedSource: {
+      type: String,
+      trim: true,
+      default: '',
     },
   },
   { _id: false }

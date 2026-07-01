@@ -17,6 +17,12 @@ const {
   getDefaultEarlyChildhoodAreas,
   isDefaultEarlyChildhoodAreaId,
 } = require('../utils/earlyChildhoodCriteria.helper');
+const {
+  canEditReportCardSubject,
+  extractId,
+  getActorId,
+  getPrimaryReportCardEditRole,
+} = require('./reportCardPermission.service');
 
 const DEVELOPMENTAL_STATUSES = new Set([
   'autonomy',
@@ -202,6 +208,136 @@ class ReportCardService {
     }
 
     return this._calculateNumericReportCardStatus(reportCard?.subjects || []);
+  }
+
+  _validateExpectedContext(reportCard, expectedContext = {}) {
+    const checks = [
+      {
+        label: 'expectedTermId',
+        expected: expectedContext.expectedTermId,
+        actual: extractId(reportCard?.termId),
+      },
+      {
+        label: 'expectedClassId',
+        expected: expectedContext.expectedClassId,
+        actual: extractId(reportCard?.classId),
+      },
+      {
+        label: 'expectedStudentId',
+        expected: expectedContext.expectedStudentId,
+        actual: extractId(reportCard?.studentId),
+      },
+    ];
+
+    for (const check of checks) {
+      if (
+        check.expected !== undefined &&
+        check.expected !== null &&
+        String(check.expected).trim() !== '' &&
+        String(check.expected) !== String(check.actual)
+      ) {
+        throw this._createError(
+          'Contexto do boletim divergente. Atualize a tela e tente novamente.',
+          409
+        );
+      }
+    }
+
+    if (
+      expectedContext.expectedSchoolYear !== undefined &&
+      expectedContext.expectedSchoolYear !== null &&
+      String(expectedContext.expectedSchoolYear).trim() !== '' &&
+      Number(expectedContext.expectedSchoolYear) !== Number(reportCard?.schoolYear)
+    ) {
+      throw this._createError(
+        'Contexto do boletim divergente. Atualize a tela e tente novamente.',
+        409
+      );
+    }
+  }
+
+  _findSubjectIndex(reportCard, subjectId, { actor = null, expectedTeacherId = null } = {}) {
+    const candidates = [];
+
+    (reportCard.subjects || []).forEach((item, index) => {
+      if (String(item.subjectId) === String(subjectId)) {
+        candidates.push({ item, index });
+      }
+    });
+
+    if (!candidates.length) return -1;
+
+    if (expectedTeacherId !== null && expectedTeacherId !== undefined) {
+      const expectedTeacher = String(expectedTeacherId || '');
+      const found = candidates.find(({ item }) => String(extractId(item.teacherId) || '') === expectedTeacher);
+      return found ? found.index : -1;
+    }
+
+    const actorId = getActorId(actor);
+    if (actorId) {
+      const linked = candidates.find(({ item }) => String(extractId(item.teacherId) || '') === String(actorId));
+      if (linked) return linked.index;
+    }
+
+    return candidates.length === 1 ? candidates[0].index : -2;
+  }
+
+  _findDevelopmentalSubjectIndex(reportCard, subjectId, { actor = null, expectedTeacherId = null } = {}) {
+    const candidates = [];
+
+    (reportCard.subjects || []).forEach((item, index) => {
+      const sameArea =
+        String(item.areaId || '') === String(subjectId) ||
+        String(item.subjectId || '') === String(subjectId);
+      if (sameArea) {
+        candidates.push({ item, index });
+      }
+    });
+
+    if (!candidates.length) return -1;
+
+    if (expectedTeacherId !== null && expectedTeacherId !== undefined) {
+      const expectedTeacher = String(expectedTeacherId || '');
+      const found = candidates.find(({ item }) => String(extractId(item.teacherId) || '') === expectedTeacher);
+      return found ? found.index : -1;
+    }
+
+    const actorId = getActorId(actor);
+    if (actorId) {
+      const linked = candidates.find(({ item }) => String(extractId(item.teacherId) || '') === String(actorId));
+      if (linked) return linked.index;
+    }
+
+    return candidates.length === 1 ? candidates[0].index : -2;
+  }
+
+  _assertCanEditSubject({ actor, reportCard, subjectEntry }) {
+    const permission = canEditReportCardSubject({
+      actor,
+      reportCard,
+      subjectItem: subjectEntry,
+    });
+
+    if (!permission.allowed) {
+      throw this._createError(
+        permission.message || 'Você não tem permissão para editar esta disciplina neste boletim.',
+        permission.reason === 'school_mismatch' ? 403 : 403
+      );
+    }
+
+    return permission;
+  }
+
+  _applyManualEditMetadata(target, actor, editedAt = new Date()) {
+    const actorId = getActorId(actor);
+    const role = getPrimaryReportCardEditRole(actor);
+
+    target.filledBy = actorId;
+    target.filledAt = editedAt;
+    target.lastEditedBy = actorId;
+    target.lastEditedAt = editedAt;
+    target.lastEditedRole = role;
+    target.lastEditedSource = 'manual_report_card_edit';
   }
 
   _mergeSubjects(existingSubjects = [], generatedSubjects = [], minimumAverage = 7) {
@@ -648,16 +784,17 @@ class ReportCardService {
     schoolId,
     reportCardId,
     subjectId,
-    teacherUserId,
+    actor,
     score,
     testScore,
     activityScore,
     participationScore,
     observation,
+    expectedContext = {},
   }) {
-    if (!schoolId || !reportCardId || !subjectId || !teacherUserId) {
+    if (!schoolId || !reportCardId || !subjectId || !getActorId(actor)) {
       throw this._createError(
-        'schoolId, reportCardId, subjectId e teacherUserId são obrigatórios.',
+        'schoolId, reportCardId, subjectId e actor sao obrigatorios.',
         400
       );
     }
@@ -708,37 +845,36 @@ class ReportCardService {
       throw this._createError('Boletim não encontrado.', 404);
     }
 
-  const subjectIndex = reportCard.subjects.findIndex(
-      (item) => 
-        String(item.subjectId) === String(subjectId) && 
-        String(item.teacherId) === String(teacherUserId)
-    );
+    this._validateExpectedContext(reportCard, expectedContext);
+
+    const subjectIndex = this._findSubjectIndex(reportCard, subjectId, {
+      actor,
+      expectedTeacherId: expectedContext.expectedTeacherId,
+    });
 
     if (subjectIndex === -1) {
       throw this._createError(
-        'Disciplina não encontrada ou você não tem permissão para acessá-la neste boletim.',
+        'Disciplina nao encontrada neste boletim.',
         404
       );
     }
 
-    const subjectEntry = reportCard.subjects[subjectIndex];
-    
-    // A verificação abaixo até se torna redundante porque o findIndex já filtrou pelo professor, 
-    // mas você pode mantê-la por segurança se quiser.
-    if (String(subjectEntry.teacherId) !== String(teacherUserId)) {
+    if (subjectIndex === -2) {
       throw this._createError(
-        'Você não tem permissão para lançar nota nesta disciplina.',
-        403
+        'Mais de uma disciplina correspondente foi encontrada. Atualize a tela e tente novamente.',
+        409
       );
     }
+
+    const subjectEntry = reportCard.subjects[subjectIndex];
+    this._assertCanEditSubject({ actor, reportCard, subjectEntry });
 
     reportCard.subjects[subjectIndex].testScore = tScore;
     reportCard.subjects[subjectIndex].activityScore = aScore;
     reportCard.subjects[subjectIndex].participationScore = pScore;
     reportCard.subjects[subjectIndex].score = finalScore;
     reportCard.subjects[subjectIndex].observation = observation || '';
-    reportCard.subjects[subjectIndex].filledBy = teacherUserId;
-    reportCard.subjects[subjectIndex].filledAt = new Date();
+    this._applyManualEditMetadata(reportCard.subjects[subjectIndex], actor);
     
     reportCard.subjects[subjectIndex].status = this._calculateSubjectStatus(
       finalScore,
@@ -758,13 +894,14 @@ class ReportCardService {
     schoolId,
     reportCardId,
     subjectId,
-    teacherUserId,
+    actor,
     criteria,
     generalObservation,
+    expectedContext = {},
   }) {
-    if (!schoolId || !reportCardId || !subjectId || !teacherUserId) {
+    if (!schoolId || !reportCardId || !subjectId || !getActorId(actor)) {
       throw this._createError(
-        'schoolId, reportCardId, subjectId e teacherUserId sao obrigatorios.',
+        'schoolId, reportCardId, subjectId e actor sao obrigatorios.',
         400
       );
     }
@@ -779,6 +916,8 @@ class ReportCardService {
     if (!reportCard) {
       throw this._createError('Boletim nao encontrado.', 404);
     }
+
+    this._validateExpectedContext(reportCard, expectedContext);
 
     const isRealSubjectId = mongoose.Types.ObjectId.isValid(subjectId);
     const defaultArea = getDefaultEarlyChildhoodArea(subjectId);
@@ -812,18 +951,22 @@ class ReportCardService {
       throw this._createError('Area infantil invalida.', 400);
     }
 
-    const subjectIndex = reportCard.subjects.findIndex((item) => {
-      const sameArea =
-        String(item.areaId || '') === String(subjectId) ||
-        String(item.subjectId || '') === String(subjectId);
-      const teacherId = item.teacherId ? String(item.teacherId) : '';
-      return sameArea && (!teacherId || teacherId === String(teacherUserId));
+    const subjectIndex = this._findDevelopmentalSubjectIndex(reportCard, subjectId, {
+      actor,
+      expectedTeacherId: expectedContext.expectedTeacherId,
     });
 
     if (subjectIndex === -1) {
       throw this._createError(
-        'Disciplina nao encontrada ou voce nao tem permissao para avalia-la neste boletim.',
+        'Disciplina ou area nao encontrada neste boletim.',
         404
+      );
+    }
+
+    if (subjectIndex === -2) {
+      throw this._createError(
+        'Mais de uma area correspondente foi encontrada. Atualize a tela e tente novamente.',
+        409
       );
     }
 
@@ -831,6 +974,7 @@ class ReportCardService {
     reportCard.gradingType = 'developmental';
 
     const subjectEntry = reportCard.subjects[subjectIndex];
+    this._assertCanEditSubject({ actor, reportCard, subjectEntry });
     const completionStatus = this._calculateDevelopmentalAssessmentCompletion(
       normalizedCriteria
     );
@@ -847,8 +991,12 @@ class ReportCardService {
       criteria: normalizedCriteria,
       generalObservation: String(generalObservation || '').trim(),
       completionStatus,
-      filledBy: teacherUserId,
+      filledBy: getActorId(actor),
       filledAt: now,
+      lastEditedBy: getActorId(actor),
+      lastEditedAt: now,
+      lastEditedRole: getPrimaryReportCardEditRole(actor),
+      lastEditedSource: 'manual_report_card_edit',
     };
 
     const assessmentIndex = (reportCard.developmentalAssessments || []).findIndex(
@@ -857,7 +1005,7 @@ class ReportCardService {
         const assessmentKey = areaId || subjectId;
         const sameArea = String(itemKey || '') === String(assessmentKey || '');
         const teacherId = item.teacherId ? String(item.teacherId) : '';
-        return sameArea && (!teacherId || teacherId === String(teacherUserId));
+        return sameArea && teacherId === String(extractId(subjectEntry.teacherId) || '');
       }
     );
 
@@ -869,8 +1017,7 @@ class ReportCardService {
     reportCard.markModified('developmentalAssessments');
 
     reportCard.subjects[subjectIndex].observation = assessment.generalObservation;
-    reportCard.subjects[subjectIndex].filledBy = teacherUserId;
-    reportCard.subjects[subjectIndex].filledAt = now;
+    this._applyManualEditMetadata(reportCard.subjects[subjectIndex], actor, now);
     reportCard.subjects[subjectIndex].status =
       completionStatus === 'completed'
         ? 'Preenchido'
@@ -885,8 +1032,8 @@ class ReportCardService {
     return this.getReportCardById({ reportCardId, schoolId });
   }
 
-  async recalculateReportCardStatus({ reportCardId, schoolId }) {
-    if (!reportCardId || !schoolId) {
+  async recalculateReportCardStatus({ reportCardId, schoolId, actor }) {
+    if (!reportCardId || !schoolId || !getActorId(actor)) {
       throw this._createError('reportCardId e schoolId são obrigatórios.', 400);
     }
 
@@ -897,6 +1044,21 @@ class ReportCardService {
 
     if (!reportCard) {
       throw this._createError('Boletim não encontrado.', 404);
+    }
+
+    const canRecalculate = (reportCard.subjects || []).some((subjectEntry) =>
+      canEditReportCardSubject({
+        actor,
+        reportCard,
+        subjectItem: subjectEntry,
+      }).allowed
+    );
+
+    if (!canRecalculate) {
+      throw this._createError(
+        'Voce nao tem permissao para recalcular o status deste boletim.',
+        403
+      );
     }
 
     if (reportCard.evaluationMode === 'developmental') {
