@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const reportCardService = require('../services/reportCard.service');
+const reportCardHistoryService = require('../services/reportCardHistory.service');
 const reportCardExamImportService = require('../services/reportCardExamImport.service');
 
 class ReportCardController {
@@ -64,6 +65,36 @@ class ReportCardController {
       return res.status(error.statusCode || 500).json({
         success: false,
         message: error.message || 'Erro interno ao buscar o boletim do aluno.',
+        details: error.toString()
+      });
+    }
+  }
+
+  async getStudentHistory(req, res, next) {
+    try {
+      const schoolId =
+        req.user?.school_id ||
+        req.user?.schoolId;
+
+      const { studentId, schoolYear } = req.query;
+
+      const result = await reportCardHistoryService.getStudentHistory({
+        schoolId,
+        studentId,
+        schoolYear,
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error('[ReportCardController.getStudentHistory] Erro:', error);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        message:
+          error.message ||
+          'Erro interno ao buscar o historico escolar do aluno.',
         details: error.toString()
       });
     }

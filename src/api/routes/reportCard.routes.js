@@ -19,6 +19,13 @@ router.get(
   reportCardController.getStudentReportCard
 );
 
+// Historico escolar anual/bimestral consolidado por boletins do aluno
+router.get(
+  '/student-history',
+  verifyToken,
+  reportCardController.getStudentHistory
+);
+
 // Provas corrigidas disponiveis para importar no boletim
 router.get(
   '/import/exams',
