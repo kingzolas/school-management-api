@@ -86,14 +86,30 @@ function roleVariantsForQuery(roles = []) {
 function documentTypeLabel(value) {
   const normalized = String(value || '').trim().toLowerCase();
   const labels = {
-    enrollment_confirmation: 'declaração de matrícula',
-    attendance_declaration: 'declaração de frequência',
-    transfer_statement: 'declaração de transferência',
-    completion_certificate: 'certificado de conclusão',
-    report_card: 'boletim',
-    transcript: 'histórico escolar',
+    enrollment_confirmation: 'Declaração de Matrícula',
+    enrollment_declaration: 'Declaração de Matrícula',
+    declaration_of_enrollment: 'Declaração de Matrícula',
+    enrollment_status: 'Declaração de Matrícula',
+    currently_enrolled_declaration: 'Declaração Cursando',
+    enrollment_status_declaration: 'Declaração Cursando',
+    attendance_declaration: 'Declaração de Frequência Escolar',
+    school_attendance_declaration: 'Declaração de Frequência Escolar',
+    student_attendance_declaration: 'Declaração de Frequência Escolar',
+    transfer_declaration: 'Declaração de Transferência',
+    transfer_statement: 'Declaração de Transferência',
+    nothing_pending: 'Declaração Nada Consta',
+    nothing_owed_declaration: 'Declaração Nada Consta',
+    no_debt_declaration: 'Declaração Nada Consta',
+    income_tax: 'Declaração para IRPF',
+    income_tax_declaration: 'Declaração para IRPF',
+    irpf_declaration: 'Declaração para IRPF',
+    payment_receipt: 'Recibo de Pagamento',
+    school_transcript: 'Histórico Escolar',
+    transcript: 'Histórico Escolar',
+    completion_certificate: 'Certificado de Conclusão',
+    report_card: 'Boletim',
   };
-  return labels[normalized] || normalized.replace(/_/g, ' ') || 'documento';
+  return labels[normalized] || normalized.replace(/_/g, ' ') || 'um documento';
 }
 
 function requestSnapshot(payload = {}) {
@@ -157,9 +173,9 @@ function buildAbsenceStaffNotification(eventName, payload) {
   const studentName = studentNameFrom(payload) || 'Aluno';
   const className = classNameFrom(payload);
   const guardianName = guardianNameFrom(payload);
-  const details = [studentName, className, guardianName && `Responsável: ${guardianName}`]
+  const details = [studentName, className, guardianName && `ResponsÃ¡vel: ${guardianName}`]
     .filter(Boolean)
-    .join(' • ');
+    .join(' â€¢ ');
 
   return {
     audience: 'staff',
@@ -167,8 +183,8 @@ function buildAbsenceStaffNotification(eventName, payload) {
     type: eventName,
     domain: 'academic',
     priority: 'warning',
-    title: 'Nova solicitação de abono',
-    summary: details || 'Um responsável enviou uma solicitação de abono.',
+    title: 'Nova solicitaÃ§Ã£o de abono',
+    summary: details || 'Um responsÃ¡vel enviou uma solicitaÃ§Ã£o de abono.',
     routeKey: 'staff.absenceJustificationRequests',
     entity: 'absence_justification_request',
     entityId: textValue(payload.requestId, requestSnapshot(payload)._id, requestSnapshot(payload).id),
@@ -191,12 +207,12 @@ function buildAbsenceGuardianNotification(eventName, payload) {
 
   const studentName = studentNameFrom(payload) || 'o aluno';
   const descriptors = {
-    absence_justification_request_approved: ['Abono aprovado', `A escola aprovou a solicitação de abono de ${studentName}.`, 'success'],
-    absence_justification_request_partially_approved: ['Abono aprovado parcialmente', `A escola aprovou parte do período solicitado para ${studentName}.`, 'warning'],
-    absence_justification_request_rejected: ['Abono recusado', `A escola respondeu a solicitação de abono de ${studentName}.`, 'warning'],
-    absence_justification_request_needs_information: ['Complemento solicitado', `A escola pediu mais informações sobre o abono de ${studentName}.`, 'warning'],
-    absence_justification_request_cancelled: ['Solicitação cancelada', `A solicitação de abono de ${studentName} foi encerrada.`, 'warning'],
-    absence_justification_request_applied: ['Abono aplicado', `Uma falta real de ${studentName} foi coberta pela solicitação aprovada.`, 'success'],
+    absence_justification_request_approved: ['Abono aprovado', `A escola aprovou a solicitaÃ§Ã£o de abono de ${studentName}.`, 'success'],
+    absence_justification_request_partially_approved: ['Abono aprovado parcialmente', `A escola aprovou parte do perÃ­odo solicitado para ${studentName}.`, 'warning'],
+    absence_justification_request_rejected: ['Abono recusado', `A escola respondeu a solicitaÃ§Ã£o de abono de ${studentName}.`, 'warning'],
+    absence_justification_request_needs_information: ['Complemento solicitado', `A escola pediu mais informaÃ§Ãµes sobre o abono de ${studentName}.`, 'warning'],
+    absence_justification_request_cancelled: ['SolicitaÃ§Ã£o cancelada', `A solicitaÃ§Ã£o de abono de ${studentName} foi encerrada.`, 'warning'],
+    absence_justification_request_applied: ['Abono aplicado', `Uma falta real de ${studentName} foi coberta pela solicitaÃ§Ã£o aprovada.`, 'success'],
   };
   const [title, summary, priority] = descriptors[eventName] || descriptors.absence_justification_request_rejected;
   const requestId = textValue(payload.requestId, requestSnapshot(payload)._id, requestSnapshot(payload).id);
@@ -230,7 +246,10 @@ function buildDocumentStaffNotification(eventName, payload) {
   const documentType = textValue(payload.documentType, request.documentType);
   const documentLabel = documentTypeLabel(documentType);
   const studentName = studentNameFrom(payload) || 'Aluno';
-  const actor = payload.action === 'created_by_student' ? 'Aluno' : 'Responsável';
+  const requesterName = guardianNameFrom(payload);
+  const actor = payload.action === 'created_by_student'
+    ? 'Aluno'
+    : requesterName || 'Responsável';
   const requestId = textValue(payload.requestId, request._id, request.id);
 
   return {
@@ -239,7 +258,7 @@ function buildDocumentStaffNotification(eventName, payload) {
     type: eventName,
     domain: 'documents',
     priority: 'info',
-    title: 'Nova solicitação de documento',
+    title: 'Nova solicitaÃ§Ã£o de documento',
     summary: `${actor} solicitou ${documentLabel} para ${studentName}.`,
     routeKey: 'staff.officialDocumentRequests',
     entity: 'official_document_request',
@@ -247,8 +266,12 @@ function buildDocumentStaffNotification(eventName, payload) {
     threadKey: `documents:${requestId}`,
     metadata: {
       requestId,
+      documentRequestId: requestId,
       studentId: idValue(payload.studentId || request.studentId),
       documentType,
+      documentLabel,
+      studentName,
+      requesterName,
       status: textValue(payload.status, payload.toStatus),
       sourceEvent: eventName,
     },
@@ -268,16 +291,16 @@ function buildDocumentGuardianNotification(eventName, payload) {
   const documentId = textValue(payload.documentId, payload.document?._id, payload.document?.id);
 
   const descriptors = {
-    official_document_request_created: ['Pedido registrado', `A solicitação de ${titleLabel} foi enviada para a escola.`, 'info'],
-    official_document_request_approved: ['Solicitação aprovada', `A escola aprovou o pedido de ${titleLabel}.`, 'success'],
-    official_document_request_rejected: ['Solicitação recusada', `A escola respondeu o pedido de ${titleLabel}.`, 'warning'],
-    official_document_request_cancelled: ['Solicitação cancelada', `O pedido de ${titleLabel} foi encerrado.`, 'warning'],
-    official_document_preparing: ['Documento em preparação', `A escola está preparando o PDF de ${titleLabel}.`, 'info'],
-    official_document_awaiting_signature: ['Aguardando assinatura', `O documento ${titleLabel} está na etapa de assinatura.`, 'info'],
+    official_document_request_created: ['Pedido registrado', `A solicitaÃ§Ã£o de ${titleLabel} foi enviada para a escola.`, 'info'],
+    official_document_request_approved: ['SolicitaÃ§Ã£o aprovada', `A escola aprovou o pedido de ${titleLabel}.`, 'success'],
+    official_document_request_rejected: ['SolicitaÃ§Ã£o recusada', `A escola respondeu o pedido de ${titleLabel}.`, 'warning'],
+    official_document_request_cancelled: ['SolicitaÃ§Ã£o cancelada', `O pedido de ${titleLabel} foi encerrado.`, 'warning'],
+    official_document_preparing: ['Documento em preparaÃ§Ã£o', `A escola estÃ¡ preparando o PDF de ${titleLabel}.`, 'info'],
+    official_document_awaiting_signature: ['Aguardando assinatura', `O documento ${titleLabel} estÃ¡ na etapa de assinatura.`, 'info'],
     official_document_signed: ['Documento assinado', `O PDF de ${titleLabel} foi assinado pela escola.`, 'success'],
-    official_document_published: ['Documento disponível', `O PDF oficial de ${titleLabel} já pode ser aberto ou baixado.`, 'success'],
+    official_document_published: ['Documento disponÃ­vel', `O PDF oficial de ${titleLabel} jÃ¡ pode ser aberto ou baixado.`, 'success'],
     official_document_downloaded: ['Download registrado', `O acesso ao documento ${titleLabel} foi registrado.`, 'info'],
-    official_document_replaced: ['Nova versão disponível', `A escola atualizou a versão do documento ${titleLabel}.`, 'info'],
+    official_document_replaced: ['Nova versÃ£o disponÃ­vel', `A escola atualizou a versÃ£o do documento ${titleLabel}.`, 'info'],
     official_document_cancelled: ['Documento cancelado', `O protocolo de ${titleLabel} foi encerrado.`, 'warning'],
   };
 
@@ -329,7 +352,7 @@ function buildRegistrationStaffNotification(eventName, payload) {
     responsibleName && `Responsavel: ${responsibleName}`,
   ]
     .filter(Boolean)
-    .join(' • ');
+    .join(' â€¢ ');
 
   return {
     audience: 'staff',
@@ -337,8 +360,8 @@ function buildRegistrationStaffNotification(eventName, payload) {
     type: 'registration_request_created',
     domain: 'academic',
     priority: 'info',
-    title: 'Nova solicitação de matrícula',
-    summary: summary || 'Uma nova solicitação foi enviada pelo formulário público.',
+    title: 'Nova solicitaÃ§Ã£o de matrÃ­cula',
+    summary: summary || 'Uma nova solicitaÃ§Ã£o foi enviada pelo formulÃ¡rio pÃºblico.',
     routeKey: 'staff.registrationRequests',
     entity: 'registration_request',
     entityId: requestId,
@@ -420,7 +443,7 @@ class AppNotificationService {
   buildViewerQuery(viewer) {
     const schoolId = idValue(viewer.schoolId || viewer.school_id);
     if (!schoolId) {
-      const error = new Error('Escola não informada para consulta de notificações.');
+      const error = new Error('Escola nÃ£o informada para consulta de notificaÃ§Ãµes.');
       error.statusCode = 400;
       throw error;
     }
